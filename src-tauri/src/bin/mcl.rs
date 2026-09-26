@@ -150,6 +150,19 @@ enum Cmd {
         #[arg(long)]
         id: String,
     },
+    /// Импорт архива (CF-zip / MultiMC / свой формат) в новый инстанс
+    InstanceImport {
+        #[arg(long)]
+        file: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Краш-анализ лога
+    CrashAnalyze {
+        /// Путь к файлу лога
+        #[arg(long)]
+        log: String,
+    },
     /// Очистить кэш стора от объектов без ссылок
     StoreCleanup,
 }
@@ -308,6 +321,38 @@ async fn run(cli: Cli) -> Result<()> {
         Cmd::AuthActive { id } => {
             mc_launcher_v2_lib::auth::set_active(&paths, &id)?;
             println!("Активный аккаунт: {id}");
+            Ok(())
+        }
+        Cmd::InstanceImport { file, name } => {
+            let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+            let (inst, loader) = mc_launcher_v2_lib::import::import_archive(
+                &paths,
+                &settings,
+                client,
+                std::path::Path::new(&file),
+                name.as_deref(),
+            )
+            .await?;
+            println!("Импортирован: {} [{}] id={}", inst.name, inst.mc_version, inst.id);
+            if let Some((kind, ver)) = loader {
+                let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+                mc_launcher_v2_lib::instances::run::install_loader(
+                    &paths, &settings, client, &inst, &kind, Some(&ver),
+                )
+                .await?;
+                println!("Загрузчик {kind} {ver} установлен");
+            }
+            Ok(())
+        }
+        Cmd::CrashAnalyze { log } => {
+            let text = std::fs::read_to_string(&log)?;
+            let d = mc_launcher_v2_lib::process::crash::analyze(&text);
+            if d.is_empty() {
+                println!("Известных причин не найдено");
+            }
+            for x in &d {
+                println!("[{}] {}: {}", x.rule_id, x.title, x.advice);
+            }
             Ok(())
         }
         Cmd::StoreCleanup => {

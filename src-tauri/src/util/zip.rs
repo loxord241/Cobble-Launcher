@@ -109,6 +109,54 @@ pub fn extract_zip_filtered<R: Read + Seek>(
     Ok(extracted)
 }
 
+
+
+
+
+/// Вариант со СРЕЗАНИЕМ префикса (конвенция модпаков: содержимое `overrides/`
+/// ложится поверх корня каталога игры). zip-slip-защита сохранена.
+pub fn extract_zip_stripping<R: Read + Seek>(
+    reader: R,
+    dest: &Path,
+    strip: &str,
+    _keep: impl Fn(&str) -> bool,
+    mut on_file: impl FnMut(&Path),
+) -> Result<Vec<PathBuf>> {
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|e| LauncherError::Zip(format!("не удалось открыть архив: {e}")))?;
+    let dest_long = crate::util::fs::long_path(dest);
+    std::fs::create_dir_all(&dest_long)?;
+    let mut out = Vec::new();
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| LauncherError::Zip(format!("запись {i}: {e}")))?;
+        let raw = file.name().to_string();
+        if file.is_dir() || !raw.starts_with(strip) {
+            continue;
+        }
+        let rel_full = safe_relative_path(&raw)?;
+        let rel = rel_full
+            .strip_prefix(strip)
+            .map(Path::to_path_buf)
+            .unwrap_or(rel_full);
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let target = crate::util::fs::long_path(&dest.join(&rel));
+        if !target.starts_with(&dest_long) {
+            return Err(LauncherError::ZipSlip(raw));
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::io::copy(&mut file, &mut std::fs::File::create(&target)?)?;
+        on_file(&target);
+        out.push(dest.join(rel));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

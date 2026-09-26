@@ -220,10 +220,11 @@ pub async fn install_mrpack(
 fn apply_overrides(mrpack_path: &Path, paths: &Paths, instance_id: &str) -> Result<()> {
     let file = std::fs::File::open(crate::util::fs::long_path(mrpack_path))?;
     let dest = crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, instance_id));
-    let extracted = crate::util::zip::extract_zip_filtered(
+    let extracted = crate::util::zip::extract_zip_stripping(
         file,
         &dest,
-        |name| name.starts_with("overrides/") && !name.ends_with('/'),
+        "overrides/",
+        |_| true,
         |_| {},
     )?;
     tracing::info!("overrides применены: {} файлов", extracted.len());

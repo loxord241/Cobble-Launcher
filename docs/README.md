@@ -1,40 +1,73 @@
 # mc-launcher-v2
 
-Полнофункциональный лаунчер Minecraft уровня Prism Launcher: vanilla + Fabric + Quilt +
-NeoForge + Forge, Modrinth/CurseForge, модпаки, Microsoft-аккаунты, импорт инстансов.
+Полнофункциональный лаунчер Minecraft: vanilla + Fabric + Quilt + NeoForge +
+Forge, Modrinth (моды, модпаки .mrpack, обновления), Microsoft-аккаунты,
+ely.by, импорт инстансов.
 
-Приоритеты проекта (в порядке важности): честность и безопасность (хэши каждого байта,
-ноль инжекций в игру, секреты вне git) → скорость (нативный Tauri-бинарник) → полнота →
-сменяемость UI (весь бизнес в Rust-ядре, UI — тонкий слой).
-
-## Стек
-
-- Ядро: Rust + Tauri 2, tokio, reqwest, serde, thiserror, tracing.
-- UI: React 19 + TypeScript (strict) + Vite, zustand, Tailwind CSS 4, lucide-react.
-- Платформа: Windows 11 (первичная), Linux — по возможности.
+Приоритеты: **честность и безопасность** (SHA1/SHA256 каждого скачанного файла,
+ноль инжекций в игру — единственное исключение authlib-injector при явном выборе
+ely.by, секреты только в Windows Credential Manager) → **скорость** (нативный
+Tauri-бинарник, очередь загрузок с 16 параллельными соединениями, hardlink-стор)
+→ **полнота** (поддержка старых версий вплоть до legacy-ассетов) → **сменяемость
+UI** (весь бизнес в Rust-ядре, UI — тонкий слой поверх IPC).
 
 ## Сборка
 
 ```powershell
-# полная сборка (frontend + release-бинарник без инсталлятора)
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
+# разработка (окно + HMR)
+npm run tauri dev
 
-# проверка качества (tsc strict, clippy -D warnings, тесты)
+# полная проверка качества (tsc strict, clippy -D warnings, тесты)
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1
 
-# режим разработки (окно + HMR)
-npm run tauri dev
+# release-бинарник; инсталлятор NSIS: добавить -Bundle
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
 ```
 
-Требования: Node LTS, Rust (stable, target `x86_64-pc-windows-msvc`), MSVC Build Tools.
+Требования: Node LTS, Rust stable (`x86_64-pc-windows-msvc`), MSVC Build Tools,
+WebView2 (есть в Windows 11).
+
+## Microsoft-вход (MSA)
+
+1. Зарегистрируйте приложение на [portal.azure.com](https://portal.azure.com):
+   Microsoft Entra ID → Регистрация приложений → Новая:
+   - «Поддерживаемые типы учетных записей»: **Personal Microsoft accounts only**;
+   - платформа **Мобильные и классические приложения** (public client).
+2. Authentication → **Разрешить общедоступные потоки клиента = Да** (иначе
+   device-code вернёт AADSTS70002).
+3. Application (client) ID → Настройки лаунчера → `azureClientId`.
+   ID не секретен (у Prism лежит публично), но в git его не коммитим — он живёт
+   в локальном `settings.json`. Client secret НЕ нужен.
+4. API permissions вручную не добавлять: `XboxLive.signin offline_access`
+   запрашивается при входе.
+
+Вход: аккаунт-меню лаунчера → Microsoft → введите код на
+<https://microsoft.com/link>. Refresh-токен хранится в Credential Manager.
+
+## CLI
+
+`src-tauri/target/debug/mcl.exe` — тонкая обёртка над тем же ядром:
+
+```text
+mcl launch --mc latest --player MCL2     # vanilla-конвейер, запуск до меню
+mcl instance-create / instance-list / instance-launch / instance-delete
+mcl loader-install --loader fabric|quilt|neoforge|forge
+mcl mrpack-install --file pack.mrpack    # модпак Modrinth в новый инстанс
+mcl instance-import --file pack.zip      # CF-zip / MultiMC / свой формат
+mcl auth-offline / auth-msa-start / auth-msa-poll / auth-list
+mcl java-scan / java-install --major 17
+mcl store-cleanup                        # удалить объекты стора без ссылок
+```
 
 ## Документация
 
-- [docs/PROGRESS.md](PROGRESS.md) — статус этапов M0–M9, доказательства приёмки.
-- [docs/DECISIONS.md](DECISIONS.md) — отклонения от спеки и их причины.
-- [docs/UI-CONTRACT.md](UI-CONTRACT.md) — контракт «ядро ↔ UI» (появится на M4).
+- [docs/PROGRESS.md](PROGRESS.md) — статус M0–M9, доказательства приёмки.
+- [docs/DECISIONS.md](DECISIONS.md) — 21 решение с причинами (расхождения со спекой).
+- [docs/UI-CONTRACT.md](UI-CONTRACT.md) — контракт «ядро ↔ UI» (сменяемость UI).
 
 ## Лицензия
 
-GPL-3.0 (планируется, см. M9). Minecraft © Mojang Studios; проект не связан с Mojang
-и не распространяет файлы игры, только скачивает их с официальных серверов по хэшам.
+GPL-3.0 (как у Prism Launcher). Minecraft © Mojang Studios; проект не связан с
+Mojang/Microsoft и не распространяет файлы игры — только скачивает с официальных
+серверов по сверенным хэшам. Third-party: Tauri, React, Tailwind, Modrinth API,
+Adoptium JRE, authlib-injector (лицензия в репозитории проекта).

@@ -5,6 +5,7 @@ pub mod auth;
 pub mod commands;
 pub mod errors;
 pub mod events;
+pub mod import;
 pub mod instances;
 pub mod java;
 pub mod loaders;
@@ -13,6 +14,7 @@ pub mod modrinth;
 pub mod net;
 pub mod optimize;
 pub mod paths;
+pub mod process;
 pub mod settings;
 pub mod util;
 
@@ -128,6 +130,8 @@ pub fn run() -> tauri::Result<()> {
             commands::account_add_ely,
             commands::account_remove,
             commands::account_active_set,
+            commands::instance_import,
+            commands::crash_analyze,
             commands::java_list,
             commands::java_install,
             commands::settings_get,

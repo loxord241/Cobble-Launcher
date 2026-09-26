@@ -402,6 +402,43 @@ pub async fn account_active_set(state: State<'_, AppState>, id: String) -> Resul
     Ok(OkMsg { ok: true })
 }
 
+// ---------- импорт и диагностика (спека §6.11, §6.10) ----------
+
+#[tauri::command]
+pub async fn instance_import(
+    state: State<'_, AppState>,
+    path: String,
+    name: Option<String>,
+) -> Result<Instance> {
+    let (mut inst, loader) = crate::import::import_archive(
+        &state.paths,
+        &state.settings.read().await.clone(),
+        state.http.clone(),
+        std::path::Path::new(&path),
+        name.as_deref(),
+    )
+    .await?;
+    // Распознанный загрузчик ставим сразу.
+    if let Some((kind, ver)) = loader {
+        inst = instances::run::install_loader(
+            &state.paths,
+            &state.settings.read().await.clone(),
+            state.http.clone(),
+            &inst,
+            &kind,
+            Some(&ver),
+        )
+        .await?;
+    }
+    Ok(inst)
+}
+
+/// Краш-анализ текста лога (расширяемые правила, спека §6.10).
+#[tauri::command]
+pub async fn crash_analyze(log_text: String) -> Result<Vec<crate::process::crash::Diagnosis>> {
+    Ok(crate::process::crash::analyze(&log_text))
+}
+
 // ---------- версии и загрузчики ----------
 
 #[derive(Serialize)]

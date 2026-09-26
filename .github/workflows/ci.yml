@@ -1,0 +1,24 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Frontend build (tsc strict + vite)
+        run: npm ci && npm run build
+      - name: Rust checks (clippy -D warnings + tests)
+        working-directory: src-tauri
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo test

@@ -361,3 +361,50 @@
 1. Azure: включить «Allow public client flows» → после этого MSA-вход завершается
    (`mcl auth-msa-start` → браузер → код → `mcl auth-msa-poll`).
 2. ely.by: реализация полная; приёмка требует реальных учётных данных владельца.
+
+
+---
+
+## M9. Импорт, краш-анализ, упаковка
+
+**Дата:** 2026-09-26
+
+**Сделано:**
+- `process/crash.rs`: анализатор по расширяемым JSON-правилам (Java ниже
+  требуемой, GPU-драйвер, OutOfMemory, дубликат мода, отсутствие fabric-api,
+  антивирус удалил нативы) → человеческий совет; команда `crash_analyze`.
+- `import/`: CF-zip (manifest.json → инстанс + загрузчик; overrides поверх корня
+  игры; без CF-ключа — список ссылок для ручного скачивания в notes), MultiMC/Prism
+  (mmc-pack.json → uid → loader), свой формат (instance.json + minecraft/);
+  эвристика типа по содержимому; zip-slip-защита на чужих архивах.
+  `extract_zip_stripping` — распаковка со срезанием префикса (конвенция overrides).
+- CI: `.github/workflows/ci.yml` (windows-latest: npm build + clippy -D warnings +
+  cargo test). `scripts/gen-keys.ps1` — minisign-ключи updater'а, приватный ВНЕ
+  репо (scripts/keys/ в .gitignore).
+- CDP-аргумент снят из tauri.conf.json (D14 закрыт).
+- README: сборка, MSA-инструкция, CLI-справка, лицензия GPL-3.0.
+- **NSIS-инсталлятор собран**: `src-tauri/target/release/bundle/nsis/
+  mc-launcher-v2_0.1.0_x64-setup.exe`.
+
+**Финальный чек-лист (спека §14):**
+- [x] `cargo clippy -- -D warnings`, `cargo test` (80 юнит + 10 интеграционных),
+      `npm run build` — чисто.
+- [x] Запуски до главного меню: vanilla 26.3 и 1.20.1, 1.12.2, Fabric 26.3,
+      NeoForge 1.21.1, Forge 1.20.1, FO-модпак (mrpack), CF-zip импорт.
+- [ ] Офлайн-тест «отключить сеть» — требует ручной отсечки сети владельцем;
+      механизм готов (кэш манифестов TTL, `.part`-очередь, верифицированные файлы
+      пропускаются, MSA-refresh падает в событие + офлайн-фолбэк).
+- [x] Мульти-запуск: разные инстансы одновременно (M2/M3 приёмки шли параллельно);
+      kill из UI (instance_kill = taskkill /T); закрытие лаунчера игру не убивает
+      (launch_detached + `--no-wait` доказательство).
+- [x] Модпак Modrinth установлен и запущен; CF-zip импортирован.
+- [x] Отрицательный тест хэшей: битый SHA1 → детект и перекачка (mock-сервер,
+      integration-тесты движка).
+- [x] Секреты: grep по истории — только имена полей, реальных секретов нет;
+      accounts.json без plaintext (тест).
+- [x] Гигиена репо: target/, node_modules, scripts/keys/ в .gitignore; .git — 1.4 МБ.
+
+**Открытые проблемы (владельцу):**
+1. Azure «Allow public client flows = Yes» → завершить MSA-вход (2 мин).
+2. ely.by — проверить вход со своей учёткой.
+3. Офлайн-тест с ручной отсечкой сети — по желанию.
