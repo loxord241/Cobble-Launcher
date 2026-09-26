@@ -50,7 +50,10 @@
   --r-s:0px; --r-m:0px; --r-l:0px;
   --t-fast:80ms; --t-slow:120ms; --ease:steps(2,end);
   --shadow-1:none; --shadow-2:none;
-  --mc-hi:#565660; --mc-lo:#0b0b0d; --mc-dirt:#6b4a2e; --mc-dirt-lo:#4a3320;
+  --mc-hi:#565660; --mc-lo:#0b0b0d; --mc-dirt:#6b4a2e; --mc-dirt-lo:#3a2818;
+  --mc-slot:#26262b; --mc-slot-hi:#0c0c0e; --mc-slot-lo:#4e4e56;
+  --mc-btn:#4c4c52; --mc-btn-hi:#6a6a72; --mc-btn-lo:#232327;
+  --mc-tip-bg:#100010; --mc-tip-border:#6b3fa8; --mc-splash:#ffef4a; --mc-btn-text:#ffffff; --mc-select:#ffffff;
 }
 :root[data-theme="light"]{
   --bg:#f4f5f7; --surface:#ffffff; --surface-2:#e9edf2;
@@ -386,9 +389,76 @@ input[type=range].ram{width:100%; accent-color:var(--accent); height:40px}
 
 /* ── Глубинный сланец: компоненты ───────────────────────────────── */
 [data-theme="mc"] body{
-  background-image:repeating-conic-gradient(color-mix(in srgb, var(--surface) 22%, transparent) 0 25%, transparent 0 50%);
-  background-size:8px 8px;
+  background:var(--mc-dirt);
+  background-image:repeating-conic-gradient(color-mix(in srgb, black 30%, transparent) 0 25%, transparent 0 50%);
+  background-size:16px 16px;
 }
+/* инвентарные слоты: обратный бевель */
+[data-theme="mc"] .row .tile,
+[data-theme="mc"] .mod .tile,
+[data-theme="mc"] .pack .tile,
+[data-theme="mc"] .modcard .tile,
+[data-theme="mc"] .mpcard .tile,
+[data-theme="mc"] .dl-row .tile,
+[data-theme="mc"] .hero .tile{
+  background:var(--mc-slot); color:var(--text);
+  box-shadow:inset 3px 3px 0 var(--mc-slot-hi), inset -3px -3px 0 var(--mc-slot-lo);
+}
+/* каменные кнопки */
+[data-theme="mc"] .btn-ghost,
+[data-theme="mc"] .install,
+[data-theme="mc"] .pack .install,
+[data-theme="mc"] .modcard .install{
+  background:var(--mc-btn); color:var(--mc-btn-text);
+  border:2px solid var(--mc-lo);
+  box-shadow:inset 2px 2px 0 var(--mc-btn-hi), inset -2px -2px 0 var(--mc-btn-lo);
+  text-shadow:1px 1px 0 color-mix(in srgb, black 60%, transparent);
+}
+[data-theme="mc"] .btn-ghost:hover,
+[data-theme="mc"] .install:hover,
+[data-theme="mc"] .pack .install:hover,
+[data-theme="mc"] .modcard .install:hover{
+  background:var(--mc-btn-hi); border-color:var(--accent); color:var(--mc-btn-text);
+}
+/* бейдж обновления — предметный тултип */
+[data-theme="mc"] .badge{
+  background:color-mix(in srgb, var(--mc-tip-bg) 88%, transparent);
+  border:2px solid var(--mc-tip-border);
+  color:var(--text); border-radius:0;
+}
+/* сплэш-текст */
+.splash{display:none}
+[data-theme="mc"] .splash{
+  display:inline-block; margin-left:auto; margin-right:var(--s-3);
+  font-family:var(--font-display); font-size:12px; line-height:1.6;
+  color:var(--mc-splash); transform:rotate(-3deg);
+  text-shadow:2px 2px 0 color-mix(in srgb, black 55%, transparent);
+  animation:splash .9s ease-in-out infinite alternate;
+}
+[data-theme="mc"] .banner .more{margin-left:0}
+@keyframes splash{from{transform:rotate(-3deg) scale(1)}to{transform:rotate(-3deg) scale(1.06)}}
+/* хотбар быстрого запуска */
+.hotbar{display:none}
+[data-theme="mc"] .hotbar{
+  position:sticky; bottom:0; z-index:5;
+  display:flex; gap:var(--s-2); align-items:center;
+  border:2px solid var(--mc-lo); background:color-mix(in srgb, var(--mc-slot) 80%, transparent);
+  box-shadow:inset 2px 2px 0 var(--mc-slot-hi), inset -2px -2px 0 var(--mc-slot-lo);
+  padding:var(--s-2); margin-top:var(--s-2);
+}
+[data-theme="mc"] .hslot{
+  position:relative; width:56px; height:56px; display:grid; place-items:center;
+  background:var(--mc-slot); border:2px solid var(--mc-lo); color:var(--text-muted);
+  box-shadow:inset 2px 2px 0 var(--mc-slot-hi), inset -2px -2px 0 var(--mc-slot-lo);
+}
+[data-theme="mc"] .hslot:hover{color:var(--text)}
+[data-theme="mc"] .hslot.is-selected{border:3px solid var(--mc-select); color:var(--text)}
+[data-theme="mc"] .hslot .hkey{
+  position:absolute; top:2px; left:4px;
+  font-family:var(--font-mono); font-size:12px; color:var(--text-muted);
+}
+[data-theme="mc"] .hslot svg{width:24px;height:24px}
+[data-theme="mc"] .hslot.is-selected svg{color:var(--accent)}
 [data-theme="mc"] .row,
 [data-theme="mc"] .mod,
 [data-theme="mc"] .pack,
@@ -557,6 +627,7 @@ input[type=range].ram{width:100%; accent-color:var(--accent); height:40px}
           <div class="banner">
             <svg class="icon" aria-hidden="true"><use href="#i-megaphone"/></svg>
             <span class="txt"><b>Обновление лаунчера 2.1.0</b> — новый браузер модов и очередь загрузок</span>
+            <span class="splash" aria-hidden="true">187 модов — не предел!</span>
             <a class="more" href="#" data-nav="downloads">Что нового<svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chevdown"/></svg></a>
           </div>
           <div class="sec-head">
@@ -612,6 +683,13 @@ input[type=range].ram{width:100%; accent-color:var(--accent); height:40px}
               <span class="info"><span class="name">Simply Optimized</span><br><span class="dl">640 тыс. загрузок</span></span>
               <span class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить</span>
             </button>
+          </div>
+          <div class="hotbar" aria-label="Быстрый запуск">
+            <button class="hslot" data-nav="instance" title="Ванилла 26.3"><span class="hkey">1</span><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg></button>
+            <button class="hslot is-selected" data-nav="instance" title="Fabric + Sodium — Играть"><span class="hkey">2</span><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg></button>
+            <button class="hslot" data-nav="instance" title="NeoForge: Create"><span class="hkey">3</span><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg></button>
+            <button class="hslot" data-nav="mods" title="Каталог модов"><span class="hkey">4</span><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg></button>
+            <button class="hslot" data-nav="downloads" title="Загрузки — 2 в очереди"><span class="hkey">5</span><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></button>
           </div>
         </section>
 
