@@ -42,6 +42,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 md-5 = "0.11.0"
 opener = "0.8.5"
 tracing-appender = "0.2.5"
+sysinfo = "0.39.6"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

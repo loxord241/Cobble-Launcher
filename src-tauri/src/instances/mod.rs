@@ -316,6 +316,52 @@ fn recycle_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// PID запущенного инстанса из `.lock` (None = не запущен / протух).
+pub fn running_pid(instance_dir: &Path) -> Option<u32> {
+    let lock = instance_dir.join(".lock");
+    let text = std::fs::read_to_string(long_path(&lock)).ok()?;
+    let pid = text.trim().parse::<u32>().ok()?;
+    if pid_alive(pid) {
+        Some(pid)
+    } else {
+        None
+    }
+}
+
+/// Kill: завершить дерево процессов игры (спека §6.10) и снять lock.
+pub fn kill(instance_dir: &Path) -> Result<()> {
+    let Some(pid) = running_pid(instance_dir) else {
+        return Err(LauncherError::InvalidInput("инстанс не запущен".into()));
+    };
+    #[cfg(windows)]
+    {
+        let mut c = std::process::Command::new("taskkill");
+        c.args(["/F", "/T", "/PID", &pid.to_string()]);
+        c.creation_flags(0x0800_0000);
+        let out = c.output()?;
+        if !out.status.success() {
+            return Err(LauncherError::Internal(format!(
+                "taskkill: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).output();
+    }
+    let _ = std::fs::remove_file(long_path(&instance_dir.join(".lock")));
+    Ok(())
+}
+
+/// Запущенные инстансы (id, PID) — для process_status в UI.
+pub fn running_instances(paths: &crate::paths::Paths) -> Vec<(String, u32)> {
+    list(paths)
+        .iter()
+        .filter_map(|i| running_pid(&instance_dir(paths, &i.id)).map(|pid| (i.id.clone(), pid)))
+        .collect()
+}
+
 /// `.lock` на время работы инстанса (защита от двойного запуска).
 pub struct InstanceLock {
     path: PathBuf,

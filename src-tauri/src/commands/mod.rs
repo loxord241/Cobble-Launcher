@@ -239,6 +239,34 @@ pub async fn mrpack_install(
     .await
 }
 
+// ---------- оптимизация и процессы (спека §6.9, §6.10) ----------
+
+#[tauri::command]
+pub async fn instance_optimize(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<Vec<String>> {
+    let inst = instances::load(&state.paths, &instance_id)?;
+    let engine = state.engine();
+    crate::optimize::optimize(&state.paths, state.http.clone(), engine, &inst).await
+}
+
+#[tauri::command]
+pub async fn ram_guide() -> Result<crate::optimize::RamGuide> {
+    Ok(crate::optimize::ram_guide())
+}
+
+#[tauri::command]
+pub async fn instance_kill(state: State<'_, AppState>, instance_id: String) -> Result<OkMsg> {
+    instances::kill(&instances::instance_dir(&state.paths, &instance_id))?;
+    Ok(OkMsg { ok: true })
+}
+
+#[tauri::command]
+pub async fn process_status(state: State<'_, AppState>) -> Result<Vec<(String, u32)>> {
+    Ok(instances::running_instances(&state.paths))
+}
+
 // ---------- версии и загрузчики ----------
 
 #[derive(Serialize)]

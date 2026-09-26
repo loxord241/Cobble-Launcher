@@ -590,6 +590,11 @@ pub fn launch_detached(
     let mut child = command
         .spawn()
         .map_err(|e| LauncherError::JavaNotFound(format!("не удалось запустить игру: {e}")))?;
+    // PID в .lock: instance_kill / process_status читают отсюда.
+    let _ = std::fs::write(
+        crate::util::fs::long_path(&inst_dir.join(".lock")),
+        child.id().to_string(),
+    );
     tracing::info!("инстанс {instance_id}: игра запущена (PID {})", child.id());
     bus.emit(LauncherEvent::LaunchState {
         instance_id: instance_id.to_string(),

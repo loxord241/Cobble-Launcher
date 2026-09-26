@@ -11,6 +11,7 @@ pub mod loaders;
 pub mod mojang;
 pub mod modrinth;
 pub mod net;
+pub mod optimize;
 pub mod paths;
 pub mod settings;
 pub mod util;
@@ -83,6 +84,10 @@ pub fn run() -> tauri::Result<()> {
             commands::content_update_check,
             commands::content_update_all,
             commands::mrpack_install,
+            commands::instance_optimize,
+            commands::ram_guide,
+            commands::instance_kill,
+            commands::process_status,
             commands::java_list,
             commands::java_install,
             commands::settings_get,

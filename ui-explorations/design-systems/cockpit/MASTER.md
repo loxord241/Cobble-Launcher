@@ -6,10 +6,10 @@
 
 ---
 
-**Project:** slate
-**Generated:** 2026-09-26 20:22:02
+**Project:** cockpit
+**Generated:** 2026-09-26 20:23:23
 **Category:** Gaming
-**Design Dials:** Variance 2/10 (Centered / Minimal) | Motion 2/10 (Subtle) | Density 8/10 (Dense / Dashboard)
+**Design Dials:** Variance 7/10 (Balanced / Modern) | Motion 6/10 (Standard) | Density 7/10 (Standard)
 
 ---
 
@@ -52,17 +52,17 @@
 
 ### Spacing Variables
 
-*Density: 8/10 — Dense / Dashboard*
+*Density: 7/10 — Standard*
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| `--space-xs` | `2px` / `0.125rem` | Tight gaps |
-| `--space-sm` | `4px` / `0.25rem` | Icon gaps, inline spacing |
-| `--space-md` | `8px` / `0.5rem` | Standard padding |
-| `--space-lg` | `12px` / `0.75rem` | Section padding |
-| `--space-xl` | `16px` / `1rem` | Large gaps |
-| `--space-2xl` | `24px` / `1.5rem` | Section margins |
-| `--space-3xl` | `32px` / `2rem` | Hero padding |
+| `--space-xs` | `4px` / `0.25rem` | Tight gaps |
+| `--space-sm` | `8px` / `0.5rem` | Icon gaps, inline spacing |
+| `--space-md` | `16px` / `1rem` | Standard padding |
+| `--space-lg` | `24px` / `1.5rem` | Section padding |
+| `--space-xl` | `32px` / `2rem` | Large gaps |
+| `--space-2xl` | `48px` / `3rem` | Section margins |
+| `--space-3xl` | `64px` / `4rem` | Hero padding |
 
 ### Shadow Depths
 
@@ -167,13 +167,13 @@
 
 ## Style Guidelines
 
-**Style:** Minimalism & Swiss Style
+**Style:** 3D & Hyperrealism
 
-**Keywords:** Clean, simple, spacious, functional, white space, high contrast, geometric, sans-serif, grid-based, essential
+**Keywords:** Depth, realistic textures, 3D models, spatial navigation, tactile, skeuomorphic elements, rich detail, immersive
 
-**Best For:** Enterprise apps, dashboards, documentation sites, SaaS platforms, professional tools
+**Best For:** Gaming, product showcase, immersive experiences, high-end e-commerce, architectural viz, VR/AR
 
-**Key Effects:** Subtle hover (200-250ms), smooth transitions, sharp shadows if any, clear type hierarchy, fast loading
+**Key Effects:** WebGL/Three.js 3D, realistic shadows (layers), physics lighting, parallax (3-5 layers), smooth 3D (300-400ms)
 
 ### Page Pattern
 
@@ -187,17 +187,17 @@
 
 ## Motion
 
-**Scroll Reveal** (Subtle) — Trigger: scroll (viewport enter) | Duration: 300-400ms | Easing: `power1.out`
+**Stagger List** (Standard) — Trigger: load or scroll | Duration: 300-450ms | Easing: `back.out(1.4)`
 
 ```js
-gsap.from(el, { opacity: 0, y: 12, duration: 0.35, ease: 'power1.out', scrollTrigger: { trigger: el, start: 'top 90%', toggleActions: 'play none none reverse' } });
+gsap.from('.grid-item', { opacity: 0, scale: 0.92, y: 16, duration: 0.4, stagger: { each: 0.06, from: 'start', grid: 'auto' }, ease: 'back.out(1.4)' });
 ```
 
-**Framework notes:** Requires the ScrollTrigger plugin registered once via gsap.registerPlugin(ScrollTrigger); Use matchMedia('(prefers-reduced-motion: reduce)') to skip non-essential motion and render the final state immediately
+**Framework notes:** grid: 'auto' lets GSAP infer rows/columns from a CSS grid layout for a natural wave stagger; Use matchMedia('(prefers-reduced-motion: reduce)') to skip non-essential motion and render the final state immediately
 
-- ✅ Keep the y offset small (8-16px) so it reads as a fade, not a slide
-- ❌ Don't reveal below-the-fold content needed for SEO/crawlers as invisible-by-default without a no-JS fallback
-- ⚡ toggleActions 'play none none reverse' avoids re-triggering on every scroll direction change
+- ✅ Combine with from: 'center' for a bento-grid layout to draw the eye inward first
+- ❌ Don't use back.out on dense data tables; the overshoot reads as sloppy on informational UI
+- ⚡ Group DOM writes; avoid interleaving layout reads (getBoundingClientRect) between staggered tweens
 
 ---
 
@@ -231,3 +231,31 @@ Before delivering any UI code, verify:
 - [ ] Responsive: 375px, 768px, 1024px, 1440px
 - [ ] No content hidden behind fixed navbars
 - [ ] No horizontal scroll on mobile
+
+---
+
+## Арт-дирекция варианта (финальные токены — источник для вёрстки)
+
+**Концепт:** «Кабина». **Продукт (вотмард):** «Кокпит». Игровая HUD-эстетика: срезанные углы (clip-path), угловые скобки-рамки, верхняя приборная полоса с телеметрией (RAM/TPS/сеть), крупная гранёная кнопка ИГРАТЬ, пульс статусов.
+
+**Диски (variance 7, motion 6, density 7):** смелая геометрия и хореография статусов при сохранении сетки — Operate-действия всегда в одних местах.
+
+**Оверрайды базы (и почему):** палитра Gaming из базы принята (тёмный индиго + фиолет + роза). Шрифт Chakra Petch не содержит кириллицы — заменён на IBM Plex Sans; Russo One (заголовки, есть кириллица) и телеметрия — JetBrains Mono.
+
+**Reduced-motion:** отключаются пульс LED-точек и сдвиг граней на hover; HUD-статусы имеют текстовые значения и без анимации.
+
+```css
+:root{
+  --bg:#0F0F23; --surface:#171633; --surface-2:#201e45;
+  --text:#E2E8F0; --text-muted:#9aa4bd;
+  --border:#2c2956; --border-strong:#4C1D95;
+  --accent:#7C3AED; --on-accent:#ffffff; --accent-soft:rgba(124,58,237,.14);
+  --alert:#F43F5E; --on-alert:#ffffff;
+  --danger:#f28b82; --on-danger:#1c0908; --ok:#34d399;
+  --font-ui:'IBM Plex Sans',system-ui,sans-serif; --font-display:'Russo One',system-ui,sans-serif; --font-mono:'JetBrains Mono',monospace;
+  --r-s:2px; --r-m:4px; --r-l:8px;
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:24px; --s-6:32px;
+  --t-fast:150ms; --t-slow:250ms; --ease:cubic-bezier(.2,0,0,1);
+  --shadow-1:0 2px 8px rgba(0,0,0,.45); --shadow-2:0 12px 32px rgba(76,29,149,.35);
+}
+```

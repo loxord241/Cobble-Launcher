@@ -9,7 +9,7 @@ import InstanceCard from "../components/InstanceCard";
 import CreateInstanceDialog from "../components/CreateInstanceDialog";
 
 export default function InstancesPage() {
-  const { list, status, launch, remove, duplicate, error, setError } = useInstances();
+  const { list, status, launch, stop, optimize, remove, duplicate, error, setError } = useInstances();
   const { settings } = useSettings();
   const [creating, setCreating] = useState(false);
 
@@ -39,6 +39,8 @@ export default function InstancesPage() {
             inst={inst}
             status={status[inst.id]}
             onLaunch={() => void launch(inst.id, "Player").catch((e) => setError(String(e)))}
+            onStop={() => void stop(inst.id).catch((e) => setError(String(e)))}
+            onOptimize={() => void optimize(inst.id).catch((e) => setError(String(e)))}
             onFolder={() => void api.instanceOpenDir(inst.id).catch((e) => setError(String(e)))}
             onDuplicate={() => void duplicate(inst.id).catch((e) => setError(String(e)))}
             onDelete={() => {

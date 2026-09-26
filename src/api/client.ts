@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ContentEntry,
+  RamGuide,
   CoreEvent,
   Instance,
   JavaInstall,
@@ -47,6 +48,12 @@ export const api = {
   contentUpdateAll: (instanceId: string) => invoke<number>("content_update_all", { instanceId }),
   mrpackInstall: (path: string, name?: string) =>
     invoke<Instance>("mrpack_install", { path, name }),
+
+  instanceOptimize: (instanceId: string) =>
+    invoke<string[]>("instance_optimize", { instanceId }),
+  instanceKill: (instanceId: string) => invoke<{ ok: boolean }>("instance_kill", { instanceId }),
+  processStatus: () => invoke<[string, number][]>("process_status"),
+  ramGuide: () => invoke<RamGuide>("ram_guide"),
 
   javaList: () => invoke<JavaInstall[]>("java_list"),
   javaInstall: (major: number) => invoke<JavaInstall>("java_install", { major }),

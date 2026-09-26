@@ -21,6 +21,8 @@ interface InstancesState {
   create: (mcVersion: string, name: string) => Promise<Instance>;
   remove: (id: string, wipe: boolean) => Promise<void>;
   duplicate: (id: string) => Promise<void>;
+  optimize: (id: string) => Promise<void>;
+  stop: (id: string) => Promise<void>;
   setError: (msg: string | null) => void;
 }
 
@@ -31,7 +33,16 @@ export const useInstances = create<InstancesState>((set, get) => ({
   error: null,
   load: async () => {
     const list = await api.instanceList();
-    set({ list, loaded: true });
+    // Процессы: рестарт лаунчера сбрасывает статусы — восстанавливаем по .lock.
+    const running = await api
+      .processStatus()
+      .then((pairs) => new Set(pairs.map(([id]) => id)))
+      .catch(() => new Set<string>());
+    const status: Record<string, LaunchStatus> = {};
+    for (const inst of list) {
+      if (running.has(inst.id)) status[inst.id] = { phase: "running" };
+    }
+    set({ list, loaded: true, status });
   },
   subscribeEvents: async () => {
     await onCoreEvent((event) => {
@@ -92,6 +103,13 @@ export const useInstances = create<InstancesState>((set, get) => ({
   duplicate: async (id) => {
     await api.instanceDuplicate(id);
     await get().load();
+  },
+  optimize: async (id: string) => {
+    await api.instanceOptimize(id);
+    await get().load();
+  },
+  stop: async (id: string) => {
+    await api.instanceKill(id);
   },
   setError: (msg) => set({ error: msg }),
 }));

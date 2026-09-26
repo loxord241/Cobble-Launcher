@@ -5,7 +5,7 @@ import { t } from "../../i18n";
 import InstanceCard from "../components/InstanceCard";
 
 export default function HomePage({ onCreate }: { onCreate: () => void }) {
-  const { list, status, launch, remove, duplicate, setError } = useInstances();
+  const { list, status, launch, stop, optimize, remove, duplicate, setError } = useInstances();
 
   return (
     <div>
@@ -28,6 +28,8 @@ export default function HomePage({ onCreate }: { onCreate: () => void }) {
               inst={inst}
               status={status[inst.id]}
               onLaunch={() => void launch(inst.id, "Player").catch((e) => setError(String(e)))}
+              onStop={() => void stop(inst.id).catch((e) => setError(String(e)))}
+              onOptimize={() => void optimize(inst.id).catch((e) => setError(String(e)))}
               onFolder={() => void api.instanceOpenDir(inst.id).catch((e) => setError(String(e)))}
               onDuplicate={() => void duplicate(inst.id).catch((e) => setError(String(e)))}
               onDelete={() => {

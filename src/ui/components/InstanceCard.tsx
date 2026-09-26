@@ -1,5 +1,5 @@
 // Карточка инстанса: иконка, версия, лоадер, статус, Play (спека §8).
-import { FolderOpen, Copy, Trash2, Play, Square } from "lucide-react";
+import { FolderOpen, Copy, Trash2, Play, Square, Sparkles } from "lucide-react";
 import { t } from "../../i18n";
 import type { Instance } from "../../api/types";
 import type { LaunchStatus } from "../../state/instances";
@@ -8,6 +8,8 @@ export default function InstanceCard({
   inst,
   status,
   onLaunch,
+  onStop,
+  onOptimize,
   onFolder,
   onDuplicate,
   onDelete,
@@ -15,6 +17,8 @@ export default function InstanceCard({
   inst: Instance;
   status?: LaunchStatus;
   onLaunch: () => void;
+  onStop: () => void;
+  onOptimize: () => void;
   onFolder: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
@@ -48,15 +52,26 @@ export default function InstanceCard({
         {statusText ?? ""}
       </div>
       <div className="mt-3 flex items-center gap-2">
-        <button
-          onClick={onLaunch}
-          disabled={busy}
-          aria-label={t("instances.launch")}
-          className="flex h-10 flex-1 items-center justify-center gap-2 rounded-md bg-accent font-semibold text-accent-contrast transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {busy ? <Square size={15} aria-hidden /> : <Play size={15} aria-hidden />}
-          {t("play")}
-        </button>
+        {busy ? (
+          <button
+            onClick={onStop}
+            aria-label={t("instances.stop")}
+            className="flex h-10 flex-1 items-center justify-center gap-2 rounded-md bg-error font-semibold text-white transition-colors hover:opacity-90"
+          >
+            <Square size={15} aria-hidden />
+            {t("instances.stop")}
+          </button>
+        ) : (
+          <button
+            onClick={onLaunch}
+            aria-label={t("instances.launch")}
+            className="flex h-10 flex-1 items-center justify-center gap-2 rounded-md bg-accent font-semibold text-accent-contrast transition-colors hover:bg-accent-hover"
+          >
+            <Play size={15} aria-hidden />
+            {t("play")}
+          </button>
+        )}
+        <IconButton icon={Sparkles} label={t("instances.optimize")} onClick={onOptimize} />
         <IconButton icon={FolderOpen} label={t("instances.folder")} onClick={onFolder} />
         <IconButton icon={Copy} label={t("instances.duplicate")} onClick={onDuplicate} />
         <IconButton icon={Trash2} label={t("instances.delete")} onClick={onDelete} danger />

@@ -137,3 +137,9 @@ export interface UpdateCheck {
   latestVersionNumber: string;
   changelog?: string;
 }
+
+export interface RamGuide {
+  totalMb: number;
+  recommendedMb: number;
+  warning?: string;
+}
