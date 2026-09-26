@@ -450,7 +450,7 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
     let mut log_file = std::fs::File::create(&log_path)?;
     let mut tail: VecDeque<String> = VecDeque::with_capacity(64);
     let start = Instant::now();
-    let mut found = false;
+    let mut found_at: Option<Instant> = None;
     let mut atlas_line: Option<String> = None;
 
     loop {
@@ -458,21 +458,25 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
             eprintln!("  таймаут ожидания главного меню");
             break;
         }
+        // После «Sound engine started» даём игре ещё 8 с: атласы логируются
+        // сразу после звука (спека требует оба доказательства).
+        if let Some(t) = found_at {
+            if t.elapsed() > Duration::from_secs(8) {
+                break;
+            }
+        }
         match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(line) => {
                 let _ = writeln!(log_file, "{line}");
-                if line.contains("Sound engine started") {
-                    found = true;
+                if found_at.is_none() && line.contains("Sound engine started") {
+                    found_at = Some(Instant::now());
                 }
-                if atlas_line.is_none() && line.contains("minecraft:textures/atlas") {
+                if atlas_line.is_none() && line.contains("textures/atlas") {
                     atlas_line = Some(line.clone());
                 }
                 tail.push_back(line);
                 if tail.len() > 64 {
                     tail.pop_front();
-                }
-                if found {
-                    break;
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -484,6 +488,7 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+    let found = found_at.is_some();
 
     // Завершаем дерево процессов игры (мы — супервизор приёмки).
     let pid = child.id();

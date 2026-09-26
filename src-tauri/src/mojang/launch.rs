@@ -77,6 +77,9 @@ impl LaunchValues {
         }
         if let Some(p) = &self.log_config_path {
             m.insert("log_config_path", p.to_string_lossy().into_owned());
+            // Шаблон logging.client.argument в JSON использует именно ${path}
+            // (спека §6.1.8: «-Dlog4j.configurationFile=... (подстановка path)»).
+            m.insert("path", p.to_string_lossy().into_owned());
         }
         m.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
     }
