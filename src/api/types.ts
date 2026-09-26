@@ -94,3 +94,46 @@ export interface GameLogLineEvent {
 }
 
 export type CoreEvent = DlProgressEvent | LaunchStateEvent | GameLogLineEvent;
+
+// ---------- Modrinth (M5; зеркалит snake_case Rust-структур) ----------
+
+export interface SearchHit {
+  project_id: string;
+  project_type: string;
+  slug: string;
+  author: string;
+  title: string;
+  description: string;
+  categories: string[];
+  versions: string[];
+  downloads: number;
+  icon_url?: string;
+  date_modified: string;
+}
+
+export interface SearchResult {
+  hits: SearchHit[];
+  total_hits: number;
+}
+
+export type ContentKind = "mod" | "resourcepack" | "shader";
+export type ContentSource = "modrinth" | "curseforge" | "local";
+
+export interface ContentEntry {
+  kind: ContentKind;
+  file: string;
+  source: ContentSource;
+  projectId?: string;
+  versionId?: string;
+  sha1?: string;
+  enabled: boolean;
+}
+
+export interface UpdateCheck {
+  file: string;
+  projectId: string;
+  currentVersionId: string;
+  latestVersionId: string;
+  latestVersionNumber: string;
+  changelog?: string;
+}

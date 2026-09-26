@@ -1,18 +1,20 @@
 // Shell: левая навигация + контент (спека §8). Компоненты — только презентация.
 import { useEffect, useState } from "react";
-import { House, FolderOpen, Settings as SettingsIcon, Play } from "lucide-react";
+import { House, FolderOpen, Settings as SettingsIcon, Play, Puzzle } from "lucide-react";
 import { t } from "../../i18n";
 import { useInstances } from "../../state/instances";
 import { useSettings } from "../../state/settings";
 import HomePage from "../pages/HomePage";
 import InstancesPage from "../pages/InstancesPage";
+import ModsPage from "../pages/ModsPage";
 import SettingsPage from "../pages/SettingsPage";
 
-type Page = "home" | "instances" | "settings";
+type Page = "home" | "instances" | "mods" | "settings";
 
 const NAV: { id: Page; icon: typeof House; label: string }[] = [
   { id: "home", icon: House, label: "nav.home" },
   { id: "instances", icon: FolderOpen, label: "nav.instances" },
+  { id: "mods", icon: Puzzle, label: "nav.mods" },
   { id: "settings", icon: SettingsIcon, label: "nav.settings" },
 ];
 
@@ -81,6 +83,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           {page === "home" && <HomePage onCreate={() => setPage("instances")} />}
           {page === "instances" && <InstancesPage />}
+          {page === "mods" && <ModsPage />}
           {page === "settings" && (
             <SettingsPage onOnboardingReset={onLogout} />
           )}

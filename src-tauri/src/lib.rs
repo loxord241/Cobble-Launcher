@@ -9,6 +9,7 @@ pub mod instances;
 pub mod java;
 pub mod loaders;
 pub mod mojang;
+pub mod modrinth;
 pub mod net;
 pub mod paths;
 pub mod settings;
@@ -76,6 +77,12 @@ pub fn run() -> tauri::Result<()> {
             commands::manifest_versions,
             commands::loader_versions,
             commands::loader_install,
+            commands::modrinth_search,
+            commands::content_install,
+            commands::content_installed,
+            commands::content_update_check,
+            commands::content_update_all,
+            commands::mrpack_install,
             commands::java_list,
             commands::java_install,
             commands::settings_get,

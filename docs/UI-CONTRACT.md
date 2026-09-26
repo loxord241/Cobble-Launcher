@@ -25,6 +25,12 @@
 | `loader_install` | `{id, loader, loaderVersion?}` | `Instance` | network, version_not_found, java_not_found, internal |
 | `java_list` | — | `JavaInstall[]` | — |
 | `java_install` | `{major}` | `JavaInstall` | network, hash_mismatch, java_not_found |
+| `modrinth_search` | `{query, mcVersion?, loader?, projectType?, limit?, offset?}` | `SearchResult` (snake_case) | network, http |
+| `content_install` | `{instanceId, projectId, versionId?}` | `ContentEntry[]` (обязательные зависимости ставятся рекурсивно) | network, version_not_found, hash_mismatch, invalid_input |
+| `content_installed` | `{instanceId}` | `ContentEntry[]` | — |
+| `content_update_check` | `{instanceId}` | `UpdateCheck[]` | network |
+| `content_update_all` | `{instanceId}` | `number` (обновлено; старый jar → `.trash/`) | network, hash_mismatch |
+| `mrpack_install` | `{path, name?}` | `Instance` (создаёт инстанс из dependencies) | network, version_not_found, zip, invalid_input |
 | `settings_get` | — | `Settings` | — |
 | `settings_set` | `{settings}` | `{ok}` | io |
 | `data_dir` | — | `string` | — |
@@ -49,6 +55,10 @@ Settings {
 VersionEntry { id, type: "release"|"snapshot"|"old_beta"|"old_alpha", releaseTime }
 LoaderVersionEntry { version, stable }
 JavaInstall { javaExe, major, archBits, origin }
+SearchHit { project_id, project_type, slug, author, title, description, categories[], versions[], downloads, icon_url?, date_modified } (Modrinth отдаёт snake_case)
+SearchResult { hits[], total_hits }
+ContentEntry { kind: "mod"|"resourcepack"|"shader", file, source: "modrinth"|"curseforge"|"local", projectId?, versionId?, sha1?, enabled }
+UpdateCheck { file, projectId, currentVersionId, latestVersionId, latestVersionNumber, changelog? }
 ```
 
 ## События (listen)

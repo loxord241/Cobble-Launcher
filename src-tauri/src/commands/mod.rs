@@ -150,6 +150,95 @@ pub async fn instance_launch(
     Ok(OkMsg { ok: true })
 }
 
+// ---------- контент (Modrinth, спека §6.6) ----------
+
+#[tauri::command]
+pub async fn modrinth_search(
+    state: State<'_, AppState>,
+    query: String,
+    mc_version: Option<String>,
+    loader: Option<String>,
+    project_type: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<crate::modrinth::api::SearchResult> {
+    crate::modrinth::api::search(
+        &state.http,
+        &query,
+        mc_version.as_deref(),
+        loader.as_deref(),
+        project_type.as_deref(),
+        limit.unwrap_or(20),
+        offset.unwrap_or(0),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn content_install(
+    state: State<'_, AppState>,
+    instance_id: String,
+    project_id: String,
+    version_id: Option<String>,
+) -> Result<Vec<crate::instances::ContentEntry>> {
+    let inst = instances::load(&state.paths, &instance_id)?;
+    let engine = state.engine();
+    crate::modrinth::install::install_project(
+        &state.paths,
+        state.http.clone(),
+        engine,
+        &inst,
+        &project_id,
+        version_id.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn content_installed(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<Vec<crate::instances::ContentEntry>> {
+    Ok(crate::instances::load_content_manifest(&state.paths, &instance_id))
+}
+
+#[tauri::command]
+pub async fn content_update_check(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<Vec<crate::modrinth::updates::UpdateCheck>> {
+    let inst = instances::load(&state.paths, &instance_id)?;
+    crate::modrinth::updates::check_updates(&state.paths, &state.http, &inst).await
+}
+
+#[tauri::command]
+pub async fn content_update_all(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<usize> {
+    let inst = instances::load(&state.paths, &instance_id)?;
+    let engine = state.engine();
+    crate::modrinth::updates::update_all(&state.paths, state.http.clone(), engine, &inst)
+        .await
+}
+
+/// Установка .mrpack в новый инстанс (путь выбирается диалогом/drag&drop).
+#[tauri::command]
+pub async fn mrpack_install(
+    state: State<'_, AppState>,
+    path: String,
+    name: Option<String>,
+) -> Result<Instance> {
+    crate::modrinth::mrpack::install_mrpack(
+        &state.paths,
+        &state.settings.read().await.clone(),
+        state.http.clone(),
+        std::path::Path::new(&path),
+        name.as_deref(),
+    )
+    .await
+}
+
 // ---------- версии и загрузчики ----------
 
 #[derive(Serialize)]

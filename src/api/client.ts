@@ -2,11 +2,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ContentEntry,
   CoreEvent,
   Instance,
   JavaInstall,
   LoaderVersionEntry,
+  SearchResult,
   Settings,
+  UpdateCheck,
   VersionEntry,
 } from "./types";
 
@@ -32,6 +35,18 @@ export const api = {
     invoke<LoaderVersionEntry[]>("loader_versions", { loader }),
   loaderInstall: (id: string, loader: string, loaderVersion?: string) =>
     invoke<Instance>("loader_install", { id, loader, loaderVersion }),
+
+  modrinthSearch: (query: string, mcVersion?: string, loader?: string, projectType?: string) =>
+    invoke<SearchResult>("modrinth_search", { query, mcVersion, loader, projectType }),
+  contentInstall: (instanceId: string, projectId: string, versionId?: string) =>
+    invoke<ContentEntry[]>("content_install", { instanceId, projectId, versionId }),
+  contentInstalled: (instanceId: string) =>
+    invoke<ContentEntry[]>("content_installed", { instanceId }),
+  contentUpdateCheck: (instanceId: string) =>
+    invoke<UpdateCheck[]>("content_update_check", { instanceId }),
+  contentUpdateAll: (instanceId: string) => invoke<number>("content_update_all", { instanceId }),
+  mrpackInstall: (path: string, name?: string) =>
+    invoke<Instance>("mrpack_install", { path, name }),
 
   javaList: () => invoke<JavaInstall[]>("java_list"),
   javaInstall: (major: number) => invoke<JavaInstall>("java_install", { major }),

@@ -109,3 +109,19 @@ Headless `--installClient` отказывается работать без «в
 `playwright-core` (скрипт `scripts/m4_acceptance.cjs`). В RELEASE-сборку не
 пропускать: порт отладки на localhost — риск (спека §11). M9 обязан удалить аргумент
 из конфига.
+
+
+## D15. Кейс JSON: Modrinth API — snake_case, mrpack — camelCase, settings — camelCase
+
+Modrinth REST API v2 отдаёт snake_case (`project_id`), а формат .mrpack
+(modrinth.index.json) — camelCase (`formatVersion`, `fileSize`); settings.json по
+спеке §7 — camelCase. Первая реализация предполагала camelCase в API — приёмка на
+реальных ответах это опровергла. Settings: Rust-поля snake_case +
+`rename_all = "camelCase"`; найденный на приёмке M4/M5 рассинхрон (UI-поля
+игнорировались) устранён.
+
+## D16. Установка модов в vanilla-инстанс: предпочитаем fabric
+
+Без фильтра по загрузчику Modrinth возвращает первую попавшуюся сборку (для
+Sodium это neoforge). Для vanilla-инстансов выбираем fabric-сборку (наиболее
+распространённая), fallback — любая совместимая.

@@ -208,3 +208,48 @@
   (65+10) — зелёные.
 
 **Открытые проблемы:** нет.
+
+
+---
+
+## M5. Modrinth + mrpack
+
+**Дата:** 2026-09-26
+
+**Сделано:**
+- `modrinth/api.rs`: API v2 (search с facets, project, versions); **реальный API
+  отдаёт snake_case** (не camelCase, как сначала предположили) — структуры и
+  фикстуры приведены к реальности. reqwest 0.13: `.query` — опциональная фича,
+  включена (`features = query`).
+- `modrinth/install.rs`: выбор совместимой версии (game_versions + loaders,
+  для vanilla-инстансов предпочитаем fabric-сборки), рекурсивные ОБЯЗАТЕЛЬНЫЕ
+  зависимости (глубина ≤10, visited), optional — не ставятся автоматически;
+  файлы → mods/resourcepacks/shaderpacks по типу проекта; `content-manifest.json`
+  атомарно мерджится (переустановка заменяет записи проекта).
+- `modrinth/mrpack.rs`: modrinth.index.json (formatVersion 1, validate с внятными
+  ошибками), env-фильтр client != unsupported, скачивание с sha1, paths через
+  safe_relative_path (санитизация чужих путей), overrides/ распаковываются
+  поверх каталога игры (zip-slip-защита), dependencies → создание инстанса
+  (fabric/quilt/neoforge; forge — честный отказ до M7).
+- `modrinth/updates.rs`: check_updates по манифесту (совместимые свежие версии +
+  ченджлоги), update_all — новый файл скачивается, старый → `.trash/`, манифест
+  обновляется.
+- Команды: modrinth_search, content_install, content_installed,
+  content_update_check, content_update_all, mrpack_install. UI: страница «Моды»
+  (поиск с учётом версии/загрузчика выбранного инстанса, установка в инстанс,
+  установка .mrpack, проверка/применение обновлений). UI-CONTRACT дополнен.
+- Настройки приведены к camelCase по спеке §7 (`rename_all` + совместимость);
+  найдено на приёмке: поля из UI раньше игнорировались из-за рассинхрона
+  snake/camel (D15).
+
+**Проверка:**
+- `cargo test` — **67 юнит + 10 интеграционных — зелёные** (парсеры реальных
+  форматов search/versions); clippy -D warnings чисто.
+- **CLI: реальный модпак Fabulously Optimized 15.0.0-alpha.3 (MC 26.3 + fabric,
+  sha1 сверён при скачивании) установлен в НОВЫЙ инстанс — 40 модов + 2
+  ресурспака в content-manifest — и запущен до главного меню**
+  («Sound engine started», EXIT=0, 18.5 с; ModernFix из модпака загрузился).
+- **UI: страница «Моды» — реальный поиск, установка Sodium в vanilla-инстанс
+  кликами через CDP** (скриншоты docs/m5-acceptance/); jar на диске.
+
+**Открытые проблемы:** нет.

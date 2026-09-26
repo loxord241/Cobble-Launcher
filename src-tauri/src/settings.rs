@@ -22,8 +22,10 @@ pub struct Resolution {
 
 /// Настройки лаунчера. Секреты (curseforge_api_key, azure_client_id) живут здесь,
 /// файл — вне git (спека §3).
+/// Формат файла — camelCase по спеке §7; старые snake_case-файлы читаются
+/// через aliases (совместимость с файлами до M5).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub schema_version: u32,
     pub theme: Theme,
@@ -118,7 +120,7 @@ mod tests {
         let p = dir.path().join("settings.json");
         std::fs::write(
             &p,
-            br#"{"schema_version": 0, "theme": "light"}"#,
+            br#"{"schemaVersion": 0, "theme": "light"}"#,
         )
         .unwrap();
         let s = Settings::load(&p).unwrap();

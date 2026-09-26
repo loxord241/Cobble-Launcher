@@ -84,6 +84,73 @@ pub fn instance_versions_dir(paths: &crate::paths::Paths, id: &str) -> PathBuf {
     instance_dir(paths, id).join("versions")
 }
 
+/// Тип установленного контента (спека §7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContentKind {
+    Mod,
+    ResourcePack,
+    Shader,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContentSource {
+    Modrinth,
+    CurseForge,
+    Local,
+}
+
+/// Запись content-manifest.json (спека §7) — база обновлений.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentEntry {
+    pub kind: ContentKind,
+    /// Путь относительно minecraft/ (например, `mods/sodium.jar`).
+    pub file: String,
+    pub source: ContentSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha1: Option<String>,
+    pub enabled: bool,
+}
+
+pub fn content_manifest_path(paths: &crate::paths::Paths, id: &str) -> PathBuf {
+    instance_dir(paths, id).join("content-manifest.json")
+}
+
+/// Загрузить манифест контента (нет файла → пустой).
+pub fn load_content_manifest(paths: &crate::paths::Paths, id: &str) -> Vec<ContentEntry> {
+    let path = content_manifest_path(paths, id);
+    let long = long_path(&path);
+    if !long.exists() {
+        return Vec::new();
+    }
+    match std::fs::read(&long)
+        .map_err(LauncherError::from)
+        .and_then(|d| serde_json::from_slice::<Vec<ContentEntry>>(&d).map_err(LauncherError::from))
+    {
+        Ok(list) => list,
+        Err(e) => {
+            tracing::warn!("битый content-manifest {id}: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// Атомарно сохранить манифест контента.
+pub fn save_content_manifest(
+    paths: &crate::paths::Paths,
+    id: &str,
+    entries: &[ContentEntry],
+) -> Result<()> {
+    let data = serde_json::to_vec_pretty(entries)?;
+    atomic_write(&content_manifest_path(paths, id), &data)
+}
+
 /// Каталог игры инстанса (всё записываемое — внутри, спека §6.12).
 pub fn minecraft_dir(instance_dir: &Path) -> PathBuf {
     instance_dir.join("minecraft")

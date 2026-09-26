@@ -113,6 +113,24 @@ enum Cmd {
         #[arg(long)]
         loader_version: Option<String>,
     },
+    /// Установить модпак .mrpack в новый инстанс (спека §6.6)
+    MrpackInstall {
+        /// Путь к .mrpack файлу
+        #[arg(long)]
+        file: String,
+        /// Имя инстанса (по умолчанию из модпака)
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Поиск по Modrinth (отладка API)
+    ModrinthSearch {
+        #[arg(long)]
+        query: String,
+        #[arg(long)]
+        mc: Option<String>,
+        #[arg(long)]
+        loader: Option<String>,
+    },
     /// Очистить кэш стора от объектов без ссылок
     StoreCleanup,
 }
@@ -175,6 +193,40 @@ async fn run(cli: Cli) -> Result<()> {
             loader,
             loader_version,
         } => cmd_loader_install(&paths, &settings, &id, &loader, loader_version.as_deref()).await,
+        Cmd::MrpackInstall { file, name } => {
+            let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+            let inst = mc_launcher_v2_lib::modrinth::mrpack::install_mrpack(
+                &paths,
+                &settings,
+                client,
+                std::path::Path::new(&file),
+                name.as_deref(),
+            )
+            .await?;
+            println!(
+                "Модпак установлен: {} [{}] id={}",
+                inst.name, inst.mc_version, inst.id
+            );
+            Ok(())
+        }
+        Cmd::ModrinthSearch { query, mc, loader } => {
+            let client = HttpClient::new(settings.proxy_url.as_deref())?;
+            let r = mc_launcher_v2_lib::modrinth::api::search(
+                &client,
+                &query,
+                mc.as_deref(),
+                loader.as_deref(),
+                Some("mod"),
+                10,
+                0,
+            )
+            .await?;
+            for h in &r.hits {
+                println!("{} | {} | {} скач. | {}", h.title, h.slug, h.downloads, h.project_id);
+            }
+            println!("всего: {}", r.total_hits);
+            Ok(())
+        }
         Cmd::StoreCleanup => {
             let n = mc_launcher_v2_lib::instances::store::cleanup_store(&paths)?;
             println!("Удалено объектов без ссылок: {n}");
