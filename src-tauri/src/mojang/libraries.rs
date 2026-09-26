@@ -22,8 +22,9 @@ pub struct PlannedArtifact {
 #[derive(Debug, Clone)]
 pub struct PlannedLib {
     pub name: String,
-    /// Артефакт jar (для classpath).
-    pub artifact: PlannedArtifact,
+    /// Основной jar для classpath. `None` — у библиотеки есть только нативы
+    /// (реальный случай: jinput-platform в 1.12.2 — Mojang не выкладывает jar).
+    pub artifact: Option<PlannedArtifact>,
     /// Классификатор нативов для текущей ОС (если есть у библиотеки).
     pub native: Option<PlannedArtifact>,
 }
@@ -67,30 +68,35 @@ pub fn plan_libraries(
                 continue;
             }
         }
-        // Основной артефакт
+        // Основной артефакт. Некоторые старые библиотеки не имеют jar вовсе —
+        // только классификаторы нативов (jinput-platform в 1.12.2).
+        let has_native_for_os = lib
+            .natives
+            .as_ref()
+            .is_some_and(|n| n.contains_key(os.name.as_str()));
         let artifact = match lib.downloads.as_ref().and_then(|d| d.artifact.clone()) {
-            Some(a) => PlannedArtifact {
+            Some(a) => Some(PlannedArtifact {
                 url: a.url,
                 rel_path: a.path.unwrap_or_else(|| {
                     maven_path(&lib.name).unwrap_or_else(|_| lib.name.replace(':', "-"))
                 }),
                 sha1: a.sha1,
                 size: a.size,
-            },
+            }),
+            None if has_native_for_os => None,
             None => {
                 // Старый формат: только `name` + опциональный maven-base `url`.
                 let rel = maven_path(&lib.name)?;
                 let base = lib.url.clone().unwrap_or_else(|| "https://libraries.minecraft.net/".into());
                 let base = if base.ends_with('/') { base } else { format!("{base}/") };
-                PlannedArtifact {
+                Some(PlannedArtifact {
                     url: format!("{base}{rel}"),
                     rel_path: rel,
-                    // У старых библиотек хэша в JSON нет: сверка невозможна, но
-                    // источник — официальный maven Mojang по HTTPS (спека §3
-                    // требует хэш из авторитетного источника; здесь он — сам URL).
+                    // У старых библиотек хэша в JSON нет: источник — официальный
+                    // maven Mojang по HTTPS (спека §3).
                     sha1: None,
                     size: None,
-                }
+                })
             }
         };
         // Нативы: карта natives по имени ОС; `${arch}` → битность.
@@ -165,7 +171,9 @@ pub fn build_classpath(libs: &[PlannedLib], lib_store: &Path, client_jar: &Path)
     let mut items: Vec<String> = Vec::with_capacity(libs.len() + 1);
     items.push(client_jar.to_string_lossy().into_owned());
     for l in libs {
-        items.push(lib_store.join(&l.artifact.rel_path).to_string_lossy().into_owned());
+        if let Some(a) = &l.artifact {
+            items.push(lib_store.join(&a.rel_path).to_string_lossy().into_owned());
+        }
     }
     items.join(sep)
 }
@@ -191,12 +199,12 @@ mod tests {
     fn classpath_uses_semicolon_on_windows() {
         let libs = vec![PlannedLib {
             name: "a:b:v".into(),
-            artifact: PlannedArtifact {
+            artifact: Some(PlannedArtifact {
                 url: "http://x/a.jar".into(),
                 rel_path: "a/b/v/b-v.jar".into(),
                 sha1: None,
                 size: None,
-            },
+            }),
             native: None,
         }];
         let cp = build_classpath(&libs, Path::new("/store/lib"), Path::new("/store/client.jar"));

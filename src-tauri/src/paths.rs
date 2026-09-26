@@ -51,13 +51,29 @@ impl Paths {
         self.store_dir().join("libraries")
     }
 
+    /// Каталог ассетов по стандартному layout лаунчеров (его получает игра).
+    pub fn assets_dir(&self) -> PathBuf {
+        self.root.join("assets")
+    }
+
+    /// Объекты ассетов по хэшу: `assets/objects/<h[:2]>/<h>` (спека §6.12).
+    pub fn assets_objects(&self) -> PathBuf {
+        self.assets_dir().join("objects")
+    }
+
+    /// Индексы ассетов: `assets/indexes/<id>.json`.
+    pub fn assets_indexes(&self) -> PathBuf {
+        self.assets_dir().join("indexes")
+    }
+
+    /// Совместимость со старым кодом/тестами: каталог объектов ассетов.
     pub fn assets_store(&self) -> PathBuf {
-        self.store_dir().join("assets")
+        self.assets_objects()
     }
 
     /// Виртуальные (legacy) ассеты: `assets/virtual/<id>/`.
     pub fn assets_virtual(&self, assets_id: &str) -> PathBuf {
-        self.root.join("assets").join("virtual").join(assets_id)
+        self.assets_dir().join("virtual").join(assets_id)
     }
 
     /// Распакованные нативы версии: `bin/<versionId>/` относительно root.
@@ -109,9 +125,12 @@ impl Paths {
             self.store_dir(),
             self.clients_store(),
             self.libraries_store(),
-            self.assets_store(),
+            self.assets_dir(),
+            self.assets_objects(),
+            self.assets_indexes(),
             self.runtime_dir(),
             self.logs_dir(),
+            self.instances_dir(),
         ] {
             std::fs::create_dir_all(crate::util::fs::long_path(&d))?;
         }

@@ -134,11 +134,16 @@ pub fn build_command(
             rv.id
         )));
     } else {
-        // Старый формат (до 1.6): minecraftArguments (спека §6.1.7).
+        // Старый формат (до 1.6): minecraftArguments (спека §6.1.7). Класспас и
+        // java.library.path лаунчер добавляет сам — в JSON их нет.
         let mc_args = rv.minecraft_arguments.clone().ok_or_else(|| {
             LauncherError::InvalidInput(format!("у версии {} нет ни arguments, ни minecraftArguments", rv.id))
         })?;
-        jvm_args = vec!["-Djava.library.path=${natives_directory}".into()];
+        jvm_args = vec![
+            "-Djava.library.path=${natives_directory}".into(),
+            "-cp".into(),
+            "${classpath}".into(),
+        ];
         game_args = mc_args.split_whitespace().map(str::to_string).collect();
     }
 
@@ -240,6 +245,8 @@ mod tests {
         assert!(joined.contains("--username Steve"));
         assert!(joined.contains("--accessToken token0"));
         assert!(joined.contains("-Djava.library.path="));
+        // Legacy: classpath добавляется лаунчером вручную
+        assert!(joined.contains("-cp /a.jar;/b.jar"));
         assert!(joined.contains("-Xmx2048M"));
         // Без resolution --width не появляется
         assert!(!joined.contains("--width"));

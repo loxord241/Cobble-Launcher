@@ -83,3 +83,52 @@
 - Java-детект: JDK 25.0.2 (Temurin) найден и использован обеими версиями.
 
 **Открытые проблемы:** нет. 1.12.2/1.7.10 (legacy-эпоха, Java 8) — после Adoptium в M2.
+
+---
+
+## M2. Инстансы + стор + Java
+
+**Дата:** 2026-09-26
+
+**Сделано:**
+- `instances/` (спека §6.12, §7): CRUD `instance.json` (атомарно, schemaVersion),
+  санитизация имён, `.lock` с детектом протухших PID, дублирование (shared — hardlink,
+  unique — копия), удаление: wipe / в корзину ОС, статистика запусков.
+- `instances/store.rs`: hardlink-стор (link_or_copy с фолбэком на копию), подсчёт
+  ссылок через kernel32-FFI (`windows_by_handle` в std нестабилен), «очистить кэш»
+  (объекты без ссылок), mixed-копирование дерева при дублировании.
+- `instances/run.rs` — оркестратор запуска: версия → загрузки в стор → hardlink в
+  инстанс (versions/libraries) → нативы в `bin/<id>` → virtual/legacy → команда →
+  спавн с супервизией; события launch_state; Java: путь инстанса → системная → Adoptium.
+- `java/adoptium.rs`: metadata `assets/latest/{major}/hotspot` (реальная форма —
+  массив записей с singular `binary`), скачивание zip с SHA256-проверкой по checksum
+  из metadata, распаковка + перенос внутреннего каталога в `runtime/jdk{major}`,
+  переиспользование между инстансами.
+- Paths: ассеты переведены на стандартный layout `assets/{indexes,objects,virtual}`.
+- CLI: `instance-create/list/duplicate/delete/launch`, `java-install`, `store-cleanup`.
+
+**Найдено и починено на приёмке:**
+- `jinput-platform-2.0.5` в 1.12.2 не имеет основного jar на maven Mojang (только
+  классификаторы нативов) — planner теперь помечает такие библиотеки artifact=None.
+- Legacy-формат: `-cp` в minecraftArguments отсутствует — лаунчер добавляет сам
+  (проявилось как «Could not find or load main class»).
+- Очередь загрузок: движок scope-ится на план запуска (Failed-задачи прошлых планов
+  больше не блокируют новые запуски; восстановление прерванной очереди — M4+).
+- Корзина: крейт `trash` падает («operations aborted»), PowerShell-вариант тоже —
+  на деревьях из тысяч hardlinks. Итог: store-поддеревья удаляются напрямую
+  (данные в сторе), в корзину идёт уникальное (saves/mods/config).
+
+**Проверка:**
+- `cargo test` — **63 юнит + 10 интеграционных — зелёные**; clippy -D warnings — чисто.
+- **Два инстанса 1.20.1: оба дошли до «Sound engine started»** (11.6 с и 11.8 с, EXIT=0).
+- **Объём: один инстанс — 84 МБ (apparent size), оба вместе — 87 МБ < 1.5×** —
+  hardlink-стор подтверждён (`du` считает hardlink один раз).
+- **Java скачивается при отсутствии: JRE 17 (43.8 МБ) и JRE 8 установлены с Adoptium
+  в `runtime/jdk{17,8}`, SHA256 сверен с metadata**; launch 1.20.1 выбрал точную 17.
+- **Инстанс 1.12.2 (legacy: minecraftArguments, Java 8, нативы LWJGL2) —
+  «Sound engine started» за 7.1 с, EXIT=0**; нативы распакованы в `bin/1.12.2`
+  (OpenAL64.dll, lwjgl.dll и др.).
+- Дубликат и удаления (wipe + корзина) проверены CLI-командами; store-cleanup удалил
+  8848 объектов без ссылок.
+
+**Открытые проблемы:** нет.

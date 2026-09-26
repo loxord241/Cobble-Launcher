@@ -27,15 +27,17 @@ pub struct AssetIndexJson {
     pub map_to_resources: Option<bool>,
 }
 
-/// Скачать asset index с проверкой sha1; кэш по id (спека §6.2).
+/// Скачать asset index с проверкой sha1; кэш — `assets/indexes/<id>.json`
+/// (стандартный layout, игра сама его читает).
 pub async fn fetch_asset_index(
     client: &HttpClient,
     url: &str,
     expected_sha1: &str,
-    cache_dir: &Path,
+    index_id: &str,
+    indexes_dir: &Path,
 ) -> Result<AssetIndexJson> {
-    std::fs::create_dir_all(crate::util::fs::long_path(cache_dir))?;
-    let cache_file = cache_dir.join(format!("asset_index_{expected_sha1}.json"));
+    std::fs::create_dir_all(crate::util::fs::long_path(indexes_dir))?;
+    let cache_file = indexes_dir.join(format!("{index_id}.json"));
     let cache_long = crate::util::fs::long_path(&cache_file);
     if cache_long.exists() {
         let data = std::fs::read(&cache_long)?;

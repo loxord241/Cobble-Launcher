@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod errors;
 pub mod events;
+pub mod instances;
 pub mod java;
 pub mod mojang;
 pub mod net;

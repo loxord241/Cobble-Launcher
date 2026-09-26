@@ -19,7 +19,6 @@ use mc_launcher_v2_lib::net::download::{DownloadEngine, DownloadTask};
 use mc_launcher_v2_lib::net::http::HttpClient;
 use mc_launcher_v2_lib::paths::Paths;
 use mc_launcher_v2_lib::settings::Settings;
-use mc_launcher_v2_lib::util::fs::atomic_write;
 use mc_launcher_v2_lib::util::win::hide_console;
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, Write};
@@ -60,6 +59,46 @@ enum Cmd {
     },
     /// Показать найденные Java
     JavaScan,
+    /// Скачать JRE с Adoptium (спека §6.5)
+    JavaInstall {
+        #[arg(long)]
+        major: u32,
+    },
+    /// Создать инстанс (M2)
+    InstanceCreate {
+        #[arg(long)]
+        mc: String,
+        #[arg(long, default_value = "Инстанс")]
+        name: String,
+        /// Куча в МБ
+        #[arg(long, default_value_t = 2048)]
+        ram: u32,
+    },
+    /// Список инстансов
+    InstanceList,
+    /// Дублировать инстанс (shared — hardlink, unique — копия)
+    InstanceDuplicate { #[arg(long)] id: String },
+    /// Удалить инстанс (в корзину ОС; --wipe — насовсем)
+    InstanceDelete {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        wipe: bool,
+    },
+    /// Запустить инстанс (M2 приёмка)
+    InstanceLaunch {
+        #[arg(long)]
+        id: String,
+        #[arg(long, default_value = "Player")]
+        player: String,
+        #[arg(long, default_value_t = 300)]
+        menu_timeout: u64,
+        /// Не ждать главного меню: спавн и выход (игра продолжает жить)
+        #[arg(long)]
+        no_wait: bool,
+    },
+    /// Очистить кэш стора от объектов без ссылок
+    StoreCleanup,
 }
 
 fn main() -> std::process::ExitCode {
@@ -96,6 +135,7 @@ async fn run(cli: Cli) -> Result<()> {
 
     match cmd {
         Cmd::JavaScan => cmd_java_scan(&paths, &settings).await,
+        Cmd::JavaInstall { major } => cmd_java_install(&paths, &settings, major).await,
         Cmd::Launch {
             mc,
             player,
@@ -103,6 +143,21 @@ async fn run(cli: Cli) -> Result<()> {
             no_run,
             menu_timeout,
         } => cmd_launch(&paths, &settings, &mc, &player, xmx_mb, no_run, menu_timeout).await,
+        Cmd::InstanceCreate { mc, name, ram } => cmd_instance_create(&paths, &settings, &mc, &name, ram).await,
+        Cmd::InstanceList => cmd_instance_list(&paths),
+        Cmd::InstanceDuplicate { id } => cmd_instance_duplicate(&paths, &id),
+        Cmd::InstanceDelete { id, wipe } => cmd_instance_delete(&paths, &id, wipe),
+        Cmd::InstanceLaunch {
+            id,
+            player,
+            menu_timeout,
+            no_wait,
+        } => cmd_instance_launch(&paths, &settings, &id, &player, menu_timeout, no_wait).await,
+        Cmd::StoreCleanup => {
+            let n = mc_launcher_v2_lib::instances::store::cleanup_store(&paths)?;
+            println!("Удалено объектов без ссылок: {n}");
+            Ok(())
+        }
     }
 }
 
@@ -174,7 +229,7 @@ async fn cmd_launch(
     let manifest = fetch_manifest(&client, &paths.manifests_cache()).await?;
     let entry = resolve_entry(&manifest, mc)?;
     println!("Версия: {} ({})", entry.id, entry.version_type);
-    let vjson = fetch_version_json_cached(&client, entry, &paths.manifests_cache()).await?;
+    let vjson = mc_launcher_v2_lib::mojang::manifest::fetch_version_json_cached(&client, entry, &paths.manifests_cache()).await?;
 
     // 2. inheritsFrom-резолвинг (для vanilla — тривиальный).
     let rv = VersionJson::resolve_chain(&paths.manifests_cache(), &vjson)?;
@@ -185,7 +240,7 @@ async fn cmd_launch(
         .java_version
         .as_ref()
         .map(|j| j.major_version)
-        .unwrap_or_else(|| fallback_major(&rv.id));
+        .unwrap_or_else(|| mc_launcher_v2_lib::instances::run::fallback_major(&rv.id));
     let java = pick_java(need_major, &installs).ok_or_else(|| {
         LauncherError::JavaNotFound(format!(
             "нужна Java {need_major} (для {}), найдено: {}",
@@ -212,15 +267,17 @@ async fn cmd_launch(
     let mut tasks: Vec<DownloadTask> = vec![plan_client_task(&rv, &paths.clients_store(), &group)?];
     let libs = plan_libraries(&rv, &os_ctx, &BTreeMap::new())?;
     for l in &libs {
-        tasks.push(DownloadTask {
-            id: format!("lib:{}", l.artifact.rel_path),
-            url: l.artifact.url.clone(),
-            dest: paths.libraries_store().join(&l.artifact.rel_path),
-            sha1: l.artifact.sha1.clone(),
-            size: l.artifact.size,
-            group: group.clone(),
-            priority: 10,
-        });
+        if let Some(a) = &l.artifact {
+            tasks.push(DownloadTask {
+                id: format!("lib:{}", a.rel_path),
+                url: a.url.clone(),
+                dest: paths.libraries_store().join(&a.rel_path),
+                sha1: a.sha1.clone(),
+                size: a.size,
+                group: group.clone(),
+                priority: 10,
+            });
+        }
         if let Some(n) = &l.native {
             tasks.push(DownloadTask {
                 id: format!("native:{}", n.rel_path),
@@ -240,7 +297,8 @@ async fn cmd_launch(
         &client,
         &asset_index_ref.url,
         &asset_index_ref.sha1,
-        &paths.cache_dir(),
+        &asset_index_ref.id,
+        &paths.assets_indexes(),
     )
     .await?;
     let asset_tasks = plan_asset_tasks(&index, &paths.assets_store(), &group);
@@ -264,11 +322,9 @@ async fn cmd_launch(
         }
     }
 
-    // 5. Загрузка: очередь персистентна, файлы уже на диске с валидным хэшем —
-    // пропускаются мгновенно (resume после рестарта, спека §4.4).
-    engine.load_queue(&paths.queue_file())?;
-    let added = engine.add_tasks(tasks);
-    let _ = added; // дедуп может съесть часть задач (уже скачанные)
+    // 5. Загрузка: движок — на план этого запуска; валидные файлы на диске
+    // пропускаются мгновенно (resume, спека §4.4).
+    engine.add_tasks(tasks);
     engine.run().await?;
     engine.persist_queue(&paths.queue_file())?;
     progress_task.abort();
@@ -306,10 +362,10 @@ async fn cmd_launch(
     println!("Нативы распакованы: {natives_count} файлов → {}", natives_dir.display());
 
     // 7. Ассеты virtual/legacy (спека §6.4).
-    let assets_root = paths.root().join("assets");
+    let assets_root = paths.assets_dir();
     let game_assets = if needs_virtual(&rv.assets, &index) {
         let vd = paths.assets_virtual(&rv.assets);
-        let n = materialize_virtual(&index, &paths.assets_store(), &vd)?;
+        let n = materialize_virtual(&index, &paths.assets_objects(), &vd)?;
         println!("Virtual-ассеты: {n} → {}", vd.display());
         Some(vd)
     } else {
@@ -371,45 +427,188 @@ fn crate_long(p: &Path) -> PathBuf {
     mc_launcher_v2_lib::util::fs::long_path(p)
 }
 
-/// Fallback Java-минимумов по версии MC (спека §6.4), если в JSON нет javaVersion.
-fn fallback_major(mc_version: &str) -> u32 {
-    let parse_parts = |v: &str| -> Vec<u32> {
-        v.split('.')
-            .map(|p| p.split(|c: char| !c.is_ascii_digit()).next().unwrap_or("0"))
-            .map(|p| p.parse::<u32>().unwrap_or(0))
-            .collect()
-    };
-    let parts = parse_parts(mc_version);
-    let (major, minor) = (parts.first().copied().unwrap_or(0), parts.get(1).copied().unwrap_or(0));
-    if major > 1 {
-        return 21; // новые версионные схемы (25.x/26.x)
+async fn cmd_java_install(paths: &Paths, settings: &Settings, major: u32) -> Result<()> {
+    let client = HttpClient::new(settings.proxy_url.as_deref())?;
+    println!("Скачиваю JRE {major} с Adoptium…");
+    let java = mc_launcher_v2_lib::java::adoptium::install_jre(&client, &paths.runtime_dir(), major, |done, total| {
+        if total > 0 {
+            eprint!("\r  {done}/{total} байт   ");
+        }
+    })
+    .await?;
+    let _ = std::io::stderr().write_all(b"\n");
+    let inst = mc_launcher_v2_lib::java::detect::inspect(&java, "adoptium").await?;
+    println!("Готово: {} (Java {} {}-бит)", java.display(), inst.major, inst.arch_bits);
+    Ok(())
+}
+
+fn find_instance(paths: &Paths, id_or_name: &str) -> Result<mc_launcher_v2_lib::instances::Instance> {
+    let all = mc_launcher_v2_lib::instances::list(paths);
+    all.iter()
+        .find(|i| i.id == id_or_name)
+        .cloned()
+        .or_else(|| {
+            // по имени без учёта регистра или по префиксу id
+            all.iter()
+                .find(|i| {
+                    i.name.eq_ignore_ascii_case(id_or_name)
+                        || i.id.starts_with(id_or_name)
+                })
+                .cloned()
+        })
+        .ok_or_else(|| LauncherError::NotFound(format!("инстанс {id_or_name}")))
+}
+
+async fn cmd_instance_create(
+    paths: &Paths,
+    settings: &Settings,
+    mc: &str,
+    name: &str,
+    ram: u32,
+) -> Result<()> {
+    let client = HttpClient::new(settings.proxy_url.as_deref())?;
+    // Проверяем, что версия существует в манифесте (сеть нужна один раз).
+    let manifest = mc_launcher_v2_lib::mojang::manifest::fetch_manifest(&client, &paths.manifests_cache()).await?;
+    mc_launcher_v2_lib::mojang::manifest::resolve_entry(&manifest, mc)?;
+    let mut inst = mc_launcher_v2_lib::instances::Instance::new(name, mc);
+    inst.ram_mb = ram;
+    mc_launcher_v2_lib::instances::save(paths, &inst)?;
+    println!("Инстанс создан: {} ({}) id={}", inst.name, inst.mc_version, inst.id);
+    Ok(())
+}
+
+fn cmd_instance_list(paths: &Paths) -> Result<()> {
+    let all = mc_launcher_v2_lib::instances::list(paths);
+    if all.is_empty() {
+        println!("Инстансов нет.");
+        return Ok(());
     }
-    match (major, minor) {
-        (1, m) if m >= 20 => 21, // 1.20.5+ по спеке; для 1.20.1–1.20.4 Java 21 совместима
-        (1, m) if (17..=19).contains(&m) => 17,
-        _ => 8,
+    for i in &all {
+        println!(
+            "{}  [{}] mc={} loader={:?} ram={}МБ запусков={}",
+            i.name,
+            i.id,
+            i.mc_version,
+            i.loader.as_deref().unwrap_or("vanilla"),
+            i.ram_mb,
+            i.launch_count
+        );
+    }
+    Ok(())
+}
+
+fn cmd_instance_duplicate(paths: &Paths, id: &str) -> Result<()> {
+    let found = find_instance(paths, id)?;
+    let copy = mc_launcher_v2_lib::instances::duplicate(paths, &found.id)?;
+    println!("Дубликат: {} id={}", copy.name, copy.id);
+    Ok(())
+}
+
+fn cmd_instance_delete(paths: &Paths, id: &str, wipe: bool) -> Result<()> {
+    let found = find_instance(paths, id)?;
+    mc_launcher_v2_lib::instances::delete(paths, &found.id, wipe)?;
+    println!(
+        "Инстанс {} удалён {}",
+        found.name,
+        if wipe { "насовсем" } else { "в корзину ОС" }
+    );
+    Ok(())
+}
+
+async fn cmd_instance_launch(
+    paths: &Paths,
+    settings: &Settings,
+    id: &str,
+    player: &str,
+    menu_timeout: u64,
+    no_wait: bool,
+) -> Result<()> {
+    let t0 = Instant::now();
+    let inst = find_instance(paths, id)?;
+    let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+    let bus = EventBus::default();
+    let engine = DownloadEngine::new(
+        client.clone(),
+        settings.download_parallelism as usize,
+        bus.clone(),
+    );
+
+    let mut progress_rx = bus.subscribe();
+    let progress_task = tokio::spawn(async move {
+        loop {
+            match progress_rx.recv().await {
+                Ok(LauncherEvent::DlProgress(p)) => {
+                    let mb_s = p.bytes_per_sec / 1_048_576.0;
+                    let line = format!(
+                        "\r  загрузка: {}/{} файлов, {:.1} МБ/с   ",
+                        p.done_files, p.total_files, mb_s
+                    );
+                    let _ = std::io::stderr().write_all(line.as_bytes());
+                    let _ = std::io::stderr().flush();
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    });
+
+    let prepared = mc_launcher_v2_lib::instances::run::prepare(
+        paths,
+        settings,
+        client,
+        engine,
+        &bus,
+        &inst,
+        mc_launcher_v2_lib::instances::run::offline_identity(player),
+    )
+    .await?;
+    progress_task.abort();
+    let _ = std::io::stderr().write_all(b"\n");
+    println!(
+        "Подготовка {:.1} с; Java {} ({}); версия {}",
+        t0.elapsed().as_secs_f64(),
+        prepared.java.major,
+        prepared.java.arch_bits,
+        prepared.version_id
+    );
+
+    if no_wait {
+        // Спавн без супервизии: закрытие mcl игру не убивает (спека §6.10).
+        let mut command = std::process::Command::new(&prepared.command.program);
+        command
+            .args(&prepared.command.args)
+            .current_dir(crate_long(&prepared.game_dir));
+        let child = command.spawn()?;
+        println!(
+            "Игра запущена в отрыве (PID {}). Закрытие mcl её не убьёт.",
+            child.id()
+        );
+        return Ok(());
+    }
+
+    let found = mc_launcher_v2_lib::instances::run::launch_blocking(
+        paths,
+        &inst,
+        prepared,
+        &bus,
+        menu_timeout,
+        true,
+    )?;
+    if found {
+        println!(
+            "ДОКАЗАТЕЛЬСТВО M2: игра из инстанса дошла до 'Sound engine started'; общее время {:.1} с",
+            t0.elapsed().as_secs_f64()
+        );
+        Ok(())
+    } else {
+        Err(LauncherError::Internal(format!(
+            "игра не дошла до главного меню за {menu_timeout} с"
+        )))
     }
 }
 
-/// Version JSON: из кэша по sha1, иначе скачать с проверкой sha1 (спека §6.2).
-async fn fetch_version_json_cached(
-    client: &HttpClient,
-    entry: &mc_launcher_v2_lib::mojang::manifest::ManifestVersion,
-    cache_dir: &Path,
-) -> Result<VersionJson> {
-    let path = cache_dir.join(format!("{}.json", entry.id));
-    let long = crate_long(&path);
-    if long.exists() {
-        let data = std::fs::read(&long)?;
-        if mc_launcher_v2_lib::util::fs::sha1_bytes(&data) == entry.sha1 {
-            return Ok(serde_json::from_slice(&data)?);
-        }
-        let _ = std::fs::remove_file(&long);
-    }
-    let v = VersionJson::fetch(client, &entry.url, &entry.sha1).await?;
-    atomic_write(&path, &serde_json::to_vec_pretty(&v)?)?;
-    Ok(v)
-}
+
 
 /// Спавн игры: stdout/stderr → лог-файл, ожидание маркера главного меню.
 /// Игра запускается С окном (без CREATE_NO_WINDOW — это не вспомогательный процесс).

@@ -1,8 +1,9 @@
 //! version_manifest_v2: fetch, кэш с TTL 1 час, фильтры по типу (спека §6.1, §7).
 
 use crate::errors::{LauncherError, Result};
+use crate::mojang::version::VersionJson;
 use crate::net::http::HttpClient;
-use crate::util::fs::atomic_write;
+use crate::util::fs::{atomic_write, long_path};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -121,6 +122,27 @@ pub fn filter_versions(
             _ => false,
         })
         .collect()
+}
+
+/// Version JSON: из кэша по sha1, иначе скачать с обязательной проверкой sha1
+/// (спека §6.2). Кэш: `<cache_dir>/<id>.json`.
+pub async fn fetch_version_json_cached(
+    client: &HttpClient,
+    entry: &ManifestVersion,
+    cache_dir: &Path,
+) -> Result<VersionJson> {
+    let path = cache_dir.join(format!("{}.json", entry.id));
+    let long = long_path(&path);
+    if long.exists() {
+        let data = std::fs::read(&long)?;
+        if crate::util::fs::sha1_bytes(&data) == entry.sha1 {
+            return Ok(serde_json::from_slice(&data)?);
+        }
+        let _ = std::fs::remove_file(&long);
+    }
+    let v = VersionJson::fetch(client, &entry.url, &entry.sha1).await?;
+    atomic_write(&path, &serde_json::to_vec_pretty(&v)?)?;
+    Ok(v)
 }
 
 #[cfg(test)]
