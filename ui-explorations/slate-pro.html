@@ -15,7 +15,7 @@
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Press+Start+2P&display=swap" rel="stylesheet">
 <style>
 /* ── база: Сланец · Тёмная (токены из MASTER.md) ────────────────── */
 :root{
@@ -37,6 +37,20 @@
   --pz-hvoya-bg:#16211c; --pz-hvoya-line:#244033; --pz-hvoya-accent:#4fc487;
   --pz-karmin-bg:#2a1618; --pz-karmin-line:#4a2426; --pz-karmin-accent:#ff7a6e;
   --pz-yantar-bg:#2a2118; --pz-yantar-line:#463622; --pz-yantar-accent:#f0a52c;
+  --pv-mc-bg:#232327; --pv-mc-line:#4a4a50; --pv-mc-accent:#7cbd4b;
+}
+/* ── тема: Глубинный сланец (мир Minecraft) ─────────────────────── */
+:root[data-theme="mc"]{
+  --bg:#151519; --surface:#202024; --surface-2:#2a2a30;
+  --text:#e8e6e0; --text-muted:#a29f96;
+  --border:#3a3a40; --border-strong:#52525a;
+  --accent:#7cbd4b; --on-accent:#12230b; --accent-soft:rgba(124,189,75,.14);
+  --danger:#e0705f; --on-danger:#2a0f0a; --ok:#7cbd4b;
+  --font-display:'Press Start 2P',monospace;
+  --r-s:0px; --r-m:0px; --r-l:0px;
+  --t-fast:80ms; --t-slow:120ms; --ease:steps(2,end);
+  --shadow-1:none; --shadow-2:none;
+  --mc-hi:#565660; --mc-lo:#0b0b0d; --mc-dirt:#6b4a2e; --mc-dirt-lo:#4a3320;
 }
 :root[data-theme="light"]{
   --bg:#f4f5f7; --surface:#ffffff; --surface-2:#e9edf2;
@@ -369,6 +383,57 @@ input[type=range].ram{width:100%; accent-color:var(--accent); height:40px}
 .error .d{font-size:13px; color:var(--text-muted)}
 .error .code{font-family:var(--font-mono); font-size:12px; color:var(--text-muted); background:var(--bg); border:1px solid var(--border); border-radius:var(--r-s); padding:0 var(--s-2); line-height:22px; display:inline-block}
 .error .btn-ghost{height:40px; align-self:flex-start}
+
+/* ── Глубинный сланец: компоненты ───────────────────────────────── */
+[data-theme="mc"] body{
+  background-image:repeating-conic-gradient(color-mix(in srgb, var(--surface) 22%, transparent) 0 25%, transparent 0 50%);
+  background-size:8px 8px;
+}
+[data-theme="mc"] .row,
+[data-theme="mc"] .mod,
+[data-theme="mc"] .pack,
+[data-theme="mc"] .modcard,
+[data-theme="mc"] .mpcard,
+[data-theme="mc"] .stat,
+[data-theme="mc"] .panel,
+[data-theme="mc"] .dl-row,
+[data-theme="mc"] .profile-card,
+[data-theme="mc"] .tcard,
+[data-theme="mc"] .logbox,
+[data-theme="mc"] .hero,
+[data-theme="mc"] .search{
+  border-radius:0; border-width:2px;
+  box-shadow:inset 2px 2px 0 var(--mc-hi), inset -2px -2px 0 var(--mc-lo);
+}
+[data-theme="mc"] .btn,
+[data-theme="mc"] .play,
+[data-theme="mc"] .install,
+[data-theme="mc"] .pack .install,
+[data-theme="mc"] .modcard .install{
+  border-radius:0; border:2px solid var(--border-strong);
+}
+[data-theme="mc"] .btn-primary{
+  box-shadow:inset 2px 2px 0 color-mix(in srgb, var(--accent), white 35%), inset -2px -2px 0 var(--mc-dirt-lo);
+  font-family:var(--font-display); font-size:12px; letter-spacing:0; line-height:1.6;
+}
+[data-theme="mc"] .brand{font-family:var(--font-display); font-size:12px; line-height:1.6}
+[data-theme="mc"] .brand .mark{
+  border-radius:0;
+  background:linear-gradient(180deg, var(--accent) 0 40%, var(--mc-dirt) 40% 100%);
+}
+[data-theme="mc"] .hero .led{border-radius:0}
+[data-theme="mc"] .progress{border-radius:0; border:2px solid var(--border-strong); background:var(--bg)}
+[data-theme="mc"] .progress i{
+  background:repeating-linear-gradient(90deg, var(--accent) 0 8px, color-mix(in srgb, var(--accent), black 30%) 8px 10px);
+}
+[data-theme="mc"] .badge{border-radius:0; font-family:var(--font-mono)}
+[data-theme="mc"] .tab.is-active{border-bottom-width:4px}
+[data-theme="mc"] h1.pg{font-family:var(--font-display); font-size:14px; line-height:1.8}
+[data-theme="mc"] .sec-head h2{font-family:var(--font-display); font-size:12px; line-height:1.8; letter-spacing:0}
+[data-theme="mc"] .hero h1{font-family:var(--font-display); font-size:16px; line-height:1.6}
+[data-theme="mc"] .crumbs button,
+[data-theme="mc"] .more-link a,
+[data-theme="mc"] a{font-family:var(--font-mono)}
 
 @media (prefers-reduced-motion: reduce){
   *{transition:none !important; animation:none !important}
@@ -825,6 +890,15 @@ input[type=range].ram{width:100%; accent-color:var(--accent); height:40px}
             </div>
           </div>
           <div class="tgroup">
+            <h2><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg>Мир игры</h2>
+            <div class="tgrid">
+              <button class="tcard" data-set-theme="mc" title="Каменные панели с бевелями, травяной акцент, пиксельные заголовки и XP-полоса прогресса">
+                <span class="tpv" style="--pv-bg:var(--pv-mc-bg); --pv-line:var(--pv-mc-line); --pv-accent:var(--pv-mc-accent)"><span class="pv-ic" style="background:linear-gradient(180deg, var(--pv-mc-accent) 0 40%, var(--mc-dirt) 40% 100%)"></span><span class="pv-line pv-l1"></span><span class="pv-line pv-l2"></span></span>
+                <span class="trow"><span class="tname">Глубинный сланец</span><span class="tmark"></span></span>
+              </button>
+            </div>
+          </div>
+          <div class="tgroup">
             <h2><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg>Для дальтоников</h2>
             <div class="tgrid">
               <button class="tcard" data-set-theme="cb-dark" aria-pressed="false">
@@ -1081,7 +1155,7 @@ input[type=range].ram{width:100%; accent-color:var(--accent); height:40px}
         var mk = b.querySelector('.tmark');
         if (mk) { mk.innerHTML = on ? '<span class="chk"><svg aria-hidden="true"><use href="#i-check"/></svg></span>' : ''; }
       });
-      var names = { '': 'Тёмная', 'light': 'Светлая', 'cb-dark': 'Дальтоник · Тёмная', 'cb-light': 'Дальтоник · Светлая' };
+      var names = { '': 'Тёмная', 'light': 'Светлая', 'cb-dark': 'Дальтоник · Тёмная', 'cb-light': 'Дальтоник · Светлая', 'mc': 'Глубинный сланец' };
       document.getElementById('theme-label').textContent = names[t] || 'Тёмная';
       return;
     }
