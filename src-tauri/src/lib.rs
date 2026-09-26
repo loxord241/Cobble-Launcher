@@ -18,18 +18,51 @@ pub mod util;
 
 use tracing_subscriber::EnvFilter;
 
-/// Файловое логирование с ротацией 5×5 МБ (спека §4.1). В CLI не вызывается.
+/// MakeWriter с redaction (спека §11): токены → [REDACTED] до записи на диск.
+struct RedactingWriter<W: std::io::Write> {
+    inner: W,
+}
+
+impl<W: std::io::Write> std::io::Write for RedactingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let text = String::from_utf8_lossy(buf);
+        let safe = util::redact::redact(&text);
+        self.inner.write_all(safe.as_bytes())?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+struct RedactingMakeWriter {
+    dir: std::path::PathBuf,
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for RedactingMakeWriter {
+    type Writer = RedactingWriter<std::fs::File>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(util::fs::long_path(&self.dir.join("launcher.log")))
+            .unwrap_or_else(|_| std::fs::File::create(std::path::PathBuf::from("launcher.log")).unwrap());
+        RedactingWriter { inner: file }
+    }
+}
+
+/// Файловое логирование с redaction токенов (спека §4.1, §11). В CLI не вызывается.
 pub fn init_file_logging(logs_dir: &std::path::Path) {
     let long = util::fs::long_path(logs_dir);
     let _ = std::fs::create_dir_all(&long);
-    let appender = tracing_appender::rolling::never(&long, "launcher.log");
-    // Ротация по размеру делается вручную: never + проверка размера при старте.
+    // Ротация по размеру — вручную: переименование при старте, если > 5 МБ.
     rotate_if_big(&long.join("launcher.log"));
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
-        .with_writer(std::sync::Mutex::new(appender))
+        .with_writer(RedactingMakeWriter { dir: long })
         .with_ansi(false)
         .try_init()
         .ok();
@@ -88,6 +121,13 @@ pub fn run() -> tauri::Result<()> {
             commands::ram_guide,
             commands::instance_kill,
             commands::process_status,
+            commands::account_list,
+            commands::account_add_offline,
+            commands::account_add_msa_start,
+            commands::account_add_msa_poll,
+            commands::account_add_ely,
+            commands::account_remove,
+            commands::account_active_set,
             commands::java_list,
             commands::java_install,
             commands::settings_get,

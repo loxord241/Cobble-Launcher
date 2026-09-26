@@ -3,6 +3,16 @@
 use sha2::Digest as _;
 use uuid::Uuid;
 
+/// Идентичность для запуска (спека §6.8: token="0", user_type=legacy).
+pub fn identity(nick: &str) -> crate::auth::LaunchIdentity {
+    crate::auth::LaunchIdentity {
+        player_name: nick.to_string(),
+        uuid: offline_uuid(nick).to_string(),
+        access_token: "0".into(),
+        user_type: "legacy".into(),
+    }
+}
+
 /// UUID офлайн-игрока: md5(`OfflinePlayer:<ник>`) с version=3 и RFC-вариантом.
 /// (md-5 выбран сознательно — так делает сама Minecraft.)
 pub fn offline_uuid(nick: &str) -> Uuid {

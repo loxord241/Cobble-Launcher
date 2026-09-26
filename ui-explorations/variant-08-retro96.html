@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ОКНО-96 — концепт 08 «Девяносто Шесть»</title>
+<link rel="icon" href="data:,">
+<!--
+  Концепт 08 «Девяносто Шесть» · продукт «ОКНО-96»
+  Ремикс Win95/Y2K: серебристый хром с бевелями, синяя тайтлбар, «проводниковая»
+  навигация, точечный пиксель-акцент только в логотипе. Современная сетка — ретро-детали.
+  Диски: variance 8 · motion 3 · density 7.
+  Токены: design-systems/retro96/MASTER.md (раздел «Арт-дирекция», fallback — данных
+  базы по Y2K-тематике нет).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#c8c4bd; --surface:#c0c0c0; --surface-2:#d6d3ce;
+  --text:#101010; --text-muted:#3f3f3f;
+  --border:#808080; --border-strong:#000000;
+  --accent:#000080; --on-accent:#ffffff; --accent-soft:#d3d3f7;
+  --titlebar-a:#000080; --titlebar-b:#1084d0;
+  --link:#0000cc;
+  --danger:#8f1010; --on-danger:#ffffff; --ok:#0a7a1f;
+  --font-ui:Tahoma,'Segoe UI',system-ui,sans-serif; --font-display:'Press Start 2P',Tahoma,monospace; --font-mono:'IBM Plex Mono','Courier New',monospace;
+  --r-s:0px; --r-m:0px; --r-l:0px;
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:24px; --s-6:32px;
+  --t-fast:80ms; --t-slow:120ms; --ease:steps(2,end);
+  --shadow-1:none; --shadow-2:none;
+  --bevel-out:inset -1px -1px 0 #0a0a0a, inset 1px 1px 0 #ffffff, inset -2px -2px 0 #808080, inset 2px 2px 0 #dfdfdf;
+  --bevel-in:inset 1px 1px 0 #0a0a0a, inset -1px -1px 0 #ffffff, inset 2px 2px 0 #808080, inset -2px -2px 0 #dfdfdf;
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg);
+  color:var(--text); font-family:var(--font-ui);
+  font-size:16px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer}
+input{font:inherit; color:inherit}
+a{color:var(--link); text-decoration:underline}
+:focus-visible{outline:2px dotted var(--text); outline-offset:-4px}
+.icon{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+.docstrip{display:flex; align-items:center; gap:var(--s-3); max-width:1440px; margin:0 auto; padding:var(--s-3) var(--s-5); font-size:13px; color:var(--text-muted)}
+.docstrip b{color:var(--text); font-weight:700}
+.docstrip .num{font-family:var(--font-display); font-size:12px; color:var(--on-accent); background:var(--accent); padding:0 6px; line-height:24px}
+
+.stage{max-width:1440px; margin:0 auto; padding:0 var(--s-5) var(--s-6); display:flex; flex-direction:column; gap:var(--s-5)}
+
+/* окно */
+.app{height:820px; display:flex; flex-direction:column; background:var(--surface); border:1px solid var(--border-strong); box-shadow:var(--bevel-out)}
+
+/* тайтлбар */
+.titlebar{height:40px; flex:none; display:flex; align-items:center; gap:var(--s-3); margin:3px; padding:0 3px 0 var(--s-2); background:linear-gradient(90deg, var(--titlebar-a), var(--titlebar-b)); color:var(--on-accent)}
+.titlebar .brand{display:flex; align-items:center; gap:var(--s-2); font-family:var(--font-display); font-size:12px; letter-spacing:.02em}
+.titlebar .brand .mark{width:22px;height:22px;display:grid;place-items:center;background:var(--surface);color:var(--accent);box-shadow:var(--bevel-out)}
+.titlebar .brand .mark svg{width:14px;height:14px}
+.menubar{height:44px; flex:none; display:flex; align-items:stretch; gap:2px; padding:0 var(--s-2); border-bottom:1px solid var(--border); background:var(--surface)}
+.menubar button{display:flex; align-items:center; gap:var(--s-2); padding:0 var(--s-3); font-size:15px; color:var(--text); border:1px solid transparent; border-top:0}
+.menubar button svg{width:16px;height:16px}
+.menubar button .n{font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
+.menubar button:hover{background:var(--surface-2); box-shadow:var(--bevel-out)}
+.menubar button.is-active{background:var(--accent-soft); box-shadow:var(--bevel-in); font-weight:700}
+.titlebar .spacer{flex:1}
+.winbtns{display:flex; gap:2px}
+.winbtns button{width:34px;height:30px;display:grid;place-items:center;background:var(--surface);color:var(--text);box-shadow:var(--bevel-out)}
+.winbtns button svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.winbtns button:hover{background:var(--surface-2)}
+.winbtns button.close:hover{background:var(--danger); color:var(--on-danger)}
+/* крупная зона нажатия при компактной кнопке */
+.winbtns button{position:relative}
+.winbtns button::after{content:""; position:absolute; inset:-5px}
+
+.body{flex:1; display:flex; flex-direction:column; min-height:0; padding:var(--s-2); gap:var(--s-2)}
+
+/* статусбар */
+.statusbar{flex:none; display:flex; gap:var(--s-1); padding:0 var(--s-1) var(--s-1)}
+.statusbar .cell{box-shadow:var(--bevel-in); padding:2px var(--s-2); font-size:13px; color:var(--text-muted); min-height:28px; display:flex; align-items:center}
+.statusbar .cell.grow{flex:1}
+.statusbar .cell b{color:var(--text); font-weight:700}
+
+.content{flex:1; padding:var(--s-2); display:flex; flex-direction:column; gap:var(--s-2); min-height:0; overflow:hidden}
+
+/* панели-группы */
+.group{border:1px solid var(--border); box-shadow:var(--bevel-in); padding:var(--s-3); background:var(--surface)}
+.group legend{font-size:13px; font-weight:700; padding:0 var(--s-1)}
+
+/* баннер */
+.banner{display:flex; align-items:center; gap:var(--s-2); box-shadow:var(--bevel-in); padding:var(--s-2); font-size:14px}
+.banner .tip{width:28px;height:28px;display:grid;place-items:center;background:var(--accent);color:var(--on-accent);flex:none}
+.banner .tip svg{width:16px;height:16px}
+.banner b{font-weight:700}
+.banner .more{margin-left:auto; color:var(--link); font-weight:700; display:flex; align-items:center; height:40px; padding:0 var(--s-2); flex:none}
+.banner .more:hover{text-decoration:underline}
+
+/* строки-инстансы как в проводнике */
+.rows{flex:1; background:white; box-shadow:var(--bevel-in); padding:var(--s-1); overflow:hidden; display:flex; flex-direction:column; gap:2px}
+.row{display:grid; grid-template-columns:36px 1fr auto auto; align-items:center; gap:var(--s-3); padding:var(--s-1) var(--s-2); min-height:52px}
+.row svg.lead{width:28px;height:28px;color:var(--text-muted)}
+.row .name{font-weight:700; font-size:15px; line-height:1.25}
+.row .sub{font-size:13px; color:var(--text-muted); line-height:1.35}
+.row:hover, .row.is-hover{background:var(--accent); color:var(--on-accent)}
+.row:hover .sub, .row.is-hover .sub{color:color-mix(in srgb, var(--on-accent) 80%, var(--accent))}
+.row .ver{font-family:var(--font-mono); font-size:13px; background:var(--surface-2); box-shadow:var(--bevel-in); padding:0 var(--s-2); line-height:24px; white-space:nowrap}
+.row:hover .ver, .row.is-hover .ver{background:var(--surface)}
+.row .play{width:40px;height:40px;display:grid;place-items:center;background:var(--surface);color:var(--text);box-shadow:var(--bevel-out)}
+.row .play:hover{background:var(--surface-2)}
+.row .play:active{box-shadow:var(--bevel-in)}
+.row .play svg{width:16px;height:16px;fill:currentColor;stroke:none}
+.rows-head{display:grid; grid-template-columns:36px 1fr auto auto; gap:var(--s-3); padding:var(--s-1) var(--s-2); font-size:12px; font-weight:700; color:var(--text-muted); border-bottom:1px solid var(--border)}
+
+/* модпаки */
+.packs{display:grid; grid-template-columns:repeat(3,1fr); gap:var(--s-2)}
+.pack{display:flex; align-items:center; gap:var(--s-3); background:var(--surface); box-shadow:var(--bevel-out); padding:var(--s-2)}
+.pack:hover, .pack.is-hover{background:var(--surface-2)}
+.pack svg.lead{width:28px;height:28px;color:var(--text-muted);flex:none}
+.pack .info{flex:1; min-width:0}
+.pack .name{font-weight:700; font-size:14px; line-height:1.3}
+.pack .dl{font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
+.pack .install{height:40px; padding:0 var(--s-3); background:var(--surface); box-shadow:var(--bevel-out); font-size:13px; font-weight:700; display:flex; align-items:center; gap:var(--s-1); flex:none}
+.pack .install:active{box-shadow:var(--bevel-in)}
+.pack .install:hover{background:var(--surface-2)}
+.pack .install svg{width:14px;height:14px}
+
+/* ── экран 2: браузер модов («проводник») ───────────────────────── */
+.toolbar{display:flex; align-items:center; gap:var(--s-1); padding:var(--s-1); box-shadow:var(--bevel-in)}
+.toolbar .tbtn{width:40px;height:40px;display:grid;place-items:center;background:var(--surface);box-shadow:var(--bevel-out);color:var(--text)}
+.toolbar .tbtn:hover{background:var(--surface-2)}
+.toolbar .tbtn:active{box-shadow:var(--bevel-in)}
+.toolbar .addr{flex:1; display:flex; align-items:center; gap:var(--s-2); height:40px; background:white; box-shadow:var(--bevel-in); padding:0 var(--s-2)}
+.toolbar .addr svg{width:16px;height:16px;color:var(--text-muted)}
+.toolbar .addr input{flex:1; min-width:0; border:0; outline:none; background:none; font-family:var(--font-mono); font-size:14px}
+.toolbar .find{height:40px; padding:0 var(--s-3); background:var(--surface); box-shadow:var(--bevel-out); font-weight:700; font-size:13px; display:flex; align-items:center}
+.toolbar .find:active{box-shadow:var(--bevel-in)}
+.toolbar .find:hover{background:var(--surface-2)}
+.browser{flex:1; display:grid; grid-template-columns:260px 1fr; gap:var(--s-2); min-height:0; align-items:start}
+.filters{background:white; box-shadow:var(--bevel-in); padding:var(--s-2); overflow:hidden}
+.filters fieldset{border:1px solid var(--border); margin:0 0 var(--s-2); padding:var(--s-1) var(--s-2)}
+.filters legend{font-size:12px; font-weight:700; padding:0 var(--s-1)}
+.filters label{display:flex; align-items:center; gap:var(--s-2); height:36px; font-size:14px; cursor:pointer; padding:0 var(--s-1); margin:0 calc(-1 * var(--s-1))}
+.filters label:hover{background:var(--accent-soft)}
+.filters input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);flex:none}
+.cards{display:grid; grid-template-columns:repeat(3,1fr); gap:var(--s-2); align-content:start}
+.modcard{background:var(--surface); box-shadow:var(--bevel-out); padding:var(--s-2); display:flex; flex-direction:column; gap:var(--s-2)}
+.modcard:hover, .modcard.is-hover{background:var(--surface-2)}
+.modcard .head{display:flex; align-items:center; gap:var(--s-2)}
+.modcard .glyph{width:44px;height:44px;display:grid;place-items:center;background:white;box-shadow:var(--bevel-in);color:var(--text-muted);flex:none}
+.modcard .nm{font-weight:700; font-size:14px; line-height:1.25}
+.modcard .ver{font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
+.modcard .desc{font-size:13px; color:var(--text-muted); line-height:1.4; min-height:38px}
+.modcard .meta{display:flex; align-items:center; justify-content:space-between; font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
+.modcard .install{height:40px; background:var(--surface); box-shadow:var(--bevel-out); font-weight:700; font-size:13px; display:flex; align-items:center; justify-content:center; gap:var(--s-1)}
+.modcard .install:active{box-shadow:var(--bevel-in)}
+.modcard .install:hover{background:var(--surface-2)}
+.modcard .install svg{width:14px;height:14px}
+.found{font-size:13px; color:var(--text-muted); padding:0 var(--s-1)}
+
+/* состояния */
+.states h2{font-size:13px; font-weight:700; color:var(--text-muted); margin:0 0 var(--s-2)}
+.states .grid{display:grid; grid-template-columns:repeat(4,1fr); gap:var(--s-2)}
+.panel{background:var(--surface); border:1px solid var(--border-strong); box-shadow:var(--bevel-out); padding:var(--s-3); display:flex; flex-direction:column; gap:var(--s-2)}
+.panel .cap{font-size:12px; color:var(--text-muted); font-family:var(--font-mono)}
+.demo-row{display:grid; grid-template-columns:36px 1fr auto; align-items:center; gap:var(--s-3); padding:var(--s-1) var(--s-2); min-height:52px; background:var(--accent); color:var(--on-accent)}
+.demo-row .sub{color:color-mix(in srgb, var(--on-accent) 80%, var(--accent))}
+.demo-row svg.lead{width:28px;height:28px}
+.skel{display:flex; flex-direction:column; gap:var(--s-1)}
+.skel .line{height:44px; background:repeating-conic-gradient(var(--surface-2) 0 25%, white 0 50%) 0 0/16px 16px; box-shadow:var(--bevel-in)}
+.skel .line.s2{width:64%}
+.empty{display:flex; flex-direction:column; align-items:center; text-align:center; gap:var(--s-2); padding:var(--s-3) var(--s-2)}
+.empty svg{width:32px;height:32px;color:var(--text-muted)}
+.empty .t{font-size:15px; font-weight:700}
+.empty .d{font-size:13px; color:var(--text-muted)}
+.empty .btn{height:40px; padding:0 var(--s-4); background:var(--surface); box-shadow:var(--bevel-out); font-weight:700; display:flex; align-items:center}
+.empty .btn:active{box-shadow:var(--bevel-in)}
+/* диалог ошибки */
+.dialog{border:1px solid var(--border-strong); box-shadow:var(--bevel-out); background:var(--surface)}
+.dialog .dtitle{display:flex; align-items:center; gap:var(--s-2); margin:3px; padding:0 var(--s-2); height:30px; background:linear-gradient(90deg, var(--titlebar-a), var(--titlebar-b)); color:var(--on-accent); font-weight:700; font-size:13px}
+.dialog .dbody{display:flex; gap:var(--s-3); padding:var(--s-3); align-items:flex-start}
+.dialog .dbody svg{width:32px;height:32px;color:var(--danger);flex:none}
+.dialog .msg{font-size:14px; font-weight:700}
+.dialog .msub{font-size:13px; color:var(--text-muted)}
+.dialog .code{font-family:var(--font-mono); font-size:12px; background:white; box-shadow:var(--bevel-in); padding:0 var(--s-2); line-height:22px; display:inline-block}
+.dialog .dbtns{display:flex; justify-content:center; gap:var(--s-2); padding:0 var(--s-3) var(--s-3)}
+.dialog .dbtn{min-width:96px; height:40px; background:var(--surface); box-shadow:var(--bevel-out); font-weight:700; display:flex; align-items:center; justify-content:center; gap:var(--s-1)}
+.dialog .dbtn:active{box-shadow:var(--bevel-in)}
+.dialog .dbtn:hover{background:var(--surface-2)}
+.dialog .dbtn svg{width:14px;height:14px}
+
+@media (prefers-reduced-motion: reduce){
+  *{transition:none !important; animation:none !important}
+}
+</style>
+</head>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-cube" viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8"/><path d="M5 9.8V21h14V9.8"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-package" viewBox="0 0 24 24"><path d="M16.5 9.4 7.5 4.2"/><path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.7Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></symbol>
+    <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M5 4h4.5v2.3a1.9 1.9 0 1 0 3.8 0V4H19v5.5h2.3a1.9 1.9 0 1 1 0 3.8H19V19h-5.5v-2.3a1.9 1.9 0 1 0-3.8 0V19H5v-5.5h2.3a1.9 1.9 0 1 1 0-3.8H5Z"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="m21 15.5-4.5-4.5L6 21.5"/></symbol>
+    <symbol id="i-shader" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M21 5h-7M10 5H3M21 12h-9M8 12H3M21 19h-5M12 19H3"/><circle cx="12" cy="5" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="14" cy="19" r="2"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5 19.5 12 7 19.5Z"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-megaphone" viewBox="0 0 24 24"><path d="m3 11 18-5v12L3 14v-3Z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2.7 19.5h18.6L12 3Z"/><path d="M12 9.5v4"/><path d="M12 16.8h.01"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1Z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></symbol>
+    <symbol id="i-fwd" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-chevdown" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-steve" viewBox="0 0 8 8">
+      <rect width="8" height="2" fill="#3b2a1a"/>
+      <rect x="0" y="2" width="2" height="1" fill="#3b2a1a"/><rect x="6" y="2" width="2" height="1" fill="#3b2a1a"/>
+      <rect x="2" y="2" width="4" height="1" fill="#bd8a5e"/>
+      <rect x="0" y="3" width="1" height="1" fill="#3b2a1a"/><rect x="7" y="3" width="1" height="1" fill="#3b2a1a"/>
+      <rect x="1" y="3" width="6" height="1" fill="#bd8a5e"/>
+      <rect x="0" y="4" width="2" height="1" fill="#bd8a5e"/><rect x="6" y="4" width="2" height="1" fill="#bd8a5e"/>
+      <rect x="2" y="4" width="1" height="1" fill="#ffffff"/><rect x="3" y="4" width="1" height="1" fill="#4a3a8c"/>
+      <rect x="4" y="4" width="1" height="1" fill="#4a3a8c"/><rect x="5" y="4" width="1" height="1" fill="#ffffff"/>
+      <rect x="0" y="5" width="8" height="1" fill="#bd8a5e"/>
+      <rect x="3" y="5" width="2" height="1" fill="#9a6a40"/>
+      <rect x="0" y="6" width="8" height="1" fill="#b07f52"/>
+      <rect x="3" y="6" width="2" height="1" fill="#6e4526"/>
+      <rect x="0" y="7" width="8" height="1" fill="#b07f52"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="docstrip">
+  <span class="num">08</span>
+  <b>Девяносто Шесть</b><span>· продукт «ОКНО-96» · variance 8 · motion 3 · density 7 ·</span>
+  <a href="design-systems/retro96/MASTER.md">дизайн-система</a>
+</header>
+
+<main class="stage">
+
+  <!-- ЭКРАН 1: ГЛАВНАЯ -->
+  <section class="frame" aria-label="Экран 1 — Главная">
+    <div class="app">
+      <div class="titlebar">
+        <span class="brand"><span class="mark"><svg aria-hidden="true"><use href="#i-cube"/></svg></span>ОКНО-96</span>
+        <span class="spacer"></span>
+        <button class="account" aria-label="Аккаунт Steve, профиль нелицензионный, сменить" style="display:flex;align-items:center;gap:8px;height:30px;padding:0 6px">
+          <svg width="24" height="24" aria-hidden="true" style="shape-rendering:crispEdges"><use href="#i-steve"/></svg>
+          <span style="font-size:13px;font-weight:700">Steve · нелицензионный</span>
+        </button>
+        <div class="winbtns">
+          <button aria-label="Свернуть"><svg aria-hidden="true"><use href="#i-minus"/></svg></button>
+          <button aria-label="Развернуть"><svg aria-hidden="true"><use href="#i-square"/></svg></button>
+          <button class="close" aria-label="Закрыть"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>
+      </div>
+
+      <nav class="menubar" aria-label="Основная навигация">
+        <button class="is-active" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg>Главная</button>
+        <button><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>Инстансы<span class="n">5</span></button>
+        <button><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg>Модпаки</button>
+        <button><svg class="icon" aria-hidden="true"><use href="#i-puzzle"/></svg>Моды</button>
+        <button><svg class="icon" aria-hidden="true"><use href="#i-image"/></svg>Ресурспаки</button>
+        <button><svg class="icon" aria-hidden="true"><use href="#i-shader"/></svg>Шейдеры</button>
+        <button><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>Настройки</button>
+      </nav>
+
+      <div class="body">
+        <div class="banner">
+          <span class="tip"><svg class="icon" aria-hidden="true"><use href="#i-megaphone"/></svg></span>
+          <span><b>Обновление лаунчера 2.1.0</b> — новый браузер модов и очередь загрузок</span>
+          <a class="more" href="#">Что нового →</a>
+        </div>
+
+        <fieldset class="group" style="display:flex; flex-direction:column; gap:var(--s-2); flex:1; min-height:0">
+          <legend>Инстансы (5)</legend>
+          <div class="rows" style="flex:1">
+            <div class="rows-head"><span aria-hidden="true"></span><span>Имя</span><span>Версия</span><span style="text-align:right">Запуск</span></div>
+            <div class="row">
+              <svg class="lead icon" aria-hidden="true"><use href="#i-folder"/></svg>
+              <span><span class="name">Ванилла 26.3</span><br><span class="sub">без загрузчика · играли 2 ч назад</span></span>
+              <span class="ver">26.3</span>
+              <button class="play" aria-label="Играть — Ванилла 26.3"><svg aria-hidden="true"><use href="#i-play"/></svg></button>
+            </div>
+            <div class="row">
+              <svg class="lead icon" aria-hidden="true"><use href="#i-folder"/></svg>
+              <span><span class="name">Fabric + Sodium</span><br><span class="sub">fabric-loader 0.17 · 14 модов · играли вчера</span></span>
+              <span class="ver">0.17</span>
+              <button class="play" aria-label="Играть — Fabric + Sodium"><svg aria-hidden="true"><use href="#i-play"/></svg></button>
+            </div>
+            <div class="row">
+              <svg class="lead icon" aria-hidden="true"><use href="#i-folder"/></svg>
+              <span><span class="name">NeoForge: Create</span><br><span class="sub">neoforge 21.1 · 38 модов · играли 3 дня назад</span></span>
+              <span class="ver">21.1</span>
+              <button class="play" aria-label="Играть — NeoForge: Create"><svg aria-hidden="true"><use href="#i-play"/></svg></button>
+            </div>
+            <div class="row">
+              <svg class="lead icon" aria-hidden="true"><use href="#i-folder"/></svg>
+              <span><span class="name">Forge 1.20.1: РЛКрафт</span><br><span class="sub">forge 47.3 · 187 модов · играли неделю назад</span></span>
+              <span class="ver">47.3</span>
+              <button class="play" aria-label="Играть — Forge 1.20.1: РЛКрафт"><svg aria-hidden="true"><use href="#i-play"/></svg></button>
+            </div>
+            <div class="row">
+              <svg class="lead icon" aria-hidden="true"><use href="#i-folder"/></svg>
+              <span><span class="name">Креатив-песочница</span><br><span class="sub">quilt · шейдеры · месяц назад</span></span>
+              <span class="ver">quilt</span>
+              <button class="play" aria-label="Играть — Креатив-песочница"><svg aria-hidden="true"><use href="#i-play"/></svg></button>
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend>Популярные модпаки</legend>
+          <div class="packs">
+            <div class="pack">
+              <svg class="lead icon" aria-hidden="true"><use href="#i-zap"/></svg>
+              <span class="info"><span class="name">Fabulously Optimized</span><br><span class="dl">2,1 млн загрузок</span></span>
+              <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить</button>
+            </div>
+            <div class="pack">
+              <svg class="lead icon" aria-hidden="true"><use href="#i-cube"/></svg>
+              <span class="info"><span class="name">Create: Above and Beyond</span><br><span class="dl">980 тыс. загрузок</span></span>
+              <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить</button>
+            </div>
+            <div class="pack">
+              <svg class="lead icon" aria-hidden="true"><use href="#i-shader"/></svg>
+              <span class="info"><span class="name">Simply Optimized</span><br><span class="dl">640 тыс. загрузок</span></span>
+              <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить</button>
+            </div>
+          </div>
+        </fieldset>
+      </div>
+
+      <div class="statusbar">
+        <span class="cell grow">Инстансов: <b>&nbsp;5</b></span>
+        <span class="cell">Свободно: <b>&nbsp;412 ГБ</b></span>
+        <span class="cell">ЛАУНЧЕР <b>&nbsp;2.1.0</b></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ЭКРАН 2: БРАУЗЕР МОДОВ -->
+  <section class="frame" aria-label="Экран 2 — Браузер модов">
+    <div class="app">
+      <div class="titlebar">
+        <span class="brand"><span class="mark"><svg aria-hidden="true"><use href="#i-cube"/></svg></span>ОКНО-96</span>
+        <span class="spacer"></span>
+        <button class="account" aria-label="Аккаунт Steve, профиль нелицензионный, сменить" style="display:flex;align-items:center;gap:8px;height:30px;padding:0 6px">
+          <svg width="24" height="24" aria-hidden="true" style="shape-rendering:crispEdges"><use href="#i-steve"/></svg>
+          <span style="font-size:13px;font-weight:700">Steve · нелицензионный</span>
+        </button>
+        <div class="winbtns">
+          <button aria-label="Свернуть"><svg aria-hidden="true"><use href="#i-minus"/></svg></button>
+          <button aria-label="Развернуть"><svg aria-hidden="true"><use href="#i-square"/></svg></button>
+          <button class="close" aria-label="Закрыть"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>
+      </div>
+
+      <nav class="menubar" aria-label="Основная навигация">
+        <button><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg>Главная</button>
+        <button><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>Инстансы<span class="n">5</span></button>
+        <button><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg>Модпаки</button>
+        <button class="is-active" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-puzzle"/></svg>Моды</button>
+        <button><svg class="icon" aria-hidden="true"><use href="#i-image"/></svg>Ресурспаки</button>
+        <button><svg class="icon" aria-hidden="true"><use href="#i-shader"/></svg>Шейдеры</button>
+        <button><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>Настройки</button>
+      </nav>
+
+      <div class="body">
+        <div class="toolbar">
+          <button class="tbtn" aria-label="Назад"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg></button>
+          <button class="tbtn" aria-label="Вперёд"><svg class="icon" aria-hidden="true"><use href="#i-fwd"/></svg></button>
+          <button class="tbtn" aria-label="Обновить"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>
+          <div class="addr">
+            <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+            <input type="text" value="sodium" aria-label="Поиск по модам">
+          </div>
+          <button class="find">Найти</button>
+        </div>
+
+        <div class="browser">
+          <aside class="filters" aria-label="Фильтры каталога">
+            <fieldset>
+              <legend>Версия Minecraft</legend>
+              <label><input type="checkbox" checked>26.3</label>
+              <label><input type="checkbox">1.21.1</label>
+              <label><input type="checkbox">1.20.1</label>
+            </fieldset>
+            <fieldset>
+              <legend>Загрузчик</legend>
+              <label><input type="checkbox" checked>fabric</label>
+              <label><input type="checkbox">forge</label>
+              <label><input type="checkbox">quilt</label>
+              <label><input type="checkbox">neoforge</label>
+            </fieldset>
+            <fieldset style="margin-bottom:0">
+              <legend>Категории</legend>
+              <label><input type="checkbox" checked>Оптимизация</label>
+              <label><input type="checkbox">Графика</label>
+              <label><input type="checkbox">Геймплей</label>
+              <label><input type="checkbox">Утилиты</label>
+              <label><input type="checkbox">Библиотеки</label>
+            </fieldset>
+          </aside>
+
+          <div style="display:flex; flex-direction:column; gap:var(--s-2); min-height:0">
+            <div class="found">Найдено: 6 по запросу «sodium» · фильтры: 26.3, fabric</div>
+            <div class="cards">
+              <article class="modcard">
+                <div class="head"><span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-zap"/></svg></span><span><span class="nm">Sodium</span><br><span class="ver">0.6.13</span></span></div>
+                <div class="desc">Современный движок рендеринга: больше кадров при той же картинке.</div>
+                <div class="meta"><span>загрузки</span><span>38,2 млн</span></div>
+                <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить в инстанс…</button>
+              </article>
+              <article class="modcard">
+                <div class="head"><span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg></span><span><span class="nm">Sodium Extra</span><br><span class="ver">0.6.4</span></span></div>
+                <div class="desc">Дополнительные настройки графики для Sodium.</div>
+                <div class="meta"><span>загрузки</span><span>6,1 млн</span></div>
+                <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить в инстанс…</button>
+              </article>
+              <article class="modcard">
+                <div class="head"><span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-image"/></svg></span><span><span class="nm">Reese's Sodium Options</span><br><span class="ver">1.8.3</span></span></div>
+                <div class="desc">Аккуратный экран видеонастроек вместо стандартного.</div>
+                <div class="meta"><span>загрузки</span><span>9,4 млн</span></div>
+                <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить в инстанс…</button>
+              </article>
+              <article class="modcard">
+                <div class="head"><span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg></span><span><span class="nm">Nvidium</span><br><span class="ver">0.2.7</span></span></div>
+                <div class="desc">Ускорение отрисовки чанков на видеокартах NVIDIA.</div>
+                <div class="meta"><span>загрузки</span><span>1,7 млн</span></div>
+                <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить в инстанс…</button>
+              </article>
+              <article class="modcard">
+                <div class="head"><span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg></span><span><span class="nm">More Culling</span><br><span class="ver">1.4.1</span></span></div>
+                <div class="desc">Отсекает невидимые грани блоков и листву.</div>
+                <div class="meta"><span>загрузки</span><span>3,3 млн</span></div>
+                <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить в инстанс…</button>
+              </article>
+              <article class="modcard">
+                <div class="head"><span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg></span><span><span class="nm">Indium</span><br><span class="ver">1.0.36</span></span></div>
+                <div class="desc">Совместимость Fabric Rendering API с Sodium.</div>
+                <div class="meta"><span>загрузки</span><span>4,8 млн</span></div>
+                <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить в инстанс…</button>
+              </article>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="statusbar">
+        <span class="cell grow">Объектов: <b>&nbsp;6</b></span>
+        <span class="cell">Фильтры: <b>&nbsp;26.3 · fabric</b></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- СОСТОЯНИЯ -->
+  <section class="states" aria-label="Состояния компонентов">
+    <h2>Состояния компонентов</h2>
+    <div class="grid">
+      <div class="panel">
+        <div class="demo-row">
+          <svg class="lead icon" aria-hidden="true"><use href="#i-folder"/></svg>
+          <span><span class="name" style="font-size:15px;font-weight:700">Fabric + Sodium</span><br><span class="sub" style="font-size:13px">fabric-loader 0.17 · 14 модов</span></span>
+          <button class="play" style="width:40px;height:40px;display:grid;place-items:center;background:var(--surface);color:var(--text);box-shadow:var(--bevel-out)" aria-label="Играть"><svg style="width:16px;height:16px;fill:currentColor;stroke:none" aria-hidden="true"><use href="#i-play"/></svg></button>
+        </div>
+        <div class="cap">hover строки проводника — заморожен: выделение синим, инверсия текста; видно и без курсора</div>
+      </div>
+
+      <div class="panel">
+        <div class="skel" aria-label="Скелетон загрузки">
+          <div class="line"></div>
+          <div class="line s2"></div>
+        </div>
+        <div class="cap">скелетон «шахматкой» — в reduced-motion остаётся статичным (анимаций нет по умолчанию)</div>
+      </div>
+
+      <div class="panel">
+        <div class="empty">
+          <svg aria-hidden="true"><use href="#i-inbox"/></svg>
+          <div class="t">Ничего не найдено</div>
+          <div class="d">По запросу нет модов — попробуйте ослабить фильтры.</div>
+          <button class="btn">Сбросить фильтры</button>
+        </div>
+        <div class="cap">пустое состояние с CTA</div>
+      </div>
+
+      <div class="panel">
+        <div class="dialog">
+          <div class="dtitle"><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-alert"/></svg>Ошибка загрузки</div>
+          <div class="dbody">
+            <svg aria-hidden="true"><use href="#i-alert"/></svg>
+            <div>
+              <div class="msg">Не удалось загрузить список модов</div>
+              <div class="msub">Проверьте подключение и попробуйте ещё раз. <span class="code">MODRINTH_TIMEOUT</span></div>
+            </div>
+          </div>
+          <div class="dbtns">
+            <button class="dbtn"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Повторить</button>
+          </div>
+        </div>
+        <div class="cap">ошибка — системный диалог</div>
+      </div>
+    </div>
+  </section>
+
+</main>
+</body>
+</html>

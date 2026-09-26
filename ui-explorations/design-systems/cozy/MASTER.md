@@ -238,16 +238,16 @@ Before delivering any UI code, verify:
 
 **Диски (variance 3, motion 3, density 4):** спокойный центр с мягкими микро-движениями; просторная компоновка — немного крупных карточек.
 
-**Оверрайды базы (и почему):** палитра базы принята (розовая пастель + голубой акцент). Шрифты Outfit и Work Sans не содержат кириллицы — заменены на Comfortaa (скруглённые заголовки) и Nunito Sans (мягкий гротеск с кириллицей). Текст на розовой кнопке — тёмная слива #40102e вместо белого: #EC4899 + белый не добирает 4.5:1, тёмный текст проходит (≈7:1).
+**Оверрайды базы (и почему):** палитра базы принята (розовая пастель + голубой акцент). Шрифты Outfit и Work Sans не содержат кириллицы — заменены на Comfortaa (скруглённые заголовки) и Nunito Sans (мягкий гротеск с кириллицей). Текст на розовой кнопке — тёмная слива #380c28 вместо белого: #EC4899 + белый не добирает 4.5:1, тёмный текст проходит (≈7:1).
 
 **Reduced-motion:** отключаются пружинка hover-подъёма и «дыхание» обложек; состояния остаются видимыми цветом/тенью.
 
 ```css
 :root{
   --bg:#FDF2F8; --surface:#ffffff; --surface-2:#fce8f2;
-  --text:#3c3040; --text-muted:#75677d;
+  --text:#3c3040; --text-muted:#6e6076;
   --border:#f6d7e8; --border-strong:#efbcdc;
-  --accent:#EC4899; --on-accent:#40102e; --accent-soft:#fbd9ea;
+  --accent:#EC4899; --on-accent:#380c28; --accent-soft:#fbd9ea;
   --link:#0369a1;
   --danger:#c0392b; --on-danger:#fff5f2; --ok:#2f9e63;
   --font-ui:'Nunito Sans',system-ui,sans-serif; --font-display:'Comfortaa',system-ui,sans-serif; --font-mono:'Nunito Sans',system-ui,sans-serif;

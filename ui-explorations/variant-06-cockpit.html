@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Кокпит — концепт 06 «Кабина»</title>
+<link rel="icon" href="data:,">
+<!--
+  Концепт 06 «Кабина» · продукт «Кокпит»
+  Игровая HUD-эстетика: срезанные углы, угловые скобки-рамки, верхняя приборная
+  полоса с телеметрией, гранёная кнопка ИГРАТЬ, пульс статусов.
+  Диски: variance 7 · motion 6 · density 7.
+  Токены: design-systems/cockpit/MASTER.md (раздел «Арт-дирекция»).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Russo+One&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0F0F23; --surface:#171633; --surface-2:#201e45;
+  --text:#E2E8F0; --text-muted:#9aa4bd;
+  --border:#2c2956; --border-strong:#4C1D95;
+  --accent:#7C3AED; --on-accent:#ffffff; --accent-soft:rgba(124,58,237,.14);
+  --alert:#F43F5E; --on-alert:#2a0710;
+  --danger:#f28b82; --on-danger:#1c0908; --ok:#34d399;
+  --font-ui:'IBM Plex Sans',system-ui,sans-serif; --font-display:'Russo One',system-ui,sans-serif; --font-mono:'JetBrains Mono',monospace;
+  --r-s:2px; --r-m:4px; --r-l:8px;
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:24px; --s-6:32px;
+  --t-fast:150ms; --t-slow:250ms; --ease:cubic-bezier(.2,0,0,1);
+  --shadow-1:0 2px 8px rgba(0,0,0,.45); --shadow-2:0 12px 32px rgba(76,29,149,.35);
+  --cut:polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:color-mix(in srgb, var(--bg), black 35%);
+  color:var(--text); font-family:var(--font-ui);
+  font-size:16px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer}
+input{font:inherit; color:inherit}
+a{color:var(--text); text-decoration:none}
+a:hover{color:var(--text)}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.icon{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.mono{font-family:var(--font-mono)}
+
+.docstrip{display:flex; align-items:center; gap:var(--s-3); max-width:1440px; margin:0 auto; padding:var(--s-3) var(--s-5); font-size:13px; color:var(--text-muted)}
+.docstrip b{color:var(--text); font-weight:600}
+.docstrip .num{font-family:var(--font-mono); font-size:12px; color:var(--on-accent); background:var(--accent); padding:0 6px; line-height:20px}
+
+.stage{max-width:1440px; margin:0 auto; padding:0 var(--s-5) var(--s-6); display:flex; flex-direction:column; gap:var(--s-5)}
+
+.app{height:820px; display:flex; flex-direction:column; background:var(--bg); border:1px solid var(--border-strong); overflow:hidden}
+
+/* HUD-шапка: приборная строка + строка навигации */
+.hud{flex:none; border-bottom:1px solid var(--border-strong); background:linear-gradient(180deg, var(--surface), var(--bg))}
+.hud-row1{height:52px; display:flex; align-items:center; gap:var(--s-3); padding:0 var(--s-3)}
+.brand{display:flex; align-items:center; gap:var(--s-2); font-family:var(--font-display); font-size:15px; letter-spacing:.14em; text-transform:uppercase}
+.brand .mark{width:26px;height:26px;background:var(--accent);color:var(--on-accent);display:grid;place-items:center;clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px)}
+.brand .mark svg{width:15px;height:15px}
+.search{display:flex; align-items:center; gap:var(--s-2); width:280px; height:36px; padding:0 var(--s-2); background:var(--surface); border:1px solid var(--border); color:var(--text-muted)}
+.search:focus-within{border-color:var(--accent)}
+.search input{flex:1; min-width:0; background:none; border:0; outline:none; color:var(--text); font-family:var(--font-mono); font-size:13px}
+.search input::placeholder{color:var(--text-muted)}
+.telemetry{margin-left:auto; display:flex; align-items:center; gap:var(--s-3); font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
+.telemetry .val{color:var(--text)}
+.led{width:8px;height:8px;background:var(--ok);clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);animation:led 2s ease-in-out infinite;flex:none}
+@keyframes led{0%,100%{opacity:1}50%{opacity:.3}}
+.account{display:flex; align-items:center; gap:var(--s-2); height:40px; padding:0 var(--s-1)}
+.account:hover{background:var(--surface-2)}
+.account .who{line-height:1.2; text-align:left}
+.account .who .name{font-size:13px; font-weight:600; display:block}
+.account .who .tag{font-size:12px; color:var(--text-muted); display:block}
+.winbtns{display:flex}
+.winbtns button{width:40px;height:40px;display:grid;place-items:center;color:var(--text-muted)}
+.winbtns button svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.winbtns button:hover{background:var(--surface-2); color:var(--text)}
+.winbtns button.close:hover{background:var(--danger); color:var(--on-danger)}
+.hud-row2{height:44px; display:flex; align-items:stretch; padding:0 var(--s-3); gap:var(--s-1); border-top:1px solid var(--border)}
+.nav-item{display:flex; align-items:center; gap:var(--s-2); padding:0 var(--s-3); font-size:13px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted); border-bottom:2px solid transparent}
+.nav-item svg{width:15px;height:15px}
+.nav-item:hover{color:var(--text); background:var(--surface-2)}
+.nav-item.is-active{color:var(--text); border-bottom-color:var(--accent); background:var(--accent-soft)}
+.nav-item .n{font-family:var(--font-mono); font-size:12px; color:var(--text-muted); letter-spacing:0}
+
+.content{flex:1; padding:var(--s-4); overflow:hidden; display:flex; flex-direction:column; gap:var(--s-3); min-width:0}
+
+/* сигнальный баннер */
+.banner{display:flex; align-items:center; gap:var(--s-3); border:1px solid var(--border-strong); border-left:3px solid var(--accent); background:var(--surface); padding:var(--s-2) var(--s-3); font-size:13px; letter-spacing:.02em}
+.banner .sig{font-family:var(--font-mono); font-size:12px; letter-spacing:.14em; color:var(--accent); text-transform:uppercase; flex:none}
+.banner b{font-weight:600; text-transform:uppercase; font-size:12.5px; letter-spacing:.04em}
+.banner .more{margin-left:auto; font-family:var(--font-mono); font-size:12px; color:var(--text); border:1px solid var(--border-strong); display:flex; align-items:center; height:40px; padding:0 var(--s-2); flex:none}
+.banner .more:hover{border-color:var(--accent); color:var(--accent)}
+
+/* секции */
+.sec-head{display:flex; align-items:center; gap:var(--s-3); margin-top:var(--s-1)}
+.sec-head h2{margin:0; font-family:var(--font-display); font-size:15px; letter-spacing:.1em; text-transform:uppercase}
+.sec-head .n{font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
+.sec-head .line{flex:1; height:1px; background:var(--border-strong)}
+.sec-head .act{font-family:var(--font-mono); font-size:12px; display:flex; align-items:center; gap:var(--s-2); height:40px; padding:0 var(--s-2); border:1px solid var(--border-strong); color:var(--text)}
+.sec-head .act:hover{border-color:var(--accent); color:var(--accent)}
+.sec-head .act svg{width:14px;height:14px}
+
+/* HUD-карточки с угловыми скобками */
+.hudgrid{display:grid; grid-template-columns:repeat(3,1fr); gap:var(--s-3)}
+.hudcard{position:relative; background:var(--surface); border:1px solid var(--border); padding:var(--s-3); display:flex; flex-direction:column; gap:var(--s-2)}
+.hudcard::before, .hudcard::after{content:""; position:absolute; width:14px; height:14px; pointer-events:none}
+.hudcard::before{top:-1px; left:-1px; border-top:2px solid var(--accent); border-left:2px solid var(--accent)}
+.hudcard::after{bottom:-1px; right:-1px; border-bottom:2px solid var(--accent); border-right:2px solid var(--accent)}
+.hudcard:hover, .hudcard.is-hover{border-color:var(--border-strong); background:var(--surface-2)}
+.hudcard .head{display:flex; align-items:center; gap:var(--s-2)}
+.hudcard .glyph{width:44px;height:44px;display:grid;place-items:center;background:var(--accent-soft);color:var(--text);clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
+.hudcard .glyph svg{color:var(--accent)}
+.hudcard .name{font-family:var(--font-display); font-size:14px; letter-spacing:.04em; text-transform:uppercase; line-height:1.3}
+.hudcard .st{display:flex; align-items:center; gap:var(--s-1); font-family:var(--font-mono); font-size:12px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.08em}
+.hudcard .st .led{width:7px;height:7px}
+.hudcard .tel{font-family:var(--font-mono); font-size:12px; color:var(--text-muted); border-top:1px solid var(--border); padding-top:var(--s-2)}
+.hudcard .tel b{color:var(--text); font-weight:500}
+.playbig{
+  height:44px; display:flex; align-items:center; justify-content:center; gap:var(--s-2);
+  background:var(--accent); color:var(--on-accent);
+  font-family:var(--font-display); font-size:13px; letter-spacing:.14em; text-transform:uppercase;
+  clip-path:var(--cut);
+}
+.playbig:hover{background:color-mix(in srgb, var(--accent) 82%, white)}
+.playbig svg{width:15px;height:15px;fill:currentColor;stroke:none}
+.packs{display:grid; grid-template-columns:repeat(3,1fr); gap:var(--s-3)}
+.pack{display:flex; align-items:center; gap:var(--s-3); background:var(--surface); border:1px solid var(--border); padding:var(--s-2) var(--s-3)}
+.pack:hover, .pack.is-hover{border-color:var(--border-strong); background:var(--surface-2)}
+.pack .glyph{width:40px;height:40px;display:grid;place-items:center;background:var(--surface-2);color:var(--text);flex:none}
+.pack .info{flex:1; min-width:0}
+.pack .name{font-size:14px; font-weight:600; line-height:1.3}
+.pack .dl{font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
+.pack .install{height:40px; padding:0 var(--s-3); display:flex; align-items:center; gap:var(--s-1); border:1px solid var(--border-strong); font-family:var(--font-mono); font-size:12px; text-transform:uppercase; letter-spacing:.06em; flex:none}
+.pack .install:hover{border-color:var(--accent); color:var(--accent)}
+.pack .install svg{width:14px;height:14px}
+
+/* ── экран 2: браузер модов ─────────────────────────────────────── */
+.toolbar{display:flex; align-items:center; gap:var(--s-4)}
+.toolbar h1{margin:0; font-family:var(--font-display); font-size:17px; letter-spacing:.1em; text-transform:uppercase}
+.toolbar h1 .dim{color:var(--accent)}
+.toolbar .found{font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
+.toolbar .q{margin-left:auto; display:flex; align-items:center; gap:var(--s-2); width:380px; height:44px; padding:0 var(--s-3); background:var(--surface); border:1px solid var(--border-strong)}
+.toolbar .q:focus-within{border-color:var(--accent)}
+.toolbar .q input{flex:1; min-width:0; background:none; border:0; outline:none; color:var(--text); font-family:var(--font-mono); font-size:14px}
+.browser{display:grid; grid-template-columns:236px 1fr; gap:var(--s-4); align-items:start; flex:1; min-height:0}
+.filters{border:1px solid var(--border); background:var(--surface); padding:var(--s-3)}
+.filters fieldset{border:0; margin:0 0 var(--s-3); padding:0}
+.filters legend{font-family:var(--font-mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--text-muted); padding:0; margin-bottom:var(--s-1)}
+.filters label{display:flex; align-items:center; gap:var(--s-2); height:40px; font-family:var(--font-mono); font-size:13px; cursor:pointer; padding:0 var(--s-2); margin:0 calc(-1 * var(--s-2)); color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em}
+.filters label:hover{background:var(--surface-2); color:var(--text)}
+.filters input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);flex:none}
+.cards{display:grid; grid-template-columns:repeat(3,1fr); gap:var(--s-3); align-content:start}
+.modcard{position:relative; background:var(--surface); border:1px solid var(--border); padding:var(--s-3); display:flex; flex-direction:column; gap:var(--s-2)}
+.modcard::before, .modcard::after{content:""; position:absolute; width:14px; height:14px; pointer-events:none}
+.modcard::before{top:-1px; left:-1px; border-top:2px solid var(--accent); border-left:2px solid var(--accent)}
+.modcard::after{bottom:-1px; right:-1px; border-bottom:2px solid var(--accent); border-right:2px solid var(--accent)}
+.modcard:hover, .modcard.is-hover{border-color:var(--border-strong); background:var(--surface-2)}
+.modcard .head{display:flex; align-items:center; gap:var(--s-2)}
+.modcard .glyph{width:40px;height:40px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);flex:none}
+.modcard .nm{font-size:15px; font-weight:600; line-height:1.25}
+.modcard .ver{font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
+.modcard .desc{font-size:13px; color:var(--text-muted); line-height:1.45; min-height:40px}
+.modcard .tel{font-family:var(--font-mono); font-size:12px; color:var(--text-muted); border-top:1px solid var(--border); padding-top:var(--s-2); display:flex; align-items:center; gap:var(--s-2)}
+.modcard .tel .dl{color:var(--text)}
+.modcard .install{height:44px; display:flex; align-items:center; justify-content:center; gap:var(--s-2); border:1px solid var(--accent); color:var(--text); font-family:var(--font-mono); font-size:12px; text-transform:uppercase; letter-spacing:.08em; clip-path:var(--cut); background:var(--accent-soft)}
+.modcard .install:hover{background:var(--accent); color:var(--on-accent)}
+.modcard .install svg{width:14px;height:14px}
+
+/* состояния */
+.states h2{font-size:12px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--text-muted); margin:0 0 var(--s-2)}
+.states .grid{display:grid; grid-template-columns:repeat(4,1fr); gap:var(--s-3)}
+.panel{background:var(--surface); border:1px solid var(--border); padding:var(--s-3); display:flex; flex-direction:column; gap:var(--s-2)}
+.panel .cap{font-size:12px; color:var(--text-muted); font-family:var(--font-mono)}
+.demo-card{position:relative; background:var(--surface-2); border:1px solid var(--border-strong); padding:var(--s-3); display:flex; align-items:center; gap:var(--s-2)}
+.demo-card::before{content:""; position:absolute; top:-1px; left:-1px; width:14px; height:14px; border-top:2px solid var(--accent); border-left:2px solid var(--accent)}
+.demo-card::after{content:""; position:absolute; bottom:-1px; right:-1px; width:14px; height:14px; border-bottom:2px solid var(--accent); border-right:2px solid var(--accent)}
+.skel{display:flex; flex-direction:column; gap:var(--s-2)}
+.skel .line{height:44px; background:linear-gradient(90deg, var(--surface-2) 25%, color-mix(in srgb, var(--accent) 12%, var(--surface-2)) 50%, var(--surface-2) 75%); background-size:200% 100%; animation:shimmer 1.2s linear infinite}
+.skel .line.s2{width:66%}
+@keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
+.empty{display:flex; flex-direction:column; align-items:center; text-align:center; gap:var(--s-2); padding:var(--s-3) var(--s-2)}
+.empty svg{width:30px;height:30px;color:var(--text-muted)}
+.empty .t{font-size:14px; font-weight:600; text-transform:uppercase; letter-spacing:.06em}
+.empty .d{font-size:13px; color:var(--text-muted)}
+.empty .btn{height:44px; display:flex; align-items:center; padding:0 var(--s-3); border:1px solid var(--accent); background:var(--accent-soft); font-family:var(--font-mono); font-size:12px; text-transform:uppercase; letter-spacing:.08em; clip-path:var(--cut)}
+.empty .btn:hover{background:var(--accent); color:var(--on-accent)}
+.error{display:flex; flex-direction:column; gap:var(--s-2)}
+.error .t{font-size:14px; font-weight:600; display:flex; gap:var(--s-2); align-items:center}
+.error .t svg{width:20px;height:20px;color:var(--alert)}
+.error .d{font-size:13px; color:var(--text-muted)}
+.error .code{font-family:var(--font-mono); font-size:12px; color:var(--text-muted); border:1px solid var(--border-strong); padding:0 var(--s-1); line-height:20px; display:inline-block}
+.error .btn{height:44px; align-self:flex-start; display:flex; align-items:center; gap:var(--s-2); padding:0 var(--s-3); border:1px solid var(--border-strong); font-family:var(--font-mono); font-size:12px; text-transform:uppercase; letter-spacing:.08em; clip-path:var(--cut)}
+.error .btn:hover{border-color:var(--accent); color:var(--accent)}
+.error .btn svg{width:14px;height:14px}
+
+@media (prefers-reduced-motion: reduce){
+  *{transition:none !important; animation:none !important}
+  .led{animation:none}
+  .skel .line{animation:none}
+}
+</style>
+</head>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-cube" viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8"/><path d="M5 9.8V21h14V9.8"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-package" viewBox="0 0 24 24"><path d="M16.5 9.4 7.5 4.2"/><path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.7Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></symbol>
+    <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M5 4h4.5v2.3a1.9 1.9 0 1 0 3.8 0V4H19v5.5h2.3a1.9 1.9 0 1 1 0 3.8H19V19h-5.5v-2.3a1.9 1.9 0 1 0-3.8 0V19H5v-5.5h2.3a1.9 1.9 0 1 1 0-3.8H5Z"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="m21 15.5-4.5-4.5L6 21.5"/></symbol>
+    <symbol id="i-shader" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M21 5h-7M10 5H3M21 12h-9M8 12H3M21 19h-5M12 19H3"/><circle cx="12" cy="5" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="14" cy="19" r="2"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5 19.5 12 7 19.5Z"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-chevdown" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-megaphone" viewBox="0 0 24 24"><path d="m3 11 18-5v12L3 14v-3Z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2.7 19.5h18.6L12 3Z"/><path d="M12 9.5v4"/><path d="M12 16.8h.01"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1Z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-steve" viewBox="0 0 8 8">
+      <rect width="8" height="2" fill="#3b2a1a"/>
+      <rect x="0" y="2" width="2" height="1" fill="#3b2a1a"/><rect x="6" y="2" width="2" height="1" fill="#3b2a1a"/>
+      <rect x="2" y="2" width="4" height="1" fill="#bd8a5e"/>
+      <rect x="0" y="3" width="1" height="1" fill="#3b2a1a"/><rect x="7" y="3" width="1" height="1" fill="#3b2a1a"/>
+      <rect x="1" y="3" width="6" height="1" fill="#bd8a5e"/>
+      <rect x="0" y="4" width="2" height="1" fill="#bd8a5e"/><rect x="6" y="4" width="2" height="1" fill="#bd8a5e"/>
+      <rect x="2" y="4" width="1" height="1" fill="#ffffff"/><rect x="3" y="4" width="1" height="1" fill="#4a3a8c"/>
+      <rect x="4" y="4" width="1" height="1" fill="#4a3a8c"/><rect x="5" y="4" width="1" height="1" fill="#ffffff"/>
+      <rect x="0" y="5" width="8" height="1" fill="#bd8a5e"/>
+      <rect x="3" y="5" width="2" height="1" fill="#9a6a40"/>
+      <rect x="0" y="6" width="8" height="1" fill="#b07f52"/>
+      <rect x="3" y="6" width="2" height="1" fill="#6e4526"/>
+      <rect x="0" y="7" width="8" height="1" fill="#b07f52"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="docstrip">
+  <span class="num">06</span>
+  <b>Кабина</b><span>· продукт «Кокпит» · variance 7 · motion 6 · density 7 ·</span>
+  <a href="design-systems/cockpit/MASTER.md">дизайн-система</a>
+</header>
+
+<main class="stage">
+
+  <!-- ЭКРАН 1: ГЛАВНАЯ -->
+  <section class="frame" aria-label="Экран 1 — Главная">
+    <div class="app">
+      <div class="hud">
+        <div class="hud-row1">
+          <div class="brand"><span class="mark"><svg aria-hidden="true"><use href="#i-cube"/></svg></span>Кокпит</div>
+          <div class="search">
+            <svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-search"/></svg>
+            <input type="text" placeholder="поиск: инстансы, моды, модпаки" aria-label="Глобальный поиск">
+          </div>
+          <div class="telemetry">
+            <span style="display:flex;align-items:center;gap:6px"><span class="led" aria-hidden="true"></span>СИСТЕМА ОК</span>
+            <span>ОЗУ <span class="val">4,2/16 ГБ</span></span>
+            <span>TPS <span class="val">20</span></span>
+          </div>
+          <button class="account" aria-label="Аккаунт Steve, профиль нелицензионный, сменить">
+            <svg width="32" height="32" aria-hidden="true" style="shape-rendering:crispEdges"><use href="#i-steve"/></svg>
+            <span class="who"><span class="name">Steve</span><span class="tag">нелицензионный</span></span>
+            <svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chevdown"/></svg>
+          </button>
+          <div class="winbtns">
+            <button aria-label="Свернуть"><svg aria-hidden="true"><use href="#i-minus"/></svg></button>
+            <button aria-label="Развернуть"><svg aria-hidden="true"><use href="#i-square"/></svg></button>
+            <button class="close" aria-label="Закрыть"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+          </div>
+        </div>
+        <nav class="hud-row2" aria-label="Основная навигация" style="display:flex">
+          <button class="nav-item is-active" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg>Главная</button>
+          <button class="nav-item"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>Инстансы<span class="n">5</span></button>
+          <button class="nav-item"><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg>Модпаки</button>
+          <button class="nav-item"><svg class="icon" aria-hidden="true"><use href="#i-puzzle"/></svg>Моды</button>
+          <button class="nav-item"><svg class="icon" aria-hidden="true"><use href="#i-image"/></svg>Ресурспаки</button>
+          <button class="nav-item"><svg class="icon" aria-hidden="true"><use href="#i-shader"/></svg>Шейдеры</button>
+          <button class="nav-item"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>Настройки</button>
+        </nav>
+      </div>
+
+      <div class="content">
+        <div class="banner">
+          <span class="sig">сигнал</span>
+          <span><b>Обновление лаунчера 2.1.0</b> — новый браузер модов и очередь загрузок</span>
+          <a class="more" href="#">что нового →</a>
+        </div>
+
+        <div class="sec-head"><h2>Инстансы</h2><span class="n">5</span><span class="line" aria-hidden="true"></span>
+          <button class="act"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>новый инстанс</button>
+        </div>
+
+        <div class="hudgrid">
+          <div class="hudcard">
+            <div class="head">
+              <span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg></span>
+              <span><span class="name">Ванилла 26.3</span><br><span class="st"><span class="led" aria-hidden="true"></span>без загрузчика</span></span>
+            </div>
+            <div class="tel">ЗАПУСК: <b>2 ч назад</b></div>
+            <button class="playbig"><svg aria-hidden="true"><use href="#i-play"/></svg>Играть</button>
+          </div>
+          <div class="hudcard">
+            <div class="head">
+              <span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-zap"/></svg></span>
+              <span><span class="name">Fabric + Sodium</span><br><span class="st"><span class="led" aria-hidden="true"></span>готов к запуску</span></span>
+            </div>
+            <div class="tel">ЗАГРУЗЧИК: <b>fabric-loader 0.17</b> · МОДЫ: <b>14</b> · ЗАПУСК: <b>вчера</b></div>
+            <button class="playbig"><svg aria-hidden="true"><use href="#i-play"/></svg>Играть</button>
+          </div>
+          <div class="hudcard">
+            <div class="head">
+              <span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg></span>
+              <span><span class="name">NeoForge: Create</span><br><span class="st"><span class="led" aria-hidden="true"></span>готов к запуску</span></span>
+            </div>
+            <div class="tel">ЗАГРУЗЧИК: <b>neoforge 21.1</b> · МОДЫ: <b>38</b> · ЗАПУСК: <b>3 дня назад</b></div>
+            <button class="playbig"><svg aria-hidden="true"><use href="#i-play"/></svg>Играть</button>
+          </div>
+          <div class="hudcard">
+            <div class="head">
+              <span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-puzzle"/></svg></span>
+              <span><span class="name">Forge 1.20.1: РЛКрафт</span><br><span class="st"><span class="led" style="animation:none" aria-hidden="true"></span>187 модов</span></span>
+            </div>
+            <div class="tel">ЗАГРУЗЧИК: <b>forge 47.3</b> · ЗАПУСК: <b>неделю назад</b></div>
+            <button class="playbig"><svg aria-hidden="true"><use href="#i-play"/></svg>Играть</button>
+          </div>
+          <div class="hudcard">
+            <div class="head">
+              <span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-shader"/></svg></span>
+              <span><span class="name">Креатив-песочница</span><br><span class="st"><span class="led" aria-hidden="true"></span>шейдеры</span></span>
+            </div>
+            <div class="tel">ЗАГРУЗЧИК: <b>quilt</b> · ЗАПУСК: <b>месяц назад</b></div>
+            <button class="playbig"><svg aria-hidden="true"><use href="#i-play"/></svg>Играть</button>
+          </div>
+        </div>
+
+        <div class="sec-head"><h2>Популярные модпаки</h2><span class="line" aria-hidden="true"></span></div>
+        <div class="packs">
+          <div class="pack">
+            <span class="glyph"><svg class="icon" style="width:18px;height:18px" aria-hidden="true"><use href="#i-zap"/></svg></span>
+            <span class="info"><span class="name">Fabulously Optimized</span><br><span class="dl">2,1 млн загрузок</span></span>
+            <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>установить</button>
+          </div>
+          <div class="pack">
+            <span class="glyph"><svg class="icon" style="width:18px;height:18px" aria-hidden="true"><use href="#i-cube"/></svg></span>
+            <span class="info"><span class="name">Create: Above and Beyond</span><br><span class="dl">980 тыс. загрузок</span></span>
+            <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>установить</button>
+          </div>
+          <div class="pack">
+            <span class="glyph"><svg class="icon" style="width:18px;height:18px" aria-hidden="true"><use href="#i-shader"/></svg></span>
+            <span class="info"><span class="name">Simply Optimized</span><br><span class="dl">640 тыс. загрузок</span></span>
+            <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>установить</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ЭКРАН 2: БРАУЗЕР МОДОВ -->
+  <section class="frame" aria-label="Экран 2 — Браузер модов">
+    <div class="app">
+      <div class="hud">
+        <div class="hud-row1">
+          <div class="brand"><span class="mark"><svg aria-hidden="true"><use href="#i-cube"/></svg></span>Кокпит</div>
+          <div class="search">
+            <svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-search"/></svg>
+            <input type="text" placeholder="поиск: инстансы, моды, модпаки" aria-label="Глобальный поиск">
+          </div>
+          <div class="telemetry">
+            <span style="display:flex;align-items:center;gap:6px"><span class="led" aria-hidden="true"></span>СЕТЬ ОК</span>
+            <span>РЕЗУЛЬТАТОВ <span class="val">6</span></span>
+          </div>
+          <button class="account" aria-label="Аккаунт Steve, профиль нелицензионный, сменить">
+            <svg width="32" height="32" aria-hidden="true" style="shape-rendering:crispEdges"><use href="#i-steve"/></svg>
+            <span class="who"><span class="name">Steve</span><span class="tag">нелицензионный</span></span>
+            <svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chevdown"/></svg>
+          </button>
+          <div class="winbtns">
+            <button aria-label="Свернуть"><svg aria-hidden="true"><use href="#i-minus"/></svg></button>
+            <button aria-label="Развернуть"><svg aria-hidden="true"><use href="#i-square"/></svg></button>
+            <button class="close" aria-label="Закрыть"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+          </div>
+        </div>
+        <nav class="hud-row2" aria-label="Основная навигация" style="display:flex">
+          <button class="nav-item"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg>Главная</button>
+          <button class="nav-item"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>Инстансы<span class="n">5</span></button>
+          <button class="nav-item"><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg>Модпаки</button>
+          <button class="nav-item is-active" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-puzzle"/></svg>Моды</button>
+          <button class="nav-item"><svg class="icon" aria-hidden="true"><use href="#i-image"/></svg>Ресурспаки</button>
+          <button class="nav-item"><svg class="icon" aria-hidden="true"><use href="#i-shader"/></svg>Шейдеры</button>
+          <button class="nav-item"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>Настройки</button>
+        </nav>
+      </div>
+
+      <div class="content">
+        <div class="toolbar">
+          <h1>Моды <span class="dim">// каталог</span></h1>
+          <span class="found">запрос: «sodium» · 6 результатов</span>
+          <div class="q">
+            <svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-search"/></svg>
+            <input type="text" value="sodium" aria-label="Поиск по модам">
+          </div>
+        </div>
+
+        <div class="browser">
+          <aside class="filters" aria-label="Фильтры каталога">
+            <fieldset>
+              <legend>Версия Minecraft</legend>
+              <label><input type="checkbox" checked>26.3</label>
+              <label><input type="checkbox">1.21.1</label>
+              <label><input type="checkbox">1.20.1</label>
+            </fieldset>
+            <fieldset>
+              <legend>Загрузчик</legend>
+              <label><input type="checkbox" checked>fabric</label>
+              <label><input type="checkbox">forge</label>
+              <label><input type="checkbox">quilt</label>
+              <label><input type="checkbox">neoforge</label>
+            </fieldset>
+            <fieldset>
+              <legend>Категории</legend>
+              <label><input type="checkbox" checked>Оптимизация</label>
+              <label><input type="checkbox">Графика</label>
+              <label><input type="checkbox">Геймплей</label>
+              <label><input type="checkbox">Утилиты</label>
+              <label><input type="checkbox">Библиотеки</label>
+            </fieldset>
+          </aside>
+
+          <div class="cards">
+            <article class="modcard">
+              <div class="head"><span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-zap"/></svg></span><span><span class="nm">Sodium</span><br><span class="ver">0.6.13</span></span></div>
+              <div class="desc">Современный движок рендеринга: больше кадров при той же картинке.</div>
+              <div class="tel">ЗАГРУЗКИ: <span class="dl">38,2 млн</span></div>
+              <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить в инстанс…</button>
+            </article>
+            <article class="modcard">
+              <div class="head"><span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg></span><span><span class="nm">Sodium Extra</span><br><span class="ver">0.6.4</span></span></div>
+              <div class="desc">Дополнительные настройки графики для Sodium.</div>
+              <div class="tel">ЗАГРУЗКИ: <span class="dl">6,1 млн</span></div>
+              <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить в инстанс…</button>
+            </article>
+            <article class="modcard">
+              <div class="head"><span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-image"/></svg></span><span><span class="nm">Reese's Sodium Options</span><br><span class="ver">1.8.3</span></span></div>
+              <div class="desc">Аккуратный экран видеонастроек вместо стандартного.</div>
+              <div class="tel">ЗАГРУЗКИ: <span class="dl">9,4 млн</span></div>
+              <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить в инстанс…</button>
+            </article>
+            <article class="modcard">
+              <div class="head"><span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg></span><span><span class="nm">Nvidium</span><br><span class="ver">0.2.7</span></span></div>
+              <div class="desc">Ускорение отрисовки чанков на видеокартах NVIDIA.</div>
+              <div class="tel">ЗАГРУЗКИ: <span class="dl">1,7 млн</span></div>
+              <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить в инстанс…</button>
+            </article>
+            <article class="modcard">
+              <div class="head"><span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg></span><span><span class="nm">More Culling</span><br><span class="ver">1.4.1</span></span></div>
+              <div class="desc">Отсекает невидимые грани блоков и листву.</div>
+              <div class="tel">ЗАГРУЗКИ: <span class="dl">3,3 млн</span></div>
+              <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить в инстанс…</button>
+            </article>
+            <article class="modcard">
+              <div class="head"><span class="glyph"><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg></span><span><span class="nm">Indium</span><br><span class="ver">1.0.36</span></span></div>
+              <div class="desc">Совместимость Fabric Rendering API с Sodium.</div>
+              <div class="tel">ЗАГРУЗКИ: <span class="dl">4,8 млн</span></div>
+              <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Установить в инстанс…</button>
+            </article>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- СОСТОЯНИЯ -->
+  <section class="states" aria-label="Состояния компонентов">
+    <h2>Состояния компонентов</h2>
+    <div class="grid">
+      <div class="panel">
+        <div class="demo-card">
+          <span class="glyph" style="width:44px;height:44px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent)"><svg class="icon" aria-hidden="true"><use href="#i-zap"/></svg></span>
+          <span style="flex:1"><b style="font-family:var(--font-display);font-size:13px;text-transform:uppercase;letter-spacing:.04em">Fabric + Sodium</b><br><span class="mono" style="font-size:12px;color:var(--text-muted)">fabric-loader 0.17 · 14 модов</span></span>
+          <button class="playbig" style="width:96px"><svg aria-hidden="true"><use href="#i-play"/></svg>Играть</button>
+        </div>
+        <div class="cap">hover HUD-карточки — заморожен: скобки-уголки активны, фон surface-2; видно и без курсора</div>
+      </div>
+
+      <div class="panel">
+        <div class="skel" aria-label="Скелетон загрузки">
+          <div class="line"></div>
+          <div class="line s2"></div>
+        </div>
+        <div class="cap">скелетон → в reduced-motion shimmer заменяется статичной заливкой</div>
+      </div>
+
+      <div class="panel">
+        <div class="empty">
+          <svg aria-hidden="true"><use href="#i-inbox"/></svg>
+          <div class="t">Ничего не найдено</div>
+          <div class="d">По запросу нет модов — попробуйте ослабить фильтры.</div>
+          <button class="btn">Сбросить фильтры</button>
+        </div>
+        <div class="cap">пустое состояние с CTA</div>
+      </div>
+
+      <div class="panel">
+        <div class="error">
+          <div class="t"><svg aria-hidden="true"><use href="#i-alert"/></svg>Не удалось загрузить список модов</div>
+          <div class="d">Проверьте подключение и попробуйте ещё раз. <span class="code">MODRINTH_TIMEOUT</span></div>
+          <button class="btn"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Повторить</button>
+        </div>
+        <div class="cap">ошибка с повтором</div>
+      </div>
+    </div>
+  </section>
+
+</main>
+</body>
+</html>

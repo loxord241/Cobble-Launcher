@@ -126,6 +126,29 @@ pub async fn instance_launch(
     let inst = instances::load(&state.paths, &id)?;
     let engine = state.engine();
     let settings_guard = state.settings.read().await.clone();
+    // Идентичность активного аккаунта (offline/MSA/ely) — спека §6.8.
+    let identity = match crate::auth::launch_identity(&state.paths, &state.http).await {
+        Ok(id) => id,
+        Err(e) => {
+            // Обновление токена не удалось (нет сети и пр.) — событие в UI + fallback.
+            state.bus.emit(crate::events::LauncherEvent::AccountRefreshFailed {
+                account_id: crate::auth::active(&state.paths)
+                    .map(|a| a.id)
+                    .unwrap_or_default(),
+                reason: e.to_string(),
+            });
+            crate::auth::offline::identity(&player)
+        }
+    };
+    // ely.by: скачать authlib-injector и подготовить -javaagent.
+    let javaagent = match crate::auth::active(&state.paths).map(|a| a.kind) {
+        Some(crate::auth::AccountKind::Ely) => {
+            let jar =
+                crate::auth::ely::authlib_injector_jar(&state.http, &state.paths.cache_dir()).await?;
+            Some(crate::auth::ely::javaagent_arg(&jar))
+        }
+        _ => None,
+    };
     let prepared = instances::run::prepare(
         &state.paths,
         &settings_guard,
@@ -133,7 +156,13 @@ pub async fn instance_launch(
         engine,
         &state.bus,
         &inst,
-        instances::run::offline_identity(&player),
+        instances::run::AccountIdentity {
+            player_name: identity.player_name,
+            uuid: identity.uuid,
+            access_token: identity.access_token,
+            user_type: identity.user_type,
+            javaagent,
+        },
     )
     .await?;
 
@@ -265,6 +294,112 @@ pub async fn instance_kill(state: State<'_, AppState>, instance_id: String) -> R
 #[tauri::command]
 pub async fn process_status(state: State<'_, AppState>) -> Result<Vec<(String, u32)>> {
     Ok(instances::running_instances(&state.paths))
+}
+
+// ---------- аккаунты (спека §6.8) ----------
+
+#[tauri::command]
+pub async fn account_list(state: State<'_, AppState>) -> Result<Vec<crate::auth::Account>> {
+    Ok(crate::auth::list(&state.paths))
+}
+
+#[tauri::command]
+pub async fn account_add_offline(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<crate::auth::Account> {
+    let uuid = crate::auth::offline::offline_uuid(&name).to_string();
+    let acc = crate::auth::Account {
+        id: uuid::Uuid::new_v4().to_string(),
+        kind: crate::auth::AccountKind::Offline,
+        name: crate::util::names::sanitize_user_name(&name, "Player"),
+        uuid,
+        refresh_ref: None,
+    };
+    crate::auth::add(&state.paths, acc)
+}
+
+/// Начало MSA device-code: UI показывает user_code и открывает браузер.
+#[tauri::command]
+pub async fn account_add_msa_start(
+    state: State<'_, AppState>,
+) -> Result<crate::auth::msa::DeviceCodeStart> {
+    let client_id = state
+        .settings
+        .read()
+        .await
+        .azure_client_id
+        .clone()
+        .ok_or_else(|| {
+            crate::errors::LauncherError::InvalidInput(
+                "Укажите azureClientId в Настройках (инструкция в README)".into(),
+            )
+        })?;
+    crate::auth::msa::device_code_start(&state.http, &client_id).await
+}
+
+/// Опрос: Ok(Some) — вход завершён, аккаунт добавлен (refresh → keyring).
+#[tauri::command]
+pub async fn account_add_msa_poll(
+    state: State<'_, AppState>,
+    device_code: String,
+) -> Result<Option<crate::auth::Account>> {
+    let client_id = state
+        .settings
+        .read()
+        .await
+        .azure_client_id
+        .clone()
+        .ok_or_else(|| {
+            crate::errors::LauncherError::InvalidInput("нет azureClientId в настройках".into())
+        })?;
+    let Some(session) = crate::auth::msa::device_code_poll(&state.http, &client_id, &device_code).await? else {
+        return Ok(None);
+    };
+    let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
+    crate::auth::keyring_set(&ref_name, &session.refresh_token)?;
+    let acc = crate::auth::Account {
+        id: uuid::Uuid::new_v4().to_string(),
+        kind: crate::auth::AccountKind::Msa,
+        name: session.player_name.clone(),
+        uuid: session.uuid.clone(),
+        refresh_ref: Some(ref_name),
+    };
+    crate::auth::add(&state.paths, acc.clone())?;
+    Ok(Some(acc))
+}
+
+/// Логин ely.by (пароль передаётся только по TLS в authserver; в keyring — токен).
+#[tauri::command]
+pub async fn account_add_ely(
+    state: State<'_, AppState>,
+    username: String,
+    password: String,
+) -> Result<crate::auth::Account> {
+    let session = crate::auth::ely::authenticate(&state.http, &username, &password).await?;
+    let ref_name = format!("ely-refresh-{}", uuid::Uuid::new_v4());
+    crate::auth::keyring_set(&ref_name, &session.refresh_token)?;
+    let acc = crate::auth::Account {
+        id: uuid::Uuid::new_v4().to_string(),
+        kind: crate::auth::AccountKind::Ely,
+        name: session.player_name.clone(),
+        uuid: session.uuid.clone(),
+        refresh_ref: Some(ref_name),
+    };
+    crate::auth::add(&state.paths, acc.clone())?;
+    Ok(acc)
+}
+
+#[tauri::command]
+pub async fn account_remove(state: State<'_, AppState>, id: String) -> Result<OkMsg> {
+    crate::auth::remove(&state.paths, &id)?;
+    Ok(OkMsg { ok: true })
+}
+
+#[tauri::command]
+pub async fn account_active_set(state: State<'_, AppState>, id: String) -> Result<OkMsg> {
+    crate::auth::set_active(&state.paths, &id)?;
+    Ok(OkMsg { ok: true })
 }
 
 // ---------- версии и загрузчики ----------

@@ -252,7 +252,13 @@ pub async fn prepare(
         &mc_version_dir.join(format!("{}.jar", rv.id)),
         &extra_jars,
     );
-    let mut jvm_extra_flags = vec![format!("-Xmx{}M", inst.ram_mb)];
+    let mut jvm_extra_flags = Vec::new();
+    if let Some(agent) = &account.javaagent {
+        // -javaagent должен стоять до пользовательских флагов (порядок JVM-флагов
+        // между собой не критичен, но agent — системный).
+        jvm_extra_flags.push(agent.clone());
+    }
+    jvm_extra_flags.push(format!("-Xmx{}M", inst.ram_mb));
     jvm_extra_flags.extend(inst.jvm_flags.iter().cloned());
     // ВАЖНО: не добавлять -DlegacyClassPath с полным classpath — командная
     // строка Windows ограничена 32K и дублирование -cp даёт os error 206
@@ -308,12 +314,14 @@ pub async fn prepare(
     })
 }
 
-/// Личность аккаунта для запуска (M2: offline; M8 добавит MSA/ely).
+/// Личность аккаунта для запуска (offline/MSA/ely — спека §6.8).
 pub struct AccountIdentity {
     pub player_name: String,
     pub uuid: String,
     pub access_token: String,
     pub user_type: String,
+    /// ely.by: `-javaagent:...=server` (ЕДИНСТВЕННОЕ исключение из ноль-инжекций).
+    pub javaagent: Option<String>,
 }
 
 pub fn offline_identity(nick: &str) -> AccountIdentity {
@@ -322,6 +330,7 @@ pub fn offline_identity(nick: &str) -> AccountIdentity {
         uuid: crate::auth::offline::offline_uuid(nick).to_string(),
         access_token: "0".into(), // offline: token="0" (спека §6.8)
         user_type: "legacy".into(),
+        javaagent: None,
     }
 }
 

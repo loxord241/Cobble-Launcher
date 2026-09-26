@@ -131,6 +131,25 @@ enum Cmd {
         #[arg(long)]
         loader: Option<String>,
     },
+    /// Добавить офлайн-профиль в реестр аккаунтов
+    AuthOffline {
+        #[arg(long)]
+        nick: String,
+    },
+    /// Начать MSA device-code вход (код + URL для браузера)
+    AuthMsaStart,
+    /// Дописать MSA-вход после авторизации в браузере
+    AuthMsaPoll {
+        #[arg(long)]
+        device_code: String,
+    },
+    /// Список аккаунтов
+    AuthList,
+    /// Сделать аккаунт активным
+    AuthActive {
+        #[arg(long)]
+        id: String,
+    },
     /// Очистить кэш стора от объектов без ссылок
     StoreCleanup,
 }
@@ -225,6 +244,70 @@ async fn run(cli: Cli) -> Result<()> {
                 println!("{} | {} | {} скач. | {}", h.title, h.slug, h.downloads, h.project_id);
             }
             println!("всего: {}", r.total_hits);
+            Ok(())
+        }
+        Cmd::AuthOffline { nick } => {
+            let uuid = mc_launcher_v2_lib::auth::offline::offline_uuid(&nick).to_string();
+            let acc = mc_launcher_v2_lib::auth::Account {
+                id: uuid::Uuid::new_v4().to_string(),
+                kind: mc_launcher_v2_lib::auth::AccountKind::Offline,
+                name: nick.clone(),
+                uuid,
+                refresh_ref: None,
+            };
+            mc_launcher_v2_lib::auth::add(&paths, acc)?;
+            println!("Офлайн-профиль {nick} добавлен");
+            Ok(())
+        }
+        Cmd::AuthMsaStart => {
+            let client = HttpClient::new(settings.proxy_url.as_deref())?;
+            let client_id = settings.azure_client_id.clone().ok_or_else(|| {
+                LauncherError::InvalidInput(
+                    "нет azureClientId в settings.json (инструкция в README, M8)".into(),
+                )
+            })?;
+            let start = mc_launcher_v2_lib::auth::msa::device_code_start(&client, &client_id).await?;
+            println!("1) Откройте: {}", start.verification_url);
+            println!("2) Введите код: {}", start.user_code);
+            println!("3) Затем: mcl auth-msa-poll --device {}", start.device_code);
+            Ok(())
+        }
+        Cmd::AuthMsaPoll { device_code } => {
+            let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+            let client_id = settings.azure_client_id.clone().ok_or_else(|| {
+                LauncherError::InvalidInput("нет azureClientId в settings.json".into())
+            })?;
+            for _ in 0..30 {
+                match mc_launcher_v2_lib::auth::msa::device_code_poll(&client, &client_id, &device_code).await? {
+                    Some(session) => {
+                        let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
+                        mc_launcher_v2_lib::auth::keyring_set(&ref_name, &session.refresh_token)?;
+                        let acc = mc_launcher_v2_lib::auth::Account {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            kind: mc_launcher_v2_lib::auth::AccountKind::Msa,
+                            name: session.player_name.clone(),
+                            uuid: session.uuid.clone(),
+                            refresh_ref: Some(ref_name),
+                        };
+                        println!("Вход выполнен: {} ({})", session.player_name, session.uuid);
+                        mc_launcher_v2_lib::auth::add(&paths, acc)?;
+                        return Ok(());
+                    }
+                    None => tokio::time::sleep(std::time::Duration::from_secs(3)).await,
+                }
+            }
+            println!("Авторизация ещё не завершена — повторите poll");
+            Ok(())
+        }
+        Cmd::AuthList => {
+            for a in mc_launcher_v2_lib::auth::list(&paths) {
+                println!("{} [{}] {} ({}) id={}", a.name, a.kind_label(), a.uuid, a.refresh_ref.as_deref().unwrap_or("без keyring"), a.id);
+            }
+            Ok(())
+        }
+        Cmd::AuthActive { id } => {
+            mc_launcher_v2_lib::auth::set_active(&paths, &id)?;
+            println!("Активный аккаунт: {id}");
             Ok(())
         }
         Cmd::StoreCleanup => {
@@ -690,6 +773,20 @@ async fn cmd_instance_launch(
         }
     });
 
+    // Идентичность активного аккаунта (offline/MSA/ely) — спека §6.8.
+    // Нет активного аккаунта → офлайн с указанным ником (token=0).
+    let identity = if mc_launcher_v2_lib::auth::active(paths).is_none() {
+        mc_launcher_v2_lib::auth::offline::identity(player)
+    } else {
+        mc_launcher_v2_lib::auth::launch_identity(paths, &client).await?
+    };
+    let javaagent = match mc_launcher_v2_lib::auth::active(paths).map(|a| a.kind) {
+        Some(mc_launcher_v2_lib::auth::AccountKind::Ely) => {
+            let jar = mc_launcher_v2_lib::auth::ely::authlib_injector_jar(&client, &paths.cache_dir()).await?;
+            Some(mc_launcher_v2_lib::auth::ely::javaagent_arg(&jar))
+        }
+        _ => None,
+    };
     let prepared = mc_launcher_v2_lib::instances::run::prepare(
         paths,
         settings,
@@ -697,7 +794,13 @@ async fn cmd_instance_launch(
         engine,
         &bus,
         &inst,
-        mc_launcher_v2_lib::instances::run::offline_identity(player),
+        mc_launcher_v2_lib::instances::run::AccountIdentity {
+            player_name: identity.player_name,
+            uuid: identity.uuid,
+            access_token: identity.access_token,
+            user_type: identity.user_type,
+            javaagent,
+        },
     )
     .await?;
     progress_task.abort();

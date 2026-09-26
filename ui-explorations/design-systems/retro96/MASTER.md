@@ -252,7 +252,7 @@ Before delivering any UI code, verify:
   --accent:#000080; --on-accent:#ffffff; --accent-soft:#d3d3f7;
   --titlebar-a:#000080; --titlebar-b:#1084d0;
   --link:#0000cc;
-  --danger:#a81414; --on-danger:#ffffff; --ok:#0a7a1f;
+  --danger:#8f1010;  # затемнён для 4.5:1 на сером фоне --on-danger:#ffffff; --ok:#0a7a1f;
   --font-ui:Tahoma,'Segoe UI',system-ui,sans-serif; --font-display:'Press Start 2P',Tahoma,monospace; --font-mono:'IBM Plex Mono','Courier New',monospace;
   --r-s:0px; --r-m:0px; --r-l:0px;
   --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:24px; --s-6:32px;

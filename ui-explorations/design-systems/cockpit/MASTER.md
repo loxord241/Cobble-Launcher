@@ -250,7 +250,7 @@ Before delivering any UI code, verify:
   --text:#E2E8F0; --text-muted:#9aa4bd;
   --border:#2c2956; --border-strong:#4C1D95;
   --accent:#7C3AED; --on-accent:#ffffff; --accent-soft:rgba(124,58,237,.14);
-  --alert:#F43F5E; --on-alert:#ffffff;
+  --alert:#F43F5E; --on-alert:#2a0710;  # тёмная слива: белый на #F43F5E не добирает 4.5:1
   --danger:#f28b82; --on-danger:#1c0908; --ok:#34d399;
   --font-ui:'IBM Plex Sans',system-ui,sans-serif; --font-display:'Russo One',system-ui,sans-serif; --font-mono:'JetBrains Mono',monospace;
   --r-s:2px; --r-m:4px; --r-l:8px;

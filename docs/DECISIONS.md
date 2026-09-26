@@ -148,3 +148,17 @@ NeoForge и Forge используют один путь: shim `launcher_profile
 `--installClient <game_dir>` → перенос version JSON в versions/ инстанса.
 Логика вынесена в `loaders::run_headless_installer` (была приватной в
 neoforge).
+
+
+## D20. Redaction через реестр секретов в аппендере
+
+Вместо хрупких regex на «похоже на токен» — глобальный реестр: каждый полученный
+access/refresh токен регистрируется в `util::redact`, file-логгер заворачивает
+запись в RedactingWriter, который заменяет вхождения на `[REDACTED]` ДО записи
+на диск. Токены длиной <8 символов не регистрируются (шум).
+
+## D21. ely.by authlib-injector: GitHub API digest
+
+Спека: «хэш со страницы релиза». GitHub API для releases/latest отдаёт
+`assets[].digest` (`sha256:…`) — это и есть машинно-читаемый хэш релиза; без
+digest скачивание запрещается (правило §3).

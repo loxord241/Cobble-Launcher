@@ -317,3 +317,47 @@
 **Открытые проблемы:** нет. Старые Forge (1.12-) без `--installClient` — не
 поддерживаются, честная ошибка (спека §6.3 допускает fallback processors как
 будущее расширение).
+
+
+---
+
+## M8. Аккаунты
+
+**Дата:** 2026-09-26
+
+**Сделано:**
+- `auth/mod.rs`: реестр accounts.json (kind: offline/msa/ely; ТОЛЬКО ссылки на
+  keyring, никаких токенов — `assert_no_plaintext_tokens` тестирует это), active
+  через settings, keyring-хелперы (Windows Credential Manager), launch_identity:
+  offline → token "0"; msa/ely → refresh сессии (обновлённый refresh — обратно в
+  keyring). `AccountRefreshFailed` при неудаче refresh (фолбэк на офлайн, не крах).
+- `auth/msa.rs`: полный device-code flow + цепочка XBL → XSTS → loginWithXbox →
+  /minecraft/profile; человеческие ошибки XErr (2148916233 — нет Xbox, 2148916238 —
+  детский, 2148916235 — регион); авто-refresh по refresh_token.
+- `auth/ely.rs`: логин/refresh authserver.ely.by; authlib-injector скачивается с
+  GitHub releases c sha256-digest (спека §5 «хэш со страницы релиза»);
+  `-javaagent:...=https://authserver.ely.by/api/authlib-injector` для ely-запуска —
+  ЕДИНСТВЕННОЕ исключение из ноль-инжекций (явный выбор профиля).
+- Redaction (спека §11): `util/redact.rs` — реестр секретов; file-логгер пишет
+  через RedactingWriter: все полученные токены в логах → `[REDACTED]`.
+- Команды: account_list/add_offline/add_msa_start/add_msa_poll/add_ely/remove/
+  active_set. UI-флоу MSA: device-code (код + браузер). CLI: auth-offline,
+  auth-msa-start/poll, auth-list, auth-active. Запуск (UI и CLI) идёт с
+  идентичностью АКТИВНОГО аккаунта.
+
+**Проверка:**
+- `cargo test` — **75 юнит + 10 интеграционных — зелёные** (roundtrip аккаунтов,
+  детект plaintext-токена, redaction, XErr-маппинг косвенно); clippy чисто.
+- **Keyring roundtrip пройден** (`cargo test keyring_roundtrip -- --ignored`):
+  запись/чтение/удаление в Windows Credential Manager.
+- **Офлайн-профиль добавлен, accounts.json без plaintext** (файл проверен), запуск
+  инстансов через реестр работает (все приёмки M2–M7 шли через offline_identity).
+- **MSA device-code: реальный вызов возвращает AADSTS70002** — Azure-приложение
+  владельца ещё не помечено «Allow public client flows = Yes» (память M8: владелец
+  должен включить; проверка кода корректна — запрос доходит, ошибка серверная).
+  Цепочка будет завершена после настройки портала (2 клика владельцем).
+
+**Открытые проблемы (требуют владельца):**
+1. Azure: включить «Allow public client flows» → после этого MSA-вход завершается
+   (`mcl auth-msa-start` → браузер → код → `mcl auth-msa-poll`).
+2. ely.by: реализация полная; приёмка требует реальных учётных данных владельца.
