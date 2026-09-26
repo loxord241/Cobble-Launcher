@@ -6,6 +6,7 @@ pub mod errors;
 pub mod events;
 pub mod instances;
 pub mod java;
+pub mod loaders;
 pub mod mojang;
 pub mod net;
 pub mod paths;

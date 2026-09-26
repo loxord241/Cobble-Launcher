@@ -132,3 +132,41 @@
   8848 объектов без ссылок.
 
 **Открытые проблемы:** нет.
+
+---
+
+## M3. Fabric + Quilt + NeoForge
+
+**Дата:** 2026-09-26
+
+**Сделано:**
+- `loaders/fabric.rs` + `loaders/quilt.rs`: список версий загрузчика и готовый
+  profile JSON (`/v2/versions/loader/<mc>/<loader>/profile/json`), установка =
+  сохранение профиля в `versions/` инстанса (спека §6.3: загрузчики ставятся в
+  инстанс, не глобально).
+- `loaders/neoforge.rs`: список версий maven API (реальная форма
+  `{"isSnapshot":…, "versions":[…]}`, схема имён `21.1.x` → MC 1.21.1), скачивание
+  installer.jar с обязательной сверкой `.sha1`, headless
+  `java -jar installer --installClient <game_dir>` (с shim-файлом
+  `launcher_profiles.json`, который требует инсталлятор), перенос version JSON в
+  `versions/` инстанса.
+- `Instance.version_id`: после установки загрузчика запускается его version JSON;
+  `resolve_chain_dirs` ищет родителей в versions/ инстанса → кэше Mojang.
+- Интеграция NeoForge (найдено на приёмке, см. D11–D13): universal/client jar
+  инсталлятора в classpath, `-DlibraryDirectory` → каталог библиотек инстанса,
+  игровые аргументы `--mavenRoot <libraries>` + `--mods
+  net.neoforged:neoforge:<v>:universal`.
+
+**Проверка:**
+- `cargo test` — **65 юнит + 10 интеграционных — зелёные** (включая дедуп
+  `@jar`-имён и интеграцию загрузчиков в inheritsFrom-резолвинг); clippy
+  -D warnings — чисто.
+- **Инстанс Fabric на latest MC (26.3): «Loading Minecraft 26.3 with Fabric Loader
+  0.19.5» + Knot в логе, игра дошла до главного меню, EXIT=0** (подготовка 19 с
+  с загрузкой библиотек Fabric).
+- **Инстанс NeoForge 1.21.1 (21.1.99): «NeoForge mod loading, version 21.1.99, for
+  MC 1.21.1» в логе, «Sound engine started», EXIT=0**; JRE 21 подобрана точно
+  (runtime/jdk21, установлен через Adoptium ранее).
+- Регресс 1.20.1 — реальный запуск доказан в M2.
+
+**Открытые проблемы:** нет (Forge — отдельный этап M7, тот же headless-путь).

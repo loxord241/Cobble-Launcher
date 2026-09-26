@@ -52,11 +52,27 @@ pub async fn prepare(
     emit(bus, &inst.id, LaunchPhase::Preparing);
     paths.ensure_dirs()?;
 
-    // 1. Версия: манифест → JSON → inheritsFrom (для загрузчиков M3+).
+    // 1. Версия: манифест → JSON → inheritsFrom (загрузчики: корень —
+    //    version JSON загрузчика в versions/ инстанса, спека §6.3).
+    let instance_versions = crate::instances::instance_versions_dir(paths, &inst.id);
     let manifest = fetch_manifest(&client, &paths.manifests_cache()).await?;
-    let entry = resolve_entry(&manifest, &inst.mc_version)?;
-    let vjson = fetch_version_json_cached(&client, entry, &paths.manifests_cache()).await?;
-    let rv = VersionJson::resolve_chain(&paths.manifests_cache(), &vjson)?;
+    let root_json = if let Some(vid) = &inst.version_id {
+        let path = instance_versions.join(format!("{vid}.json"));
+        if !path.exists() {
+            return Err(LauncherError::NotFound(format!(
+                "version JSON загрузчика {vid} — установите загрузчик заново"
+            )));
+        }
+        VersionJson::load(&path)?
+    } else {
+        let entry = resolve_entry(&manifest, &inst.mc_version)?;
+        fetch_version_json_cached(&client, entry, &paths.manifests_cache()).await?
+    };
+    // Родители цепочки ищутся в versions/ инстанса, затем в кэше Mojang.
+    let rv = VersionJson::resolve_chain_dirs(
+        &[instance_versions, paths.manifests_cache()],
+        &root_json,
+    )?;
 
     // 2. Java: путь инстанса → системная → Adoptium (спека §6.1.5, M2).
     let need_major = rv
@@ -142,7 +158,8 @@ pub async fn prepare(
 
     // 4. Hardlink контента стора в каталог игры инстанса (спека §6.12).
     let game_dir = minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
-    std::fs::create_dir_all(crate::util::fs::long_path(&game_dir))?;
+    std::fs::create_dir_all(crate::util::fs::long_path(&game_dir))
+        .map_err(|e| LauncherError::Internal(format!("create_dir_all {}: {e}", game_dir.display())))?;
     let mc_version_dir = game_dir.join("versions").join(&rv.id);
     let client_sha = rv
         .client_download
@@ -152,19 +169,26 @@ pub async fn prepare(
     crate::instances::store::link_or_copy(
         &client_jar_in_store(&paths.clients_store(), &client_sha),
         &mc_version_dir.join(format!("{}.jar", rv.id)),
-    )?;
+    )
+    .map_err(|e| LauncherError::Internal(format!("hardlink клиента {}: {e}", rv.id)))?;
     for l in &libs {
         if let Some(a) = &l.artifact {
             crate::instances::store::link_or_copy(
                 &paths.libraries_store().join(&a.rel_path),
                 &game_dir.join("libraries").join(&a.rel_path),
-            )?;
+            )
+            .map_err(|e| {
+                LauncherError::Internal(format!("hardlink библиотеки {}: {e}", a.rel_path))
+            })?;
         }
         if let Some(n) = &l.native {
             crate::instances::store::link_or_copy(
                 &paths.libraries_store().join(&n.rel_path),
                 &game_dir.join("libraries").join(&n.rel_path),
-            )?;
+            )
+            .map_err(|e| {
+                LauncherError::Internal(format!("hardlink натива {}: {e}", n.rel_path))
+            })?;
         }
     }
 
@@ -200,11 +224,52 @@ pub async fn prepare(
 
     // 7. Команда запуска.
     emit(bus, &inst.id, LaunchPhase::Launching);
+    // Инсталляторы NeoForge/Forge кладут universal и binpatch-клиент в свой
+    // maven-каталог; в version JSON их нет — официальный лаунчер добавляет их
+    // в classpath сам (подтверждается `-DignoreList` с префиксами `neoforge-`).
+    let mut extra_jars: Vec<PathBuf> = Vec::new();
+    if let (Some(loader), Some(lv)) = (inst.loader.as_deref(), inst.loader_version.as_deref()) {
+        let loader_dir = match loader {
+            "neoforge" => Some(game_dir.join("libraries").join("net/neoforged/neoforge").join(lv)),
+            "forge" => Some(game_dir.join("libraries").join("net/minecraftforge/forge").join(lv)),
+            _ => None,
+        };
+        if let Some(dir) = loader_dir {
+            if let Ok(entries) = std::fs::read_dir(crate::util::fs::long_path(&dir)) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.extension().is_some_and(|x| x == "jar") {
+                        extra_jars.push(p);
+                    }
+                }
+            }
+            extra_jars.sort();
+        }
+    }
     let classpath = build_classpath(
         &libs,
         &game_dir.join("libraries"),
         &mc_version_dir.join(format!("{}.jar", rv.id)),
+        &extra_jars,
     );
+    let mut jvm_extra_flags = vec![format!("-Xmx{}M", inst.ram_mb)];
+    jvm_extra_flags.extend(inst.jvm_flags.iter().cloned());
+    // ВАЖНО: не добавлять -DlegacyClassPath с полным classpath — командная
+    // строка Windows ограничена 32K и дублирование -cp даёт os error 206
+    // (флаг нужен FML только в dev-режиме).
+    // NeoForge: мод лежит в universal jar вне version JSON — официальный
+    // лаунчер передаёт его через игровые аргументы --mavenRoot/--mods
+    // (FMLServiceProvider, joptsimple: «Maven root directories» / «List of mods
+    // to add»). Без них Mod List пуст и FML падает на findModule("neoforge").
+    let mut game_args = inst.game_args_extra.clone();
+    if inst.loader.as_deref() == Some("neoforge") {
+        if let Some(lv) = &inst.loader_version {
+            game_args.push("--mavenRoot".into());
+            game_args.push(game_dir.join("libraries").to_string_lossy().into_owned());
+            game_args.push("--mods".into());
+            game_args.push(format!("net.neoforged:neoforge:{lv}:universal"));
+        }
+    }
     let values = LaunchValues {
         auth_player_name: account.player_name,
         auth_uuid: account.uuid,
@@ -220,18 +285,18 @@ pub async fn prepare(
         launcher_name: "mc-launcher-v2".into(),
         launcher_version: env!("CARGO_PKG_VERSION").into(),
         classpath,
-        library_directory: paths.libraries_store(),
+        // ${library_directory} обязан указывать на библиотеки ИНСТАНСА:
+        // там и хардлинкнутые библиотеки, и артефакты инсталлятора
+        // (universal/client/srg/extra), которые FML ищет maven-путём.
+        library_directory: game_dir.join("libraries"),
         resolution: settings.default_resolution.map(|r| (r.width, r.height)),
         log_config_path: rv
             .logging
             .as_ref()
             .and_then(|l| l.client.as_ref())
             .map(|lc| paths.cache_dir().join("log_configs").join(&lc.file.id)),
-        jvm_extra: {
-            let mut flags = vec![format!("-Xmx{}M", inst.ram_mb)];
-            flags.extend(inst.jvm_flags.iter().cloned());
-            flags
-        },
+        jvm_extra: jvm_extra_flags,
+        game_args_extra: game_args,
     };
     let command = build_command(&rv, &values, &os_ctx, &java.java_exe)?;
 
@@ -419,9 +484,94 @@ fn supervise_to_menu(
     Ok(found_at.is_some())
 }
 
+/// Установить загрузчик в инстанс (спека §6.3). Fabric/Quilt — профиль JSON
+/// из meta; NeoForge — headless-инсталлятор. Инстанс обновляется и сохраняется.
+pub async fn install_loader(
+    paths: &Paths,
+    settings: &crate::settings::Settings,
+    client: Arc<HttpClient>,
+    inst: &Instance,
+    loader: &str,
+    loader_version: Option<&str>,
+) -> Result<Instance> {
+    let mut updated = inst.clone();
+    let instance_versions = crate::instances::instance_versions_dir(paths, &inst.id);
+    std::fs::create_dir_all(crate::util::fs::long_path(&instance_versions))?;
+
+    // Родительская версия MC должна быть в кэше (для inheritsFrom и Java).
+    let manifest = fetch_manifest(&client, &paths.manifests_cache()).await?;
+    let entry = resolve_entry(&manifest, &inst.mc_version)?;
+    let parent = fetch_version_json_cached(&client, entry, &paths.manifests_cache()).await?;
+    let need_major = parent
+        .java_version
+        .as_ref()
+        .map(|j| j.major_version)
+        .unwrap_or_else(|| fallback_major(&inst.mc_version));
+
+    match loader {
+        "fabric" => {
+            let v = match loader_version {
+                Some(v) => v.to_string(),
+                None => crate::loaders::fabric::loader_versions(&client)
+                    .await?
+                    .into_iter()
+                    .find(|l| l.stable)
+                    .ok_or_else(|| LauncherError::NotFound("стабильный Fabric Loader".into()))?
+                    .version,
+            };
+            let id = crate::loaders::fabric::install(&client, &instance_versions, &inst.mc_version, &v).await?;
+            updated.loader = Some("fabric".into());
+            updated.loader_version = Some(v);
+            updated.version_id = Some(id);
+        }
+        "quilt" => {
+            let v = match loader_version {
+                Some(v) => v.to_string(),
+                None => crate::loaders::quilt::loader_versions(&client)
+                    .await?
+                    .into_iter()
+                    .find(|l| l.stable)
+                    .ok_or_else(|| LauncherError::NotFound("стабильный Quilt Loader".into()))?
+                    .version,
+            };
+            let id = crate::loaders::quilt::install(&client, &instance_versions, &inst.mc_version, &v).await?;
+            updated.loader = Some("quilt".into());
+            updated.loader_version = Some(v);
+            updated.version_id = Some(id);
+        }
+        "neoforge" => {
+            let v = match loader_version {
+                Some(v) => v.to_string(),
+                None => crate::loaders::neoforge::latest_for_mc(&client, &inst.mc_version).await?,
+            };
+            let java = resolve_java(paths, settings, client.clone(), need_major, &None).await?;
+            let game_dir = minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
+            std::fs::create_dir_all(crate::util::fs::long_path(&game_dir))?;
+            let id = crate::loaders::neoforge::install(
+                &client,
+                &paths.cache_dir(),
+                &java.java_exe,
+                &game_dir,
+                &instance_versions,
+                &v,
+            )
+            .await?;
+            updated.loader = Some("neoforge".into());
+            updated.loader_version = Some(v);
+            updated.version_id = Some(id);
+        }
+        other => {
+            return Err(LauncherError::InvalidInput(format!(
+                "неизвестный загрузчик {other} (fabric|quilt|neoforge)"
+            )));
+        }
+    }
+    crate::instances::save(paths, &updated)?;
+    Ok(updated)
+}
+
 /// Fallback Java-минимумов по версии MC (спека §6.4).
-pub fn fallback_major(mc_version: &str) -> u32 {
-    let parts: Vec<u32> = mc_version
+pub fn fallback_major(mc_version: &str) -> u32 {    let parts: Vec<u32> = mc_version
         .split('.')
         .map(|p| p.split(|c: char| !c.is_ascii_digit()).next().unwrap_or("0"))
         .map(|p| p.parse::<u32>().unwrap_or(0))

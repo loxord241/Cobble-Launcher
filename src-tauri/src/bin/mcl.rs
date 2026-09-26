@@ -97,6 +97,22 @@ enum Cmd {
         #[arg(long)]
         no_wait: bool,
     },
+    /// Версии загрузчика
+    LoaderVersions {
+        #[arg(long)]
+        loader: String,
+    },
+    /// Установить загрузчик в инстанс (спека §6.3)
+    LoaderInstall {
+        #[arg(long)]
+        id: String,
+        /// fabric | quilt | neoforge
+        #[arg(long)]
+        loader: String,
+        /// Версия загрузчика (по умолчанию — последняя стабильная)
+        #[arg(long)]
+        loader_version: Option<String>,
+    },
     /// Очистить кэш стора от объектов без ссылок
     StoreCleanup,
 }
@@ -153,6 +169,12 @@ async fn run(cli: Cli) -> Result<()> {
             menu_timeout,
             no_wait,
         } => cmd_instance_launch(&paths, &settings, &id, &player, menu_timeout, no_wait).await,
+        Cmd::LoaderVersions { loader } => cmd_loader_versions(&paths, &settings, &loader).await,
+        Cmd::LoaderInstall {
+            id,
+            loader,
+            loader_version,
+        } => cmd_loader_install(&paths, &settings, &id, &loader, loader_version.as_deref()).await,
         Cmd::StoreCleanup => {
             let n = mc_launcher_v2_lib::instances::store::cleanup_store(&paths)?;
             println!("Удалено объектов без ссылок: {n}");
@@ -376,7 +398,7 @@ async fn cmd_launch(
     let client_jar = client_jar_path(&rv, &paths.clients_store()).ok_or_else(|| {
         LauncherError::InvalidInput(format!("нет клиента для {}", rv.id))
     })?;
-    let classpath = build_classpath(&libs, &paths.libraries_store(), &client_jar);
+    let classpath = build_classpath(&libs, &paths.libraries_store(), &client_jar, &[]);
     let log_config_path = rv.logging.as_ref().and_then(|l| l.client.as_ref()).map(|lc| {
         paths.cache_dir().join("log_configs").join(&lc.file.id)
     });
@@ -399,6 +421,7 @@ async fn cmd_launch(
         resolution: settings.default_resolution.map(|r| (r.width, r.height)),
         log_config_path,
         jvm_extra: vec![format!("-Xmx{}M", xmx_mb.unwrap_or(settings.default_ram_mb))],
+            game_args_extra: Vec::new(),
     };
     let cmd = build_command(&rv, &values, &os_ctx, &java.java_exe)?;
     println!("Подготовка заняла {:.1} с", t0.elapsed().as_secs_f64());
@@ -474,6 +497,68 @@ async fn cmd_instance_create(
     inst.ram_mb = ram;
     mc_launcher_v2_lib::instances::save(paths, &inst)?;
     println!("Инстанс создан: {} ({}) id={}", inst.name, inst.mc_version, inst.id);
+    Ok(())
+}
+
+async fn cmd_loader_versions(_paths: &Paths, settings: &Settings, loader: &str) -> Result<()> {
+    let client = HttpClient::new(settings.proxy_url.as_deref())?;
+    match loader {
+        "fabric" => {
+            for l in mc_launcher_v2_lib::loaders::fabric::loader_versions(&client)
+                .await?
+                .iter()
+                .take(10)
+            {
+                println!("{}{}", l.version, if l.stable { "" } else { "  (нестабильная)" });
+            }
+        }
+        "quilt" => {
+            for l in mc_launcher_v2_lib::loaders::quilt::loader_versions(&client)
+                .await?
+                .iter()
+                .take(10)
+            {
+                println!("{}{}", l.version, if l.stable { "" } else { "  (нестабильная)" });
+            }
+        }
+        "neoforge" => {
+            for v in mc_launcher_v2_lib::loaders::neoforge::versions(&client).await? {
+                println!("{v}");
+            }
+        }
+        other => {
+            return Err(LauncherError::InvalidInput(format!(
+                "неизвестный загрузчик {other}"
+            )))
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_loader_install(
+    paths: &Paths,
+    settings: &Settings,
+    id: &str,
+    loader: &str,
+    loader_version: Option<&str>,
+) -> Result<()> {
+    let inst = find_instance(paths, id)?;
+    let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+    let updated = mc_launcher_v2_lib::instances::run::install_loader(
+        paths,
+        settings,
+        client,
+        &inst,
+        loader,
+        loader_version,
+    )
+    .await?;
+    println!(
+        "Загрузчик {}: версия {}, version_id = {}",
+        loader,
+        updated.loader_version.as_deref().unwrap_or("?"),
+        updated.version_id.as_deref().unwrap_or("?")
+    );
     Ok(())
 }
 
@@ -572,7 +657,6 @@ async fn cmd_instance_launch(
         prepared.java.arch_bits,
         prepared.version_id
     );
-
     if no_wait {
         // Спавн без супервизии: закрытие mcl игру не убивает (спека §6.10).
         let mut command = std::process::Command::new(&prepared.command.program);
@@ -597,7 +681,7 @@ async fn cmd_instance_launch(
     )?;
     if found {
         println!(
-            "ДОКАЗАТЕЛЬСТВО M2: игра из инстанса дошла до 'Sound engine started'; общее время {:.1} с",
+            "ДОКАЗАТЕЛЬСТВО: игра из инстанса дошла до 'Sound engine started'; общее время {:.1} с",
             t0.elapsed().as_secs_f64()
         );
         Ok(())

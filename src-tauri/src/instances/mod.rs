@@ -21,6 +21,9 @@ pub struct Instance {
     pub mc_version: String,
     pub loader: Option<String>,
     pub loader_version: Option<String>,
+    /// id version JSON, который запускаем (после установки загрузчика:
+    /// `fabric-loader-…`, `neoforge-…`). None = чистый mc_version.
+    pub version_id: Option<String>,
     pub java_path: Option<String>,
     pub ram_mb: u32,
     pub jvm_flags: Vec<String>,
@@ -50,6 +53,7 @@ impl Instance {
             mc_version: mc_version.into(),
             loader: None,
             loader_version: None,
+            version_id: None,
             java_path: None,
             ram_mb: 2048,
             jvm_flags: Vec::new(),
@@ -73,6 +77,11 @@ pub fn now_secs() -> u64 {
 /// Каталог конкретного инстанса.
 pub fn instance_dir(paths: &crate::paths::Paths, id: &str) -> PathBuf {
     paths.instances_dir().join(id)
+}
+
+/// Каталог `versions/` инстанса — JSON загрузчиков живут здесь (спека §6.3).
+pub fn instance_versions_dir(paths: &crate::paths::Paths, id: &str) -> PathBuf {
+    instance_dir(paths, id).join("versions")
 }
 
 /// Каталог игры инстанса (всё записываемое — внутри, спека §6.12).

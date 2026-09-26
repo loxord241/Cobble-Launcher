@@ -69,3 +69,35 @@ instance.json) через `[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDire
 Failed-задачи блокировали все последующие запуски. Валидные на диске файлы и так
 пропускаются мгновенно (сверка хэша), а восстановление прерванной очереди станет
 отдельным UI-потоком («продолжить прерванную загрузку») на M4+.
+
+## D11. NeoForge: инсталлятор требует launcher_profiles.json
+
+Headless `--installClient` отказывается работать без «вы запускали ванильный лаунчер».
+Создаём минимальный `{"profiles": {}, "settings": {}, "version": 3}` в каталоге игры
+перед установкой.
+
+## D12. `\\?\`-пути и прямые слэши
+
+`long_path` добавляет `\\?\` для путей ≥240 символов, но этот префикс отключает
+нормализацию Win32: maven rel_path с `/` внутри давал os error 123 (реальный кейс —
+`listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar`). long_path теперь
+нормализует `/` → `\` при префиксовании.
+
+## D13. Интеграция NeoForge в запуск (4 находки приёмки)
+
+1. **Дедуп библиотек по имени с `@jar`**: NeoForge пишет gradle-координаты
+   (`org.apache.logging.log4j:log4j-core:2.22.1@jar`), без нормализации один jar
+   попадает в classpath дважды → `Duplicate key` в UnionFileSystem. Дедуп и
+   maven_path отрезают суффикс `@…`.
+2. **Universal/client jar вне version JSON**: инсталлятор кладёт их в свой
+   maven-каталог (`net/neoforged/neoforge/<v>/`); официальный лаунчер добавляет их в
+   classpath сам (маркер — `-DignoreList` с префиксами `neoforge-`, `client-extra`).
+   Мы добавляем все jar из каталога загрузчика.
+3. **`-DlibraryDirectory` → каталог библиотек ИНСТАНСА**: FML ищет через него
+   maven-артефакты (client srg/extra, universal); в сторе их нет — они в
+   game_dir/libraries от инсталлятора. `-p` из JSON тоже резолвится оттуда.
+4. **`--mavenRoot` + `--mods`**: мод neoforge (universal) обнаруживается FML только
+   через игровые аргументы (FMLServiceProvider, joptsimple: «Maven root directories»,
+   «List of mods to add»). Формат: `--mods net.neoforged:neoforge:<v>:universal`.
+   `-DlegacyClassPath` не используется — нужен FML только в dev-режиме, а дублирование
+   classpath в аргументах роняет спавн на Windows (os error 206, лимит 32K).

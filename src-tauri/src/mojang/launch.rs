@@ -29,6 +29,9 @@ pub struct LaunchValues {
     pub log_config_path: Option<PathBuf>,
     /// Пользовательские JVM-флаги (RAM, GC) — после JSON-аргументов.
     pub jvm_extra: Vec<String>,
+    /// Дополнительные игровые аргументы лаунчера (например, --mavenRoot/--mods
+    /// для NeoForge) — в конец game-аргументов.
+    pub game_args_extra: Vec<String>,
 }
 
 /// Готовая команда запуска.
@@ -167,6 +170,8 @@ pub fn build_command(
         .collect();
     args.push(rv.main_class.clone());
     args.extend(game_args.iter().map(|a| substitute(a, &map)));
+    // Аргументы лаунчера (--mavenRoot/--mods у NeoForge) — в самый конец.
+    args.extend(values.game_args_extra.iter().cloned());
 
     Ok(LaunchCommand {
         program: java_path.to_path_buf(),
@@ -207,6 +212,7 @@ mod tests {
             resolution: Some((1280, 720)),
             log_config_path: None,
             jvm_extra: vec!["-Xmx2048M".into()],
+            game_args_extra: Vec::new(),
         }
     }
 

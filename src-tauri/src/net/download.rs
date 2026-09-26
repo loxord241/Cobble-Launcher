@@ -223,7 +223,12 @@ impl DownloadEngine {
             }
         }
         if let Some(parent) = task.dest.parent() {
-            std::fs::create_dir_all(long_path(parent))?;
+            std::fs::create_dir_all(long_path(parent)).map_err(|e| {
+                LauncherError::Internal(format!(
+                    "create_dir_all для {}: {e}",
+                    task.dest.display()
+                ))
+            })?;
         }
         let part = long_path(&part_path(&task.dest));
         crate::util::fs::remove_file_ignore(&part);

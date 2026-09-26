@@ -8,6 +8,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// `\\?\`-префикс для путей длиной ≥ 240 символов (спека §1: длинные пути Windows).
+/// ВАЖНО: `\\?\` отключает нормализацию Win32 — прямые слэши внутри пути обязаны
+/// стать обратными, иначе os error 123 (реальный кейс: maven rel_path с `/`).
 pub fn long_path(p: &Path) -> PathBuf {
     #[cfg(windows)]
     {
@@ -16,11 +18,12 @@ pub fn long_path(p: &Path) -> PathBuf {
             return p.to_path_buf();
         }
         if p.is_absolute() && s.len() >= 240 {
-            if let Some(rest) = s.strip_prefix(r"\\") {
+            let normalized = s.replace('/', r"\");
+            if let Some(rest) = normalized.strip_prefix(r"\\") {
                 // Сетевые пути: `\\server\share` → `\\?\UNC\server\share`
                 return PathBuf::from(format!(r"\\?\UNC\{rest}"));
             }
-            return PathBuf::from(format!(r"\\?\{s}"));
+            return PathBuf::from(format!(r"\\?\{normalized}"));
         }
     }
     p.to_path_buf()
@@ -151,5 +154,21 @@ mod tests {
         assert!(lp.to_string_lossy().starts_with(r"\\?\C:\"));
         // Короткие пути не трогаем
         assert_eq!(long_path(Path::new(r"C:\x")), PathBuf::from(r"C:\x"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn long_path_normalizes_forward_slashes() {
+        // Реальный кейс M3: длинный maven-путь с `/` внутри + префикс \\?\ =
+        // os error 123, если не нормализовать сепараторы.
+        let mut deep = PathBuf::from(r"C:\");
+        let seg = "abcdefghijklmnopqrstuvwxyz0123456789";
+        for _ in 0..8 {
+            deep.push(seg);
+        }
+        let with_slashes = deep.join("com/google/guava/x.jar");
+        let lp = long_path(&with_slashes).to_string_lossy().into_owned();
+        assert!(lp.starts_with(r"\\?\C:\"));
+        assert!(!lp.contains('/'), "в \\?\\-пути не должно быть прямых слэшей: {lp}");
     }
 }

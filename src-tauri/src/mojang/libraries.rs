@@ -30,21 +30,23 @@ pub struct PlannedLib {
 }
 
 /// Путь maven-координаты: `g:a:v[:classifier]` → `g/a/v/a-v[-classifier].jar`.
+/// Gradle-суффиксы `@jar` (NeoForge) отрезаются.
 pub fn maven_path(coord: &str) -> Result<String> {
+    let clean = |s: &str| s.split('@').next().unwrap_or(s).to_string();
     let parts: Vec<&str> = coord.split(':').collect();
     match parts.as_slice() {
         [g, a, v] => Ok(format!(
             "{g_dir}/{a}/{v}/{a}-{v}.jar",
             g_dir = g.replace('.', "/"),
-            a = a,
-            v = v
+            a = clean(a),
+            v = clean(v)
         )),
         [g, a, v, c] => Ok(format!(
-            "{g_path}/{a}/{v}/{a}-{v}-{c}.jar",
-            g_path = g.replace('.', "/"),
-            a = a,
-            v = v,
-            c = c
+            "{g_dir}/{a}/{v}/{a}-{v}-{c}.jar",
+            g_dir = g.replace('.', "/"),
+            a = clean(a),
+            v = clean(v),
+            c = clean(c)
         )),
         _ => Err(LauncherError::InvalidInput(format!(
             "не maven-координата: {coord}"
@@ -165,15 +167,25 @@ pub fn extract_native(native_zip: &Path, natives_dir: &Path, exclude: &[String])
     Ok(extracted.len())
 }
 
-/// Вычислить classpath из спланированных библиотек + клиент-jar.
-pub fn build_classpath(libs: &[PlannedLib], lib_store: &Path, client_jar: &Path) -> String {
+/// Вычислить classpath: клиент + библиотеки + дополнительные jar (universal и
+/// binpatch-клиент NeoForge/Forge, которые инсталлятор кладёт вне version JSON —
+/// официальный лаунчер добавляет их сам, см. `-DignoreList` с префиксами).
+pub fn build_classpath(
+    libs: &[PlannedLib],
+    lib_store: &Path,
+    client_jar: &Path,
+    extra_jars: &[std::path::PathBuf],
+) -> String {
     let sep = if cfg!(windows) { ";" } else { ":" };
-    let mut items: Vec<String> = Vec::with_capacity(libs.len() + 1);
+    let mut items: Vec<String> = Vec::with_capacity(libs.len() + 1 + extra_jars.len());
     items.push(client_jar.to_string_lossy().into_owned());
     for l in libs {
         if let Some(a) = &l.artifact {
             items.push(lib_store.join(&a.rel_path).to_string_lossy().into_owned());
         }
+    }
+    for j in extra_jars {
+        items.push(j.to_string_lossy().into_owned());
     }
     items.join(sep)
 }
@@ -207,7 +219,12 @@ mod tests {
             }),
             native: None,
         }];
-        let cp = build_classpath(&libs, Path::new("/store/lib"), Path::new("/store/client.jar"));
+        let cp = build_classpath(
+            &libs,
+            Path::new("/store/lib"),
+            Path::new("/store/client.jar"),
+            &[],
+        );
         let expected_sep = if cfg!(windows) { ";" } else { ":" };
         let expected = format!(
             "/store/client.jar{expected_sep}/store/lib{}a/b/v/b-v.jar",

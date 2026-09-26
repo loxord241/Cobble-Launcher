@@ -4,7 +4,7 @@ use crate::errors::{LauncherError, Result};
 use crate::mojang::rules::{evaluate, OsContext, Rule};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Ссылка на скачивание (клиент).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,8 +220,8 @@ impl VersionJson {
     }
 
     /// Разрешить цепочку inheritsFrom (макс. 5 уровней, защита от циклов — §6.4).
-    /// `versions_dir` — каталог с `<id>.json`; недостающие родители читаются оттуда.
-    pub fn resolve_chain(versions_dir: &Path, root: &VersionJson) -> Result<ResolvedVersion> {
+    /// Родительские JSON ищутся в `versions_dirs` по порядку (инстанс → кэш).
+    pub fn resolve_chain_dirs(versions_dirs: &[PathBuf], root: &VersionJson) -> Result<ResolvedVersion> {
         let mut chain: Vec<VersionJson> = vec![root.clone()];
         let mut visited: Vec<String> = vec![root.id.clone()];
         while let Some(parent_id) = chain
@@ -238,8 +238,19 @@ impl VersionJson {
                     "слишком глубокая цепочка inheritsFrom (>5)".into(),
                 ));
             }
-            let path = versions_dir.join(format!("{parent_id}.json"));
-            let parent = VersionJson::load(&path)?;
+            let mut parent = None;
+            for dir in versions_dirs {
+                let path = dir.join(format!("{parent_id}.json"));
+                if path.exists() {
+                    parent = Some(VersionJson::load(&path)?);
+                    break;
+                }
+            }
+            let parent = parent.ok_or_else(|| {
+                LauncherError::VersionNotFound(format!(
+                    "родительская версия {parent_id} не найдена в кэше"
+                ))
+            })?;
             visited.push(parent_id);
             chain.push(parent);
         }
@@ -254,6 +265,16 @@ impl VersionJson {
         }
         Ok(acc)
     }
+
+    /// Разрешить цепочку в одном каталоге (совместимость).
+    pub fn resolve_chain(versions_dir: &Path, root: &VersionJson) -> Result<ResolvedVersion> {
+        Self::resolve_chain_dirs(std::slice::from_ref(&versions_dir.to_path_buf()), root)
+    }
+}
+
+/// Ключ дедупа библиотек: gradle-суффикс `@ext` (NeoForge) игнорируется.
+fn lib_key(name: &str) -> String {
+    name.split('@').next().unwrap_or(name).to_string()
 }
 
 /// Слияние цепочки: ребёнок приоритетнее, аргументы конкатенируются (родитель → ребёнок).
@@ -308,9 +329,22 @@ fn merge_chain(chain: Vec<&VersionJson>) -> Result<ResolvedVersion> {
             jvm_args.extend(args.jvm.iter().cloned());
             game_args.extend(args.game.iter().cloned());
         }
-        // Дочерние библиотеки приоритетнее: вставляем в начало, дедуп по `name`.
-        let mut merged: Vec<Library> = v.libraries.clone();
-        merged.append(&mut libraries);
+        // Дочерние библиотеки приоритетнее: вставляем в начало, дедуп по имени.
+        // NeoForge пишет gradle-координаты с суффиксом `@jar` — нормализуем,
+        // иначе один jar попадает в classpath дважды (реальный кейс M3).
+        let mut merged: Vec<Library> = Vec::with_capacity(v.libraries.len() + libraries.len());
+        for lib in v.libraries.clone() {
+            let key = lib_key(&lib.name);
+            if !merged.iter().any(|l| lib_key(&l.name) == key) {
+                merged.push(lib);
+            }
+        }
+        for lib in libraries.drain(..) {
+            let key = lib_key(&lib.name);
+            if !merged.iter().any(|l| lib_key(&l.name) == key) {
+                merged.push(lib);
+            }
+        }
         libraries = merged;
     }
 
@@ -475,5 +509,37 @@ mod tests {
         .unwrap();
         let out = flatten_args(&elems, &os(), &BTreeMap::new());
         assert_eq!(out, vec!["-Xmx1G", "-Xss1M", "-XX:+UseG1GC"]);
+    }
+
+    #[test]
+    fn inherits_dedups_gradle_at_jar_names() {
+        // Реальный кейс NeoForge: имена с `@jar` и без — одна библиотека.
+        let dir = tempfile::tempdir().unwrap();
+        let parent: VersionJson = serde_json::from_str(
+            r#"{"id":"1.21.1","mainClass":"M","libraries":[
+                {"name":"org.apache.logging.log4j:log4j-core:2.22.1",
+                 "downloads":{"artifact":{"url":"u","path":"org/apache/logging/log4j/log4j-core/2.22.1/log4j-core-2.22.1.jar"}}}
+            ]}"#,
+        )
+        .unwrap();
+        let child: VersionJson = serde_json::from_str(
+            r#"{"id":"neoforge-21.1.99","inheritsFrom":"1.21.1","mainClass":"B","libraries":[
+                {"name":"org.apache.logging.log4j:log4j-core:2.22.1@jar",
+                 "downloads":{"artifact":{"url":"u2","path":"org/apache/logging/log4j/log4j-core/2.22.1/log4j-core-2.22.1.jar"}}}
+            ]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("1.21.1.json"),
+            serde_json::to_vec(&parent).unwrap(),
+        )
+        .unwrap();
+        let resolved = VersionJson::resolve_chain(dir.path(), &child).unwrap();
+        let dup_count = resolved
+            .libraries
+            .iter()
+            .filter(|l| l.name.starts_with("org.apache.logging.log4j:log4j-core"))
+            .count();
+        assert_eq!(dup_count, 1, "@jar и обычное имя — одна библиотека");
     }
 }
