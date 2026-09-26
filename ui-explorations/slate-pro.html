@@ -437,6 +437,76 @@ input[type=range].ram{width:100%; accent-color:var(--accent); height:40px}
 }
 [data-theme="mc"] .banner .more{margin-left:0}
 @keyframes splash{from{transform:rotate(-3deg) scale(1)}to{transform:rotate(-3deg) scale(1.06)}}
+/* главная в теме: меню + инвентарь вместо стандартной раскладки */
+.mc-home{display:none}
+[data-theme="mc"] .mc-home{display:flex; flex-direction:column; gap:var(--s-4)}
+[data-theme="mc"] #scr-home .banner,
+[data-theme="mc"] #scr-home .sec-head,
+[data-theme="mc"] #scr-home .rows,
+[data-theme="mc"] #scr-home .packs{display:none}
+[data-theme="mc"] .mc-title-row{display:flex; align-items:flex-end; gap:var(--s-4)}
+[data-theme="mc"] .mc-logo{
+  font-family:var(--font-display); font-size:22px; color:var(--text); letter-spacing:2px;
+  text-shadow:3px 3px 0 color-mix(in srgb, black 60%, transparent);
+}
+[data-theme="mc"] .mc-title-row .splash{margin:0 0 14px}
+[data-theme="mc"] .mc-menu{display:flex; flex-direction:column; gap:var(--s-2); max-width:560px}
+[data-theme="mc"] .mc-menu-row{display:grid; grid-template-columns:1fr 1fr; gap:var(--s-2)}
+[data-theme="mc"] .mc-btn{
+  height:48px; display:flex; align-items:center; justify-content:center; gap:var(--s-2);
+  background:var(--mc-btn); color:var(--mc-btn-text);
+  border:2px solid var(--mc-lo);
+  box-shadow:inset 2px 2px 0 var(--mc-btn-hi), inset -2px -2px 0 var(--mc-btn-lo);
+  font-family:var(--font-display); font-size:12px; line-height:1.5;
+  text-shadow:1px 1px 0 color-mix(in srgb, black 60%, transparent);
+}
+[data-theme="mc"] .mc-btn:hover{background:var(--mc-btn-hi); border-color:var(--accent)}
+[data-theme="mc"] .mc-btn svg{width:16px;height:16px}
+[data-theme="mc"] .mc-btn-play{
+  height:56px; background:var(--accent); color:var(--on-accent); font-size:14px;
+  box-shadow:inset 2px 2px 0 color-mix(in srgb, var(--accent), white 35%), inset -2px -2px 0 var(--mc-dirt-lo);
+}
+[data-theme="mc"] .mc-btn-play:hover{background:color-mix(in srgb, var(--accent) 88%, white)}
+[data-theme="mc"] .mc-inv{
+  background:var(--surface); border:2px solid var(--border-strong);
+  box-shadow:inset 2px 2px 0 var(--mc-hi), inset -2px -2px 0 var(--mc-lo);
+  padding:var(--s-3); max-width:860px;
+}
+[data-theme="mc"] .mc-inv-head{font-family:var(--font-display); font-size:12px; line-height:1.8; color:var(--text-muted); margin-bottom:var(--s-2)}
+[data-theme="mc"] .mc-slots{display:grid; grid-template-columns:repeat(auto-fill,minmax(128px,1fr)); gap:var(--s-2)}
+[data-theme="mc"] .mc-slot{
+  display:flex; flex-direction:column; align-items:center; gap:var(--s-1); padding:var(--s-2);
+  background:var(--bg); border:2px solid var(--mc-lo); text-align:center;
+}
+[data-theme="mc"] .mc-slot:hover{border-color:var(--accent)}
+[data-theme="mc"] .mc-slot-ic{
+  width:44px; height:44px; display:grid; place-items:center; color:var(--accent);
+  background:var(--mc-slot);
+  box-shadow:inset 2px 2px 0 var(--mc-slot-hi), inset -2px -2px 0 var(--mc-slot-lo);
+}
+[data-theme="mc"] .mc-slot-ic svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+[data-theme="mc"] .mc-slot-name{font-size:13px; font-weight:600; line-height:1.3}
+[data-theme="mc"] .mc-slot-sub{font-family:var(--font-mono); font-size:12px; color:var(--text-muted); line-height:1.3}
+[data-theme="mc"] .mc-slot .install{height:32px; width:100%; justify-content:center; padding:0; font-size:12px}
+/* сайдбар — стопка каменных кнопок */
+[data-theme="mc"] .side{background:transparent; border-right:2px solid var(--mc-lo)}
+[data-theme="mc"] .nav-item{
+  justify-content:flex-start; height:44px;
+  background:var(--mc-btn); color:var(--mc-btn-text);
+  border:2px solid var(--mc-lo); border-radius:0;
+  box-shadow:inset 2px 2px 0 var(--mc-btn-hi), inset -2px -2px 0 var(--mc-btn-lo);
+  font-family:var(--font-display); font-size:12px; line-height:1.4;
+  text-shadow:1px 1px 0 color-mix(in srgb, black 60%, transparent);
+}
+[data-theme="mc"] .nav-item:hover{background:var(--mc-btn-hi); color:var(--mc-btn-text)}
+[data-theme="mc"] .nav-item.is-active{background:var(--mc-btn-hi); border-color:var(--accent); color:var(--mc-btn-text)}
+[data-theme="mc"] .nav-item.is-active::before{display:none}
+[data-theme="mc"] .nav-item .count{color:var(--mc-splash); font-size:12px}
+/* контент: шахматный камень */
+[data-theme="mc"] .content{
+  background-image:repeating-conic-gradient(color-mix(in srgb, var(--surface) 40%, transparent) 0 25%, transparent 0 50%);
+  background-size:12px 12px;
+}
 /* хотбар быстрого запуска */
 .hotbar{display:none}
 [data-theme="mc"] .hotbar{
@@ -457,7 +527,8 @@ input[type=range].ram{width:100%; accent-color:var(--accent); height:40px}
   position:absolute; top:2px; left:4px;
   font-family:var(--font-mono); font-size:12px; color:var(--text-muted);
 }
-[data-theme="mc"] .hslot svg{width:24px;height:24px}
+[data-theme="mc"] .hslot svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+[data-theme="mc"] .hslot.is-selected svg{fill:currentColor;stroke:none}
 [data-theme="mc"] .hslot.is-selected svg{color:var(--accent)}
 [data-theme="mc"] .row,
 [data-theme="mc"] .mod,
@@ -624,10 +695,44 @@ input[type=range].ram{width:100%; accent-color:var(--accent); height:40px}
 
         <!-- ГЛАВНАЯ -->
         <section class="screen on" id="scr-home" aria-label="Главная">
+          <div class="mc-home">
+            <div class="mc-title-row">
+              <span class="mc-logo">ГРАФИТ</span>
+              <span class="splash" aria-hidden="true">187 модов — не предел!</span>
+            </div>
+            <div class="mc-menu">
+              <button class="mc-btn mc-btn-play" data-nav="instance"><svg aria-hidden="true"><use href="#i-play"/></svg>Играть · Fabric + Sodium</button>
+              <div class="mc-menu-row">
+                <button class="mc-btn" data-nav="instances">Инстансы · 5</button>
+                <button class="mc-btn" data-nav="modpacks">Модпаки</button>
+              </div>
+              <div class="mc-menu-row">
+                <button class="mc-btn" data-nav="mods">Каталог модов</button>
+                <button class="mc-btn" data-nav="downloads">Загрузки · 2</button>
+              </div>
+            </div>
+            <div class="mc-inv">
+              <div class="mc-inv-head">Инстансы</div>
+              <div class="mc-slots">
+                <button class="mc-slot" data-nav="instance"><span class="mc-slot-ic"><svg aria-hidden="true"><use href="#i-cube"/></svg></span><span class="mc-slot-name">Ванилла 26.3</span><span class="mc-slot-sub">без загрузчика · 2 ч назад</span></button>
+                <button class="mc-slot" data-nav="instance"><span class="mc-slot-ic"><svg aria-hidden="true"><use href="#i-zap"/></svg></span><span class="mc-slot-name">Fabric + Sodium</span><span class="mc-slot-sub">14 модов · вчера</span></button>
+                <button class="mc-slot" data-nav="instance"><span class="mc-slot-ic"><svg aria-hidden="true"><use href="#i-package"/></svg></span><span class="mc-slot-name">NeoForge: Create</span><span class="mc-slot-sub">38 модов · 3 дня назад</span></button>
+                <button class="mc-slot" data-nav="instance"><span class="mc-slot-ic"><svg aria-hidden="true"><use href="#i-puzzle"/></svg></span><span class="mc-slot-name">Forge 1.20.1: РЛКрафт</span><span class="mc-slot-sub">187 модов · неделю назад</span></button>
+                <button class="mc-slot" data-nav="instance"><span class="mc-slot-ic"><svg aria-hidden="true"><use href="#i-shader"/></svg></span><span class="mc-slot-name">Креатив-песочница</span><span class="mc-slot-sub">шейдеры · месяц назад</span></button>
+              </div>
+            </div>
+            <div class="mc-inv">
+              <div class="mc-inv-head">Популярные модпаки</div>
+              <div class="mc-slots">
+                <div class="mc-slot"><span class="mc-slot-ic"><svg aria-hidden="true"><use href="#i-zap"/></svg></span><span class="mc-slot-name">Fabulously Optimized</span><span class="mc-slot-sub">2,1 млн загрузок</span><button class="install">Установить</button></div>
+                <div class="mc-slot"><span class="mc-slot-ic"><svg aria-hidden="true"><use href="#i-cube"/></svg></span><span class="mc-slot-name">Create: Above and Beyond</span><span class="mc-slot-sub">980 тыс. загрузок</span><button class="install">Установить</button></div>
+                <div class="mc-slot"><span class="mc-slot-ic"><svg aria-hidden="true"><use href="#i-shader"/></svg></span><span class="mc-slot-name">Simply Optimized</span><span class="mc-slot-sub">640 тыс. загрузок</span><button class="install">Установить</button></div>
+              </div>
+            </div>
+          </div>
           <div class="banner">
             <svg class="icon" aria-hidden="true"><use href="#i-megaphone"/></svg>
             <span class="txt"><b>Обновление лаунчера 2.1.0</b> — новый браузер модов и очередь загрузок</span>
-            <span class="splash" aria-hidden="true">187 модов — не предел!</span>
             <a class="more" href="#" data-nav="downloads">Что нового<svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chevdown"/></svg></a>
           </div>
           <div class="sec-head">
@@ -1162,6 +1267,19 @@ input[type=range].ram{width:100%; accent-color:var(--accent); height:40px}
 <script>
   // ── навигация по экранам ─────────────────────────────────────────
   var root = document.documentElement;
+  var themeNames = { '': 'Тёмная', 'light': 'Светлая', 'cb-dark': 'Дальтоник · Тёмная', 'cb-light': 'Дальтоник · Светлая', 'mc': 'Глубинный сланец' };
+  function applyTheme(t){
+    if (t) { root.setAttribute('data-theme', t); } else { root.removeAttribute('data-theme'); }
+    document.querySelectorAll('[data-set-theme]').forEach(function(b){
+      var on = b === document.querySelector('[data-set-theme="' + t + '"]');
+      b.classList.toggle('is-selected', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      var mk = b.querySelector('.tmark');
+      if (mk) { mk.innerHTML = on ? '<span class="chk"><svg aria-hidden="true"><use href="#i-check"/></svg></span>' : ''; }
+    });
+    var lbl = document.getElementById('theme-label');
+    if (lbl) { lbl.textContent = themeNames[t] || 'Тёмная'; }
+  }
   var screens = document.querySelectorAll('.screen');
   var mainNav = document.querySelectorAll('#main-nav .nav-item');
   var setNav = document.querySelectorAll('#settings-nav .nav-item');
@@ -1225,16 +1343,8 @@ input[type=range].ram{width:100%; accent-color:var(--accent); height:40px}
     var th = e.target.closest('[data-set-theme]');
     if (th){
       var t = th.getAttribute('data-set-theme');
-      if (t) { root.setAttribute('data-theme', t); } else { root.removeAttribute('data-theme'); }
-      document.querySelectorAll('[data-set-theme]').forEach(function(b){
-        var on = b === th;
-        b.classList.toggle('is-selected', on);
-        b.setAttribute('aria-pressed', on ? 'true' : 'false');
-        var mk = b.querySelector('.tmark');
-        if (mk) { mk.innerHTML = on ? '<span class="chk"><svg aria-hidden="true"><use href="#i-check"/></svg></span>' : ''; }
-      });
-      var names = { '': 'Тёмная', 'light': 'Светлая', 'cb-dark': 'Дальтоник · Тёмная', 'cb-light': 'Дальтоник · Светлая', 'mc': 'Глубинный сланец' };
-      document.getElementById('theme-label').textContent = names[t] || 'Тёмная';
+      applyTheme(t);
+      try { localStorage.setItem('graphite-theme', t); } catch (err) {}
       return;
     }
     var ram = e.target;
@@ -1245,6 +1355,15 @@ input[type=range].ram{width:100%; accent-color:var(--accent); height:40px}
   document.getElementById('f-ram').addEventListener('input', function(){
     document.getElementById('ram-val').textContent = this.value + ' ГБ';
   });
+  // тема из ?theme= или сохранённая в localStorage
+  (function(){
+    var param = '';
+    try { param = new URLSearchParams(location.search).get('theme') || ''; } catch (err) {}
+    var saved = '';
+    try { saved = localStorage.getItem('graphite-theme') || ''; } catch (err) {}
+    var initial = param || saved;
+    if (initial && themeNames.hasOwnProperty(initial)) { applyTheme(initial); }
+  })();
 </script>
 </body>
 </html>
