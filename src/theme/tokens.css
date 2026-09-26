@@ -1,0 +1,75 @@
+/*
+ * tokens.css — ЕДИНСТВЕННОЕ место, где живут цвета, радиусы, шрифты (спека §8).
+ * Тёмная тема по умолчанию; светлая включается классом .theme-light на <html>.
+ * Смена темы = переключение CSS-переменных, без перезагрузки.
+ */
+@import "tailwindcss";
+
+:root {
+  /* Тёмная тема (по умолчанию) */
+  --bg: #1a1b1e;
+  --card: #242629;
+  --card-hover: #2d2f33;
+  --border: #3a3d42;
+  --text: #e4e6eb;
+  --text-muted: #9da2a8;
+  --accent: #f16436;
+  --accent-hover: #ff7a4d;
+  --accent-contrast: #ffffff;
+  --success: #4caf50;
+  --warning: #ffb74d;
+  --error: #ef5350;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --font-ui: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+}
+
+.theme-light {
+  --bg: #f2f3f5;
+  --card: #ffffff;
+  --card-hover: #f7f7f8;
+  --border: #d9dbe0;
+  --text: #1a1b1e;
+  --text-muted: #5c6066;
+  --accent: #f16436;
+  --accent-hover: #e0552a;
+  --accent-contrast: #ffffff;
+  --success: #2e7d32;
+  --warning: #b26a00;
+  --error: #c62828;
+}
+
+/* Маппинг токенов на утилиты Tailwind 4 */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-card: var(--card);
+  --color-card-hover: var(--card-hover);
+  --color-border-app: var(--border);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-contrast: var(--accent-contrast);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+
+  --font-ui: var(--font-ui);
+  --font-mono: var(--font-mono);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  margin: 0;
+  user-select: none;
+}
