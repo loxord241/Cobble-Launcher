@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10 UI-концептов лаунчера — обзорная волна (v2)</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#101216; --surface:#171a20; --surface-2:#1e222a;
+  --text:#e9ebee; --text-muted:#9aa3ad;
+  --border:#272c35; --accent:#6cb2fa; --mono:'JetBrains Mono',monospace;
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg); color:var(--text); font-family:'Inter',system-ui,sans-serif; font-size:16px; line-height:1.5; -webkit-font-smoothing:antialiased}
+a{color:var(--accent); text-decoration:none}
+a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.wrap{max-width:1520px; margin:0 auto; padding:32px 24px 64px}
+header.top{margin-bottom:8px}
+h1{font-size:28px; font-weight:700; letter-spacing:-.01em; margin:0}
+header.top p{color:var(--text-muted); margin:8px 0 0; max-width:900px}
+.meta{font-family:var(--mono); font-size:12px; color:var(--text-muted); margin-top:16px}
+.grid{display:grid; grid-template-columns:repeat(2,1fr); gap:24px; margin-top:28px}
+@media (min-width:1700px){.grid{grid-template-columns:repeat(2,1fr)}}
+.card{background:var(--surface); border:1px solid var(--border); border-radius:12px; overflow:hidden; display:flex; flex-direction:column}
+.card .head{display:flex; align-items:baseline; gap:10px; padding:16px 20px 0}
+.card .num{font-family:var(--mono); font-size:12px; color:#0d1117; background:var(--accent); border-radius:4px; padding:0 6px; line-height:20px}
+.card h2{margin:0; font-size:19px; font-weight:600}
+.card .prod{font-family:var(--mono); font-size:12px; color:var(--text-muted)}
+.card .shot{display:block; margin:14px 20px 0; border:1px solid var(--border); border-radius:8px; overflow:hidden}
+.card .shot img{display:block; width:100%; height:auto}
+.card .idea{padding:14px 20px 0; color:var(--text-muted); font-size:14px}
+.card .links{display:flex; gap:16px; padding:14px 20px 18px; margin-top:auto}
+.card .links a{font-size:13px; font-weight:600}
+.card .disks{font-family:var(--mono); font-size:12px; color:var(--text-muted); padding:0 20px}
+footer{margin-top:36px; color:var(--text-muted); font-size:14px; border-top:1px solid var(--border); padding-top:20px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>10 UI-концептов лаунчера — обзорная волна (v2)</h1>
+    <p>Дизайн-разведка для mc-launcher-v2 (Tauri 2 + React + TS + Tailwind). Режим продукта — Operate: сканируемость, консистентность, предсказуемость. Контент во всех макетах одинаковый — сравнивается только дизайн. Каждый вариант: главная + второй экран (страница инстанса / браузер модов) + состояния (hover, скелетон, пустое, ошибка).</p>
+    <p class="meta">Дизайн-системы сгенерированы локальным поисковиком знаний (ui-ux-pro-max, диски variance/motion/density) → design-systems/&lt;slug&gt;/MASTER.md. Контраст пар токенов проверен скриптом (≥4.5:1 текст, ≥3:1 крупное/UI). Рекомендация top-3 — в <a href="COMPARISON.md">COMPARISON.md</a>.</p>
+  </header>
+
+  <main class="grid">
+    <article class="card">
+      <div class="head"><span class="num">01</span><h2>Сланец</h2><span class="prod">продукт «Графит»</span></div>
+      <a class="shot" href="variant-01-slate.html"><img src="shots/variant-01-slate-home.png" alt="Сланец — главная"></a>
+      <p class="idea">Списки-строки и моноширинные версии — лаунчер как аккуратный файловый менеджер. Один холодный голубой акцент только на действии: играть, обновить.</p>
+      <p class="disks">variance 2 · motion 2 · density 8</p>
+      <div class="links"><a href="variant-01-slate.html">макет</a><a href="design-systems/slate/MASTER.md">дизайн-система</a></div>
+    </article>
+
+    <article class="card">
+      <div class="head"><span class="num">02</span><h2>Бумага</h2><span class="prod">продукт «Бумага»</span></div>
+      <a class="shot" href="variant-02-paper.html"><img src="shots/variant-02-paper-home.png" alt="Бумага — главная"></a>
+      <p class="idea">Читательская антиква на тёплом белом: инстансы — как оглавление журнала, браузер модов — как подборка статей. Мягкие тени вместо границ, киноварь — единственный цвет.</p>
+      <p class="disks">variance 2 · motion 2 · density 3</p>
+      <div class="links"><a href="variant-02-paper.html">макет</a><a href="design-systems/paper/MASTER.md">дизайн-система</a></div>
+    </article>
+
+    <article class="card">
+      <div class="head"><span class="num">03</span><h2>Пульт</h2><span class="prod">продукт «Пульт»</span></div>
+      <a class="shot" href="variant-03-console.html"><img src="shots/variant-03-console-home.png" alt="Пульт — главная"></a>
+      <p class="idea">Инженерная консоль: таблица инстансов, LED-статусы с текстом, журнал событий и статусбар телеметрии. Зелёный означает «всё работает».</p>
+      <p class="disks">variance 2 · motion 1 · density 9</p>
+      <div class="links"><a href="variant-03-console.html">макет</a><a href="design-systems/console/MASTER.md">дизайн-система</a></div>
+    </article>
+
+    <article class="card">
+      <div class="head"><span class="num">04</span><h2>Свечение</h2><span class="prod">продукт «Люмен»</span></div>
+      <a class="shot" href="variant-04-glow.html"><img src="shots/variant-04-glow-home.png" alt="Свечение — главная"></a>
+      <p class="idea">Глубокий чёрный и один светящийся циановый контур: активное светится, остальное молчит. Стекло с blur — только у модалки ошибки.</p>
+      <p class="disks">variance 4 · motion 4 · density 6</p>
+      <div class="links"><a href="variant-04-glow.html">макет</a><a href="design-systems/glow/MASTER.md">дизайн-система</a></div>
+    </article>
+
+    <article class="card">
+      <div class="head"><span class="num">05</span><h2>Лента</h2><span class="prod">продукт «Поток»</span></div>
+      <a class="shot" href="variant-05-ribbon.html"><img src="shots/variant-05-ribbon-home.png" alt="Лента — главная"></a>
+      <p class="idea">Лаунчер как соцсеть обновлений: лента модов в центре, инстансы колонкой слева, навигация узкой иконкой-рейкой. Действия — прямо в постах.</p>
+      <p class="disks">variance 3 · motion 5 · density 6</p>
+      <div class="links"><a href="variant-05-ribbon.html">макет</a><a href="design-systems/ribbon/MASTER.md">дизайн-система</a></div>
+    </article>
+
+    <article class="card">
+      <div class="head"><span class="num">06</span><h2>Кабина</h2><span class="prod">продукт «Кокпит»</span></div>
+      <a class="shot" href="variant-06-cockpit.html"><img src="shots/variant-06-cockpit-home.png" alt="Кабина — главная"></a>
+      <p class="idea">Игровая приборная панель: срезанные углы, скобки-уголки, телеметрия ОЗУ/TPS в шапке. Кнопка ИГРАТЬ — гранёная, как кнопка пуска.</p>
+      <p class="disks">variance 7 · motion 6 · density 7</p>
+      <div class="links"><a href="variant-06-cockpit.html">макет</a><a href="design-systems/cockpit/MASTER.md">дизайн-система</a></div>
+    </article>
+
+    <article class="card">
+      <div class="head"><span class="num">07</span><h2>Плед</h2><span class="prod">продукт «Гнёздышко»</span></div>
+      <a class="shot" href="variant-07-cozy.html"><img src="shots/variant-07-cozy-home.png" alt="Плед — главная"></a>
+      <p class="idea">Уют: пастельная розово-кремовая гамма, радиусы 16+, «пледики»-обложки и кнопки-пилюли. Лаунчер, в который хочется возвращаться.</p>
+      <p class="disks">variance 3 · motion 3 · density 4</p>
+      <div class="links"><a href="variant-07-cozy.html">макет</a><a href="design-systems/cozy/MASTER.md">дизайн-система</a></div>
+    </article>
+
+    <article class="card">
+      <div class="head"><span class="num">08</span><h2>Девяносто Шесть</h2><span class="prod">продукт «ОКНО-96»</span></div>
+      <a class="shot" href="variant-08-retro96.html"><img src="shots/variant-08-retro96-home.png" alt="Девяносто Шесть — главная"></a>
+      <p class="idea">Ремикс Win95: бевели, синяя тайтлбар, «проводник» инстансов и системный диалог ошибки. Современная сетка под ретро-хромом.</p>
+      <p class="disks">variance 8 · motion 3 · density 7 · fallback (данных базы по Y2K нет)</p>
+      <div class="links"><a href="variant-08-retro96.html">макет</a><a href="design-systems/retro96/MASTER.md">дизайн-система</a></div>
+    </article>
+
+    <article class="card">
+      <div class="head"><span class="num">09</span><h2>Манифест</h2><span class="prod">продукт «МАНИФЕСТ»</span></div>
+      <a class="shot" href="variant-09-brutal.html"><img src="shots/variant-09-brutal-home.png" alt="Манифест — главная"></a>
+      <p class="idea">Брутализм: 2px чёрные линии, нулевые радиусы, мгновенные инверсии и тени-офсеты. Иерархию решает типографика, а не декор.</p>
+      <p class="disks">variance 9 · motion 4 · density 7</p>
+      <div class="links"><a href="variant-09-brutal.html">макет</a><a href="design-systems/brutal/MASTER.md">дизайн-система</a></div>
+    </article>
+
+    <article class="card">
+      <div class="head"><span class="num">10</span><h2>Машинный зал</h2><span class="prod">продукт «ЦЕХ»</span></div>
+      <a class="shot" href="variant-10-workshop.html"><img src="shots/variant-10-workshop-home.png" alt="Машинный зал — главная"></a>
+      <p class="idea">Плотный клиент в духе Steam: библиотека слева, featured-инстанс и полки справа, статусбар. Максимум данных без визуального шума.</p>
+      <p class="disks">variance 5 · motion 5 · density 10 · оверрайд палитры (см. MASTER)</p>
+      <div class="links"><a href="variant-10-workshop.html">макет</a><a href="design-systems/workshop/MASTER.md">дизайн-система</a></div>
+    </article>
+  </main>
+
+  <footer>
+    Состояния (hover / скелетон / пустое / ошибка) — внизу каждого макета. Полные страницы: <span style="font-family:var(--mono)">shots/variant-*-full.png</span>. Ядро проекта не тронуто.
+  </footer>
+</div>
+</body>
+</html>

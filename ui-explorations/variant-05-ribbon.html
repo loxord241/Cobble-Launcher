@@ -102,21 +102,21 @@ a:hover{text-decoration:underline}
 
 /* лента */
 .feed{padding:var(--s-4) var(--s-5); overflow:hidden; display:flex; flex-direction:column; gap:var(--s-3); min-width:0}
-.banner{display:flex; align-items:center; gap:var(--s-3); background:var(--surface); border:1px solid var(--border-strong); border-radius:var(--r-m); padding:var(--s-3) var(--s-4); box-shadow:var(--shadow-1)}
+.banner{display:flex; align-items:center; gap:var(--s-3); background:var(--surface); border:1px solid var(--border-strong); border-radius:var(--r-m); padding:var(--s-2) var(--s-3); box-shadow:var(--shadow-1)}
 .banner svg{color:var(--primary)}
 .banner .txt{font-size:14px}
 .banner .txt b{font-weight:600}
 .banner .more{margin-left:auto; font-size:13px; font-weight:600; color:var(--accent); display:flex; align-items:center; height:40px; padding:0 var(--s-2); border-radius:var(--r-s); flex:none}
 .banner .more:hover{background:var(--accent-soft)}
-.feed-title{font-family:var(--font-display); font-size:22px; font-weight:700; margin:var(--s-1) 0 0}
-.post{background:var(--surface); border:1px solid var(--border); border-radius:var(--r-l); padding:var(--s-4); box-shadow:var(--shadow-1); transition:box-shadow var(--t-slow) var(--ease), transform var(--t-slow) var(--ease)}
+.feed-title{font-family:var(--font-display); font-size:20px; font-weight:700; margin:0}
+.post{background:var(--surface); border:1px solid var(--border); border-radius:var(--r-l); padding:var(--s-3) var(--s-4); box-shadow:var(--shadow-1); transition:box-shadow var(--t-slow) var(--ease), transform var(--t-slow) var(--ease)}
 .post:hover, .post.is-hover{box-shadow:var(--shadow-2); transform:translateY(-1px)}
 .post .head{display:flex; align-items:center; gap:var(--s-3)}
 .post .tile{width:40px;height:40px;border-radius:var(--r-s);display:grid;place-items:center;background:var(--surface-2);color:var(--text)}
 .post .who{font-size:15px; font-weight:600; line-height:1.3}
 .post .sub{font-size:13px; color:var(--text-muted)}
 .post .time{margin-left:auto; font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
-.post .body{font-size:14px; margin:var(--s-2) 0 var(--s-3); line-height:1.5}
+.post .postbody{font-size:14px; margin:var(--s-1) 0 var(--s-2); line-height:1.45}
 .post .body b{font-weight:600}
 .post .actions{display:flex; gap:var(--s-2)}
 .btn{height:40px; padding:0 var(--s-3); border-radius:var(--r-m); display:inline-flex; align-items:center; gap:var(--s-2); font-size:14px; font-weight:600}
@@ -127,9 +127,9 @@ a:hover{text-decoration:underline}
 .btn-ghost:hover{background:var(--surface-2)}
 .badge{display:inline-flex; align-items:center; gap:var(--s-1); font-family:var(--font-mono); font-size:12px; line-height:22px; padding:0 var(--s-2); border-radius:999px; background:var(--primary); color:var(--on-primary); white-space:nowrap}
 .packs{background:var(--surface); border:1px solid var(--border); border-radius:var(--r-l); padding:var(--s-4); box-shadow:var(--shadow-1)}
-.packs h3{margin:0 0 var(--s-2); font-family:var(--font-display); font-size:19px; font-weight:700}
-.pack{display:flex; align-items:center; gap:var(--s-3); padding:var(--s-2) 0; border-top:1px solid var(--border)}
-.pack .tile{width:40px;height:40px;border-radius:var(--r-s);display:grid;place-items:center;background:var(--surface-2);color:var(--text)}
+.packs h3{margin:0 0 var(--s-1); font-family:var(--font-display); font-size:17px; font-weight:700}
+.pack{display:flex; align-items:center; gap:var(--s-3); padding:var(--s-1) 0; border-top:1px solid var(--border)}
+.pack .tile{width:36px;height:36px;border-radius:var(--r-s);display:grid;place-items:center;background:var(--surface-2);color:var(--text)}
 .pack .info{flex:1; min-width:0}
 .pack .name{font-size:14px; font-weight:600; line-height:1.3}
 .pack .dl{font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
@@ -319,7 +319,7 @@ a:hover{text-decoration:underline}
               <span><span class="who">Sodium</span><br><span class="sub">инстанс «Fabric + Sodium»</span></span>
               <span class="time">сейчас</span>
             </div>
-            <div class="body">Доступна версия <b>0.6.13</b> — в инстансе установлена 0.6. Обновление подхватится при следующем запуске.</div>
+            <div class="postbody">Доступна версия <b>0.6.13</b> — в инстансе установлена 0.6. Обновление подхватится при следующем запуске.</div>
             <div class="actions">
               <button class="btn btn-primary"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Обновить</button>
               <span class="badge">есть обновление</span>
@@ -332,17 +332,7 @@ a:hover{text-decoration:underline}
               <span><span class="who">Lithium 0.15</span><br><span class="sub">инстанс «Fabric + Sodium»</span></span>
               <span class="time">вчера</span>
             </div>
-            <div class="body">Мод установлен и проверен при запуске — играли <b>вчера</b>, ошибок нет.</div>
-            <div class="actions"><button class="btn btn-ghost">Подробнее</button></div>
-          </article>
-
-          <article class="post">
-            <div class="head">
-              <span class="tile"><svg class="icon" aria-hidden="true"><use href="#i-puzzle"/></svg></span>
-              <span><span class="who">NeoForge: Create</span><br><span class="sub">38 модов</span></span>
-              <span class="time">3 дня назад</span>
-            </div>
-            <div class="body">Инстанс запускался <b>3 дня назад</b>. Новых версий модов не поступало.</div>
+            <div class="postbody">Мод установлен и проверен при запуске — играли <b>вчера</b>, ошибок нет.</div>
             <div class="actions"><button class="btn btn-ghost">Подробнее</button></div>
           </article>
 

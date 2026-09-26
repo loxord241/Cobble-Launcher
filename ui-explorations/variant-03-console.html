@@ -138,6 +138,11 @@ td .namecell{display:flex; align-items:center; gap:var(--s-2)}
 .pack .install svg{width:14px;height:14px}
 
 /* статусбар */
+.journal{margin-top:auto; border:1px solid var(--border); background:var(--surface); font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
+.journal .jh{padding:2px var(--s-2); border-bottom:1px solid var(--border); letter-spacing:.12em; text-transform:uppercase}
+.journal .jl{display:flex; gap:var(--s-2); padding:2px var(--s-2); border-bottom:1px solid var(--border); white-space:nowrap; overflow:hidden}
+.journal .jl:last-child{border-bottom:0}
+.journal .jt{color:var(--text); min-width:120px}
 .statusbar{height:32px; flex:none; display:flex; align-items:center; gap:var(--s-3); padding:0 var(--s-3); border-top:1px solid var(--border); font-family:var(--font-mono); font-size:12px; color:var(--text-muted)}
 .statusbar .sep{color:var(--border-strong)}
 .statusbar .all{display:flex; align-items:center; gap:var(--s-2); color:var(--accent); text-transform:uppercase; letter-spacing:.08em}
@@ -377,6 +382,13 @@ table.mods .act-btn:hover{background:color-mix(in srgb, var(--warn) 12%, transpa
               <span class="info"><span class="name">Simply Optimized</span><br><span class="dl">640 тыс. загрузок</span></span>
               <button class="install"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>установить</button>
             </div>
+          <div class="journal">
+            <div class="jh">Журнал событий</div>
+            <div class="jl"><span class="jt">2 ч назад</span><span>Ванилла 26.3 · без загрузчика</span></div>
+            <div class="jl"><span class="jt">вчера</span><span>Fabric + Sodium · fabric-loader 0.17 · 14 модов</span></div>
+            <div class="jl"><span class="jt">3 дня назад</span><span>NeoForge: Create · neoforge 21.1 · 38 модов</span></div>
+            <div class="jl"><span class="jt">неделю назад</span><span>Forge 1.20.1: РЛКрафт · 187 модов</span></div>
+          </div>
           </div>
         </div>
       </div>

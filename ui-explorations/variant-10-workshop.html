@@ -78,11 +78,11 @@ a:hover{text-decoration:underline}
 /* ── правая часть ───────────────────────────────────────────────── */
 .right{grid-row:1; display:flex; flex-direction:column; min-height:0; min-width:0}
 .topbar{height:52px; flex:none; display:flex; align-items:center; gap:var(--s-3); padding:0 var(--s-3); border-bottom:1px solid var(--border)}
-.search{display:flex; align-items:center; gap:var(--s-2); width:280px; height:36px; padding:0 var(--s-2); background:var(--surface); border:1px solid var(--border); border-radius:var(--r-m); color:var(--text-muted)}
+.search{display:flex; align-items:center; gap:var(--s-2); width:240px; height:36px; padding:0 var(--s-2); background:var(--surface); border:1px solid var(--border); border-radius:var(--r-m); color:var(--text-muted)}
 .search input{flex:1; min-width:0; background:none; border:0; outline:none; color:var(--text); font-size:13px}
 .search input::placeholder{color:var(--text-muted)}
 .nav{display:flex; gap:2px; margin-left:var(--s-2); align-self:stretch}
-.nav button{display:flex; align-items:center; gap:6px; padding:0 var(--s-3); font-family:var(--font-display); font-size:14px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--text-muted); border-bottom:2px solid transparent}
+.nav button{display:flex; align-items:center; gap:6px; padding:0 var(--s-2); font-family:var(--font-display); font-size:14px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--text-muted); border-bottom:2px solid transparent}
 .nav button svg{width:15px;height:15px}
 .nav button .n{font-family:var(--font-mono); font-size:12px}
 .nav button:hover{color:var(--text); background:var(--surface-2)}
@@ -302,13 +302,13 @@ a:hover{text-decoration:underline}
             <input type="text" placeholder="Поиск: инстансы, моды, модпаки…" aria-label="Глобальный поиск">
           </div>
           <nav class="nav" aria-label="Основная навигация">
-            <button class="is-active" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg>Главная</button>
-            <button><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>Инстансы</button>
-            <button><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg>Модпаки</button>
-            <button><svg class="icon" aria-hidden="true"><use href="#i-puzzle"/></svg>Моды</button>
-            <button><svg class="icon" aria-hidden="true"><use href="#i-image"/></svg>Ресурспаки</button>
-            <button><svg class="icon" aria-hidden="true"><use href="#i-shader"/></svg>Шейдеры</button>
-            <button><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>Настройки</button>
+            <button class="is-active" aria-current="page">Главная</button>
+            <button>Инстансы</button>
+            <button>Модпаки</button>
+            <button>Моды</button>
+            <button>Ресурспаки</button>
+            <button>Шейдеры</button>
+            <button>Настройки</button>
           </nav>
           <button class="account" aria-label="Аккаунт Steve, профиль нелицензионный, сменить">
             <svg width="32" height="32" aria-hidden="true" style="border-radius:4px;shape-rendering:crispEdges"><use href="#i-steve"/></svg>
@@ -357,6 +357,30 @@ a:hover{text-decoration:underline}
               <span class="tile"><svg class="icon" aria-hidden="true"><use href="#i-shader"/></svg></span>
               <span class="info"><span class="name">Simply Optimized</span><br><span class="dl">640 тыс. загрузок</span></span>
               <button class="install">Установить</button>
+            </div>
+          </div>
+
+          <div class="shelf-head"><h2>История запусков</h2><span class="line" aria-hidden="true"></span></div>
+          <div class="updates">
+            <div class="upd">
+              <span class="tile"><svg class="icon" style="width:16px;height:16px" aria-hidden="true"><use href="#i-play"/></svg></span>
+              <span class="txt"><b>Ванилла 26.3</b> · <span class="m">без загрузчика · играли 2 ч назад</span></span>
+              <button class="btn">Играть</button>
+            </div>
+            <div class="upd">
+              <span class="tile"><svg class="icon" style="width:16px;height:16px" aria-hidden="true"><use href="#i-play"/></svg></span>
+              <span class="txt"><b>NeoForge: Create</b> · <span class="m">neoforge 21.1 · 38 модов · 3 дня назад</span></span>
+              <button class="btn">Играть</button>
+            </div>
+            <div class="upd">
+              <span class="tile"><svg class="icon" style="width:16px;height:16px" aria-hidden="true"><use href="#i-play"/></svg></span>
+              <span class="txt"><b>Forge 1.20.1: РЛКрафт</b> · <span class="m">forge 47.3 · 187 модов · неделю назад</span></span>
+              <button class="btn">Играть</button>
+            </div>
+            <div class="upd">
+              <span class="tile"><svg class="icon" style="width:16px;height:16px" aria-hidden="true"><use href="#i-play"/></svg></span>
+              <span class="txt"><b>Креатив-песочница</b> · <span class="m">quilt · шейдеры · месяц назад</span></span>
+              <button class="btn">Играть</button>
             </div>
           </div>
 
@@ -433,13 +457,13 @@ a:hover{text-decoration:underline}
             <input type="text" placeholder="Поиск: инстансы, моды, модпаки…" aria-label="Глобальный поиск">
           </div>
           <nav class="nav" aria-label="Основная навигация">
-            <button><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg>Главная</button>
-            <button><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>Инстансы</button>
-            <button><svg class="icon" aria-hidden="true"><use href="#i-package"/></svg>Модпаки</button>
-            <button class="is-active" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-puzzle"/></svg>Моды</button>
-            <button><svg class="icon" aria-hidden="true"><use href="#i-image"/></svg>Ресурспаки</button>
-            <button><svg class="icon" aria-hidden="true"><use href="#i-shader"/></svg>Шейдеры</button>
-            <button><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>Настройки</button>
+            <button>Главная</button>
+            <button>Инстансы</button>
+            <button>Модпаки</button>
+            <button class="is-active" aria-current="page">Моды</button>
+            <button>Ресурспаки</button>
+            <button>Шейдеры</button>
+            <button>Настройки</button>
           </nav>
           <button class="account" aria-label="Аккаунт Steve, профиль нелицензионный, сменить">
             <svg width="32" height="32" aria-hidden="true" style="border-radius:4px;shape-rendering:crispEdges"><use href="#i-steve"/></svg>
