@@ -101,3 +101,11 @@ Headless `--installClient` отказывается работать без «в
    «List of mods to add»). Формат: `--mods net.neoforged:neoforge:<v>:universal`.
    `-DlegacyClassPath` не используется — нужен FML только в dev-режиме, а дублирование
    classpath в аргументах роняет спавн на Windows (os error 206, лимит 32K).
+
+## D14. Отладочный CDP-порт в tauri.conf.json (снять к M9)
+
+Для автоматизированной приёмки UI (клики мышкой через CDP) в `app.windows[0]`
+добавлен `additionalBrowserArgs: "--remote-debugging-port=9223"` и dev-зависимость
+`playwright-core` (скрипт `scripts/m4_acceptance.cjs`). В RELEASE-сборку не
+пропускать: порт отладки на localhost — риск (спека §11). M9 обязан удалить аргумент
+из конфига.

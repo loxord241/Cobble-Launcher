@@ -63,6 +63,14 @@ pub enum LauncherError {
 
 pub type Result<T> = std::result::Result<T, LauncherError>;
 
+/// Сериализуется как payload — так ошибки автоматически проходят через
+/// #[tauri::command] в UI (спека §4.1: `{code, message, hint}`).
+impl serde::Serialize for LauncherError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        self.payload().serialize(serializer)
+    }
+}
+
 impl LauncherError {
     /// Код ошибки для i18n-маппинга в UI (спека §8: `i18n/errors.json`).
     pub fn code(&self) -> &'static str {

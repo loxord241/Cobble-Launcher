@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+# Два бинарника: GUI (main.rs) и CLI mcl — tauri dev собирает дефолтный.
+default-run = "mc-launcher-v2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -38,6 +40,8 @@ zip = { version = "8.6.0", features = ["deflate"] }
 rand = "0.10.3"
 clap = { version = "4.6.7", features = ["derive"] }
 md-5 = "0.11.0"
+opener = "0.8.5"
+tracing-appender = "0.2.5"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

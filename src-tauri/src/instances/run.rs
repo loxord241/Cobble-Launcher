@@ -570,6 +570,97 @@ pub async fn install_loader(
     Ok(updated)
 }
 
+/// Спавн игры из UI: супервизия живёт в вызывающем потоке до выхода игры —
+/// логи → события, `.lock` держится всё время работы, статистика обновляется.
+pub fn launch_detached(
+    paths: &Paths,
+    instance_id: &str,
+    prepared: PreparedLaunch,
+    bus: &EventBus,
+) -> Result<()> {
+    let inst_dir = crate::instances::instance_dir(paths, instance_id);
+    let lock = InstanceLock::acquire(&inst_dir)?;
+
+    let mut command = std::process::Command::new(&prepared.command.program);
+    command
+        .args(&prepared.command.args)
+        .current_dir(crate::util::fs::long_path(&prepared.game_dir))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|e| LauncherError::JavaNotFound(format!("не удалось запустить игру: {e}")))?;
+    tracing::info!("инстанс {instance_id}: игра запущена (PID {})", child.id());
+    bus.emit(LauncherEvent::LaunchState {
+        instance_id: instance_id.to_string(),
+        phase: LaunchPhase::Running,
+        exit_code: None,
+    });
+
+    // stdout/stderr → лог-файл + события game_log_line.
+    let logs_dir = prepared.game_dir.join("logs");
+    std::fs::create_dir_all(crate::util::fs::long_path(&logs_dir))?;
+    let log_path = crate::util::fs::long_path(&logs_dir.join("latest.log"));
+    let mut log_file = std::fs::File::create(&log_path)?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let (tx, rx) = std::sync::mpsc::channel::<(String, crate::events::LogStream)>();
+    let streams: Vec<(Option<Box<dyn std::io::Read + Send>>, crate::events::LogStream)> = vec![
+        (stdout.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>), crate::events::LogStream::Stdout),
+        (stderr.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>), crate::events::LogStream::Stderr),
+    ];
+    for (stream, kind) in streams {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let Some(stream) = stream else { return };
+            let reader = std::io::BufReader::new(stream);
+            for line in std::io::BufRead::lines(reader).map_while(std::result::Result::ok) {
+                if tx.send((line, kind)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    drop(tx);
+
+    let started = std::time::Instant::now();
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+            Ok((line, stream)) => {
+                let _ = std::io::Write::write_all(&mut log_file, format!("{line}\n").as_bytes());
+                bus.emit(LauncherEvent::GameLogLine {
+                    instance_id: instance_id.to_string(),
+                    line,
+                    stream,
+                });
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if let Ok(Some(status)) = child.try_wait() {
+                    let code = status.code();
+                    bus.emit(LauncherEvent::LaunchState {
+                        instance_id: instance_id.to_string(),
+                        phase: LaunchPhase::Exited,
+                        exit_code: code,
+                    });
+                    // Статистика: время игры.
+                    if let Ok(mut inst) = crate::instances::load(paths, instance_id) {
+                        inst.last_played = Some(crate::instances::now_secs());
+                        inst.launch_count += 1;
+                        inst.play_seconds += started.elapsed().as_secs();
+                        let _ = crate::instances::save(paths, &inst);
+                    }
+                    drop(lock);
+                    return Ok(());
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = child.wait();
+    drop(lock);
+    Ok(())
+}
+
 /// Fallback Java-минимумов по версии MC (спека §6.4).
 pub fn fallback_major(mc_version: &str) -> u32 {    let parts: Vec<u32> = mc_version
         .split('.')

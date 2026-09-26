@@ -14,7 +14,8 @@
       {
         "title": "mc-launcher-v2",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "additionalBrowserArgs": "--remote-debugging-port=9223"
       }
     ],
     "security": {
