@@ -1,14 +1,19 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+//! mc-launcher-v2: ядро лаунчера. Весь бизнес живёт здесь; UI — тонкий слой
+//! поверх IPC (спека §4.3).
+
+pub mod auth;
+pub mod errors;
+pub mod events;
+pub mod java;
+pub mod mojang;
+pub mod net;
+pub mod paths;
+pub mod settings;
+pub mod util;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run() -> tauri::Result<()> {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
 }
