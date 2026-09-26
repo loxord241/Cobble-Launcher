@@ -539,6 +539,28 @@ pub async fn install_loader(
             updated.loader_version = Some(v);
             updated.version_id = Some(id);
         }
+        "forge" => {
+            let v = match loader_version {
+                Some(v) => v.to_string(),
+                None => crate::loaders::forge::latest_for_mc(&client, &inst.mc_version).await?,
+            };
+            let java = resolve_java(paths, settings, client.clone(), need_major, &None).await?;
+            let game_dir = minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
+            std::fs::create_dir_all(crate::util::fs::long_path(&game_dir))?;
+            let id = crate::loaders::forge::install(
+                &client,
+                &paths.cache_dir(),
+                &java.java_exe,
+                &game_dir,
+                &instance_versions,
+                &inst.mc_version,
+                &v,
+            )
+            .await?;
+            updated.loader = Some("forge".into());
+            updated.loader_version = Some(v);
+            updated.version_id = Some(id);
+        }
         "neoforge" => {
             let v = match loader_version {
                 Some(v) => v.to_string(),

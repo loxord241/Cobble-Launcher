@@ -133,3 +133,18 @@ Sodium это neoforge). Для vanilla-инстансов выбираем fabr
 сверены с API по slug. Мод без совместимой версии для пары (mc, loader) пропускается
 с записью в лог — стек подстраивается под новые версии MC (ModernFix для 26.3+fabric
 на момент приёмки ещё не вышел). Версии модов не хардкодятся (спека §6.9).
+
+
+## D18. Forge: координата maven с MC-префиксом
+
+promotions_slim.json отдаёт версию Forge без MC (`47.4.10`), но maven-путь
+требует `{mc}-{version}` (`net/minecraftforge/forge/1.20.1-47.4.10/…`). Голая
+версия даёт 404 — найдено первой приёмкой M7. version_id инстанса —
+`1.20.1-forge-47.4.10`.
+
+## D19. Общий headless-инсталлятор Forge-семейства
+
+NeoForge и Forge используют один путь: shim `launcher_profiles.json` →
+`--installClient <game_dir>` → перенос version JSON в versions/ инстанса.
+Логика вынесена в `loaders::run_headless_installer` (была приватной в
+neoforge).

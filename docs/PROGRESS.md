@@ -284,3 +284,36 @@
 - RAM-подсказка в настройках показывает рекомендацию от ram_guide.
 
 **Открытые проблемы:** нет.
+
+
+---
+
+## M7. Forge
+
+**Дата:** 2026-09-26
+
+**Сделано:**
+- `loaders/forge.rs`: promotions_slim.json (recommended → latest), скачивание
+  installer.jar с maven.minecraftforge.net с обязательной сверкой `.sha1`
+  (спека §6.3; никакого `--mirror` на чужие домены — антипаттерн 16Launcher);
+  headless `--installClient` через общий `run_headless_installer` (штим
+  `launcher_profiles.json` — тот же путь, что у NeoForge).
+- **Координата maven — `{mc}-{forgeVersion}`** (1.20.1-47.4.10): голая версия
+  из promotions даёт 404 (найдено на приёмке).
+- `install_loader("forge")` → инстанс получает version json
+  `1.20.1-forge-<v>` через inheritsFrom; universal jar из
+  `libraries/net/minecraftforge/forge/<v>/` добавляется в classpath
+  (механизм M3/D13); Forge 1.20.1 FML находит universal на classpath без
+  `--mods` (в отличие от NeoForge).
+
+**Проверка:**
+- `cargo test` — **71 юнит + 10 интеграционных — зелёные** (promotions-фикстура,
+  выбор recommended); clippy -D warnings чисто.
+- **Инстанс Forge 1.20.1 (47.4.10, recommended): «Forge mod loading, version
+  47.4.10, for MC 1.20.1» + «MinecraftForge v47.4.10 Initialized» в логе,
+  «Sound engine started», EXIT=0, 18.2 с**; Java 17 подобрана точно из
+  runtime/jdk17.
+
+**Открытые проблемы:** нет. Старые Forge (1.12-) без `--installClient` — не
+поддерживаются, честная ошибка (спека §6.3 допускает fallback processors как
+будущее расширение).
