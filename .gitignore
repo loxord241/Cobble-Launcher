@@ -33,3 +33,10 @@ src-tauri/target/
 *.pem
 secrets/
 scripts/keys/
+
+# Внутренние рабочие документы (промпты оркестатора и приёмок) — не публикуются
+AUDIT_PROMPT.md
+ORCHESTRATOR_PROMPT.md
+SLATE_APPLY_PROMPT.md
+UI_EXPLORATION_PROMPT.md
+AGENT_PROMPT.md
