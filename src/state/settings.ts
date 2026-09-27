@@ -8,6 +8,8 @@ import type { Settings } from "../api/types";
 interface SettingsState {
   settings: Settings | null;
   loaded: boolean;
+  /** Ошибка начальной загрузки: App показывает экран с «Повторить» (D6). */
+  error: string | null;
   load: () => Promise<void>;
   update: (patch: Partial<Settings>) => Promise<void>;
 }
@@ -36,10 +38,19 @@ export function applyUiScale(percent?: number) {
 export const useSettings = create<SettingsState>((set, get) => ({
   settings: null,
   loaded: false,
+  error: null,
   load: async () => {
-    const settings = await api.settingsGet();
-    applySideEffects(settings);
-    set({ settings, loaded: true });
+    try {
+      const settings = await api.settingsGet();
+      applySideEffects(settings);
+      set({ settings, loaded: true, error: null });
+    } catch (e) {
+      // Честная ошибка вместо вечного спиннера (D6).
+      set({
+        error: (e as { message?: string })?.message ?? String(e),
+        loaded: false,
+      });
+    }
   },
   update: async (patch) => {
     const current = get().settings;

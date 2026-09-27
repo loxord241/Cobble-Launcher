@@ -114,7 +114,9 @@ pub fn extract_zip_filtered<R: Read + Seek>(
 
 
 /// Вариант со СРЕЗАНИЕМ префикса (конвенция модпаков: содержимое `overrides/`
-/// ложится поверх корня каталога игры). zip-slip-защита сохранена.
+/// ложится поверх корня каталога игры). zip-slip-защита сохранена; лимиты
+/// записей/размера те же, что в `extract_zip_filtered` — сюда приходят
+/// НЕдоверенные архивы (.mrpack, CF-zip), защита от zip-bomb обязательна (D3).
 pub fn extract_zip_stripping<R: Read + Seek>(
     reader: R,
     dest: &Path,
@@ -124,9 +126,16 @@ pub fn extract_zip_stripping<R: Read + Seek>(
 ) -> Result<Vec<PathBuf>> {
     let mut archive = zip::ZipArchive::new(reader)
         .map_err(|e| LauncherError::Zip(format!("не удалось открыть архив: {e}")))?;
+    if archive.len() > MAX_ENTRIES {
+        return Err(LauncherError::Zip(format!(
+            "слишком много записей в архиве: {}",
+            archive.len()
+        )));
+    }
     let dest_long = crate::util::fs::long_path(dest);
     std::fs::create_dir_all(&dest_long)?;
     let mut out = Vec::new();
+    let mut total_uncompressed: u64 = 0;
     for i in 0..archive.len() {
         let mut file = archive
             .by_index(i)
@@ -134,6 +143,12 @@ pub fn extract_zip_stripping<R: Read + Seek>(
         let raw = file.name().to_string();
         if file.is_dir() || !raw.starts_with(strip) {
             continue;
+        }
+        total_uncompressed += file.size();
+        if total_uncompressed > MAX_TOTAL_UNCOMPRESSED {
+            return Err(LauncherError::Zip(
+                "архив превышает лимит распаковки (возможен zip-bomb)".into(),
+            ));
         }
         let rel_full = safe_relative_path(&raw)?;
         let rel = rel_full
@@ -271,6 +286,26 @@ mod tests {
         }
         // Обратный слэш сам по себе — просто разделитель (нормализуется), но с .. — ошибка
         assert!(safe_relative_path("mods\\sub\\file.jar").is_ok());
+    }
+
+    #[test]
+    fn stripping_extracts_and_respects_limits() {
+        // D3: stripping-вариант работает как раньше и считает лимит по своим файлам.
+        let data = build_zip(&[
+            ("overrides/mods/a.jar", b"AAA"),
+            ("meta/junk.txt", b"JUNKJUNK"),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let files = extract_zip_stripping(
+            std::io::Cursor::new(data),
+            dir.path(),
+            "overrides/",
+            |_| true,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(files, vec![dir.path().join("mods/a.jar")]);
+        assert_eq!(std::fs::read(dir.path().join("mods/a.jar")).unwrap(), b"AAA");
     }
 
     #[test]

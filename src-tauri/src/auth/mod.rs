@@ -162,7 +162,14 @@ pub async fn launch_identity(
                 ));
             };
             let refresh = keyring_get(rr)?;
-            let session = msa::refresh_session(client, &refresh).await?;
+            let settings =
+                crate::settings::Settings::load(&paths.settings_file())?;
+            let cid = settings.azure_client_id.ok_or_else(|| {
+                LauncherError::InvalidInput(
+                    "нет azureClientId в настройках — укажите его в Настройках (MSA-вход)".into(),
+                )
+            })?;
+            let session = msa::refresh_session(client, &refresh, &cid).await?;
             // Обновлённый refresh-токен (если пришёл) — обратно в keyring.
             if session.refresh_token != refresh {
                 keyring_set(rr, &session.refresh_token)?;

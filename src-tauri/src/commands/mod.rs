@@ -23,6 +23,9 @@ pub struct AppState {
     pub settings: RwLock<Settings>,
     pub http: RwLock<Arc<HttpClient>>,
     pub launching: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Активные движки загрузок по группе (`instance:<id>`): instance_kill
+    /// отменяет РЕАЛЬНЫЙ движок группы, а не свежесозданный no-op (D1).
+    pub engines: std::sync::Mutex<std::collections::HashMap<String, Arc<DownloadEngine>>>,
 }
 
 impl AppState {
@@ -41,6 +44,7 @@ impl AppState {
             settings: RwLock::new(settings),
             http: RwLock::new(http),
             launching: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
+            engines: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -54,6 +58,32 @@ impl AppState {
         };
         let http = self.http().await;
         DownloadEngine::new(http, parallelism, self.bus.clone())
+    }
+
+    /// Движок для группы с регистрацией в реестре. Работа с группой
+    /// завершена → `engine_done(group)`, чтобы не держать старый HttpClient.
+    pub async fn engine_for(&self, group: &str) -> Arc<DownloadEngine> {
+        if let Some(e) = self.engines.lock().unwrap().get(group) {
+            return e.clone();
+        }
+        let e = self.engine().await;
+        self.engines
+            .lock()
+            .unwrap()
+            .insert(group.to_string(), e.clone());
+        e
+    }
+
+    /// Отменить активную загрузку группы (если движок ещё жив).
+    pub fn cancel_engine_group(&self, group: &str) {
+        if let Some(e) = self.engines.lock().unwrap().remove(group) {
+            e.cancel_group(group);
+        }
+    }
+
+    /// Снять группу с регистрации (работа завершена — успех или ошибка).
+    pub fn engine_done(&self, group: &str) {
+        self.engines.lock().unwrap().remove(group);
     }
 }
 
@@ -151,9 +181,10 @@ pub async fn instance_launch(
     }
 
     let inst_id_clone = id.clone();
+    let group = format!("instance:{id}");
     let res = async {
         let inst = instances::load(&state.paths, &id)?;
-        let engine = state.engine().await;
+        let engine = state.engine_for(&group).await;
         let settings_guard = state.settings.read().await.clone();
         let http = state.http().await;
         // Идентичность активного аккаунта (offline/MSA/ely) — спека §6.8.
@@ -271,9 +302,10 @@ pub async fn content_install(
     version_id: Option<String>,
 ) -> Result<Vec<crate::instances::ContentEntry>> {
     let inst = instances::load(&state.paths, &instance_id)?;
-    let engine = state.engine().await;
+    let group = format!("instance:{instance_id}");
+    let engine = state.engine_for(&group).await;
     let http = state.http().await;
-    crate::modrinth::install::install_project(
+    let out = crate::modrinth::install::install_project(
         &state.paths,
         http,
         engine,
@@ -281,7 +313,9 @@ pub async fn content_install(
         &project_id,
         version_id.as_deref(),
     )
-    .await
+    .await;
+    state.engine_done(&group);
+    out
 }
 
 #[tauri::command]
@@ -386,10 +420,12 @@ pub async fn content_update_all(
     instance_id: String,
 ) -> Result<usize> {
     let inst = instances::load(&state.paths, &instance_id)?;
-    let engine = state.engine().await;
+    let group = format!("instance:{instance_id}");
+    let engine = state.engine_for(&group).await;
     let http = state.http().await;
-    crate::modrinth::updates::update_all(&state.paths, http, engine, &inst)
-        .await
+    let out = crate::modrinth::updates::update_all(&state.paths, http, engine, &inst).await;
+    state.engine_done(&group);
+    out
 }
 
 
@@ -443,9 +479,12 @@ pub async fn instance_optimize(
     instance_id: String,
 ) -> Result<Vec<String>> {
     let inst = instances::load(&state.paths, &instance_id)?;
-    let engine = state.engine().await;
+    let group = format!("instance:{instance_id}");
+    let engine = state.engine_for(&group).await;
     let http = state.http().await;
-    crate::optimize::optimize(&state.paths, http, engine, &inst).await
+    let out = crate::optimize::optimize(&state.paths, http, engine, &inst).await;
+    state.engine_done(&group);
+    out
 }
 
 #[tauri::command]
@@ -460,8 +499,7 @@ pub async fn instance_kill(state: State<'_, AppState>, instance_id: String) -> R
         launching.remove(&instance_id)
     };
     if was_launching {
-        let engine = state.engine().await;
-        engine.cancel_group(&format!("instance:{instance_id}"));
+        state.cancel_engine_group(&format!("instance:{instance_id}"));
         state.bus.emit(crate::events::LauncherEvent::LaunchState {
             instance_id: instance_id.clone(),
             phase: crate::events::LaunchPhase::Exited,

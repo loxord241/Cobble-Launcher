@@ -216,5 +216,11 @@
   "instances.stats.playTime": "В игре: {h} ч {m} мин",
   "instances.stats.lastPlayed": "Последний запуск: {at}",
   "settings.uiScale": "Масштаб интерфейса",
-  "settings.uiScale.hint": "Размер всех элементов (90–150%)"
+  "settings.uiScale.hint": "Размер всех элементов (90–150%)",
+  "app.loadError.title": "Не удалось загрузить настройки лаунчера",
+  "app.loadError.retry": "Повторить",
+  "instances.delete.title": "Удалить инстанс",
+  "instances.delete.desc": "«{name}» — со всеми мирами, модами и настройками. Запущенный инстанс сначала нужно остановить.",
+  "instances.delete.trash": "Удалить в корзину (можно восстановить)",
+  "instances.delete.forever": "Удалить навсегда, вместе с данными"
 }

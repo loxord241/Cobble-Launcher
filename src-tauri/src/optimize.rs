@@ -70,7 +70,7 @@ pub async fn optimize(
 }
 
 /// RAM-гайды (спека §6.9): рекомендация min(6G, systemRAM/4),
-/// предупреждение при >8G.
+/// предупреждение, если машине по формуле досталось бы >8G (total/4).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RamGuide {
@@ -81,13 +81,12 @@ pub struct RamGuide {
 }
 
 pub fn ram_guide() -> RamGuide {
-    let total = sysinfo::System::new_all()
-        .total_memory()
-        .saturating_mul(1024)
-        .saturating_div(1024 * 1024); // байты → МБ
+    // sysinfo 0.39: total_memory() — БАЙТЫ; → МБ одним делением
+    // (умножение на 1024 здесь завышало рекомендацию в ~1024 раза, D2).
+    let total = sysinfo::System::new_all().total_memory() / (1024 * 1024);
     let quarter = total / 4;
     let recommended = quarter.clamp(1024, 6144);
-    let warning = if recommended > 8192 {
+    let warning = if quarter > 8192 {
         Some(
             "Больше 8 ГБ — длинные GC-паузы. Ставьте столько, сколько нужно конкретному модпаку."
                 .into(),
@@ -105,6 +104,15 @@ pub fn ram_guide() -> RamGuide {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ram_mb_conversion_is_sane() {
+        // D2-регресс: на машинах с 16-64 ГБ total не может быть 6144 у всех —
+        // total должен быть правдоподобным (>= 2 ГБ и кратным разумной сетке).
+        let g = ram_guide();
+        assert!(g.total_mb >= 2048, "total_mb={}", g.total_mb);
+        assert!(g.total_mb <= 8 * 1024 * 1024);
+    }
 
     #[test]
     fn ram_guide_bounds() {

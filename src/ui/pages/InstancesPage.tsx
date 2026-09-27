@@ -1,6 +1,6 @@
 // Страница инстансов «Сланца»: строки + создание/удаление + фильтр поиска + управление.
 import { useState } from "react";
-import { Plus, SearchX, Inbox } from "lucide-react";
+import { Plus, SearchX, Inbox, X } from "lucide-react";
 import { useInstances } from "../../state/instances";
 import { useAccounts } from "../../state/accounts";
 import { api } from "../../api/client";
@@ -22,6 +22,8 @@ export default function InstancesPage({ query }: { query: string }) {
   const [renameInst, setRenameInst] = useState<Instance | null>(null);
   const [logsInst, setLogsInst] = useState<Instance | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // D7: честный диалог удаления — «в корзину» или «навсегда».
+  const [deleteInst, setDeleteInst] = useState<Instance | null>(null);
 
   const activeAccount =
     accounts.find((a) => a.id === settings?.accountsActiveId) ?? accounts[0] ?? null;
@@ -65,14 +67,7 @@ export default function InstancesPage({ query }: { query: string }) {
             .then(() => void load())
             .catch((e) => setError(String(e)))
       : undefined,
-    onDelete: () => {
-      const wipe = window.confirm(
-        `${t("instances.confirmDelete", { name: inst.name })}\n\nНажмите OK для удаления в корзину (или Отмена для отмены).`,
-      );
-      if (wipe) {
-        void remove(inst.id, false).catch((e) => setError(String(e)));
-      }
-    },
+    onDelete: () => setDeleteInst(inst),
   });
 
   return (
@@ -145,6 +140,64 @@ export default function InstancesPage({ query }: { query: string }) {
           instance={renameInst}
           onClose={() => setRenameInst(null)}
         />
+      )}
+
+      {deleteInst && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
+          onClick={() => setDeleteInst(null)}
+          onKeyDown={(e) => e.key === "Escape" && setDeleteInst(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("instances.delete.title")}
+            className="w-[440px] rounded-lg border border-border-app bg-card p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <h3 className="text-[15px] font-semibold">{t("instances.delete.title")}</h3>
+              <button
+                onClick={() => setDeleteInst(null)}
+                aria-label={t("common.close")}
+                className="icon-btn text-text-muted"
+              >
+                <X size={16} aria-hidden />
+              </button>
+            </div>
+            <p className="mt-2 text-[13px] text-text-muted">
+              {t("instances.delete.desc", { name: deleteInst.name })}
+            </p>
+            <div className="mt-5 flex flex-col gap-2">
+              <button
+                onClick={() => {
+                  const target = deleteInst;
+                  setDeleteInst(null);
+                  void remove(target.id, false).catch((e) => setError(String(e)));
+                }}
+                className="btn-ghost btn-sm h-10 justify-center"
+              >
+                {t("instances.delete.trash")}
+              </button>
+              <button
+                onClick={() => {
+                  const target = deleteInst;
+                  setDeleteInst(null);
+                  void remove(target.id, true).catch((e) => setError(String(e)));
+                }}
+                className="h-10 justify-center rounded-lg border border-error/50 px-3 text-sm font-medium text-error transition-colors hover:bg-error/10"
+              >
+                {t("instances.delete.forever")}
+              </button>
+              <button
+                onClick={() => setDeleteInst(null)}
+                className="btn-ghost btn-sm h-10 justify-center text-text-muted"
+              >
+                {t("common.cancel")}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {logsInst && (

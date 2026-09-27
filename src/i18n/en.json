@@ -216,5 +216,11 @@
   "instances.stats.playTime": "Play time: {h} h {m} min",
   "instances.stats.lastPlayed": "Last played: {at}",
   "settings.uiScale": "Interface scale",
-  "settings.uiScale.hint": "Size of all elements (90–150%)"
+  "settings.uiScale.hint": "Size of all elements (90–150%)",
+  "app.loadError.title": "Failed to load launcher settings",
+  "app.loadError.retry": "Retry",
+  "instances.delete.title": "Delete instance",
+  "instances.delete.desc": "\"{name}\" — including all worlds, mods and settings. Stop the instance first if it is running.",
+  "instances.delete.trash": "Move to trash (recoverable)",
+  "instances.delete.forever": "Delete forever, including data"
 }

@@ -107,21 +107,18 @@ pub async fn device_code_poll(
 }
 
 /// Обновить сессию по refresh-токену (авто-refresh при старте, спека §6.8).
-pub async fn refresh_session(client: &HttpClient, refresh_token: &str) -> Result<Session> {
-    // client_id нужен для refresh; берём из локальных настроек.
-    let settings = crate::settings::Settings::load(
-        &crate::paths::Paths::default_root().join("settings.json"),
-    )?;
-    let azure_client_id = settings.azure_client_id.ok_or_else(|| {
-        LauncherError::InvalidInput(
-            "нет azureClientId в настройках — укажите его в Настройках (MSA-вход)".into(),
-        )
-    })?;
+pub async fn refresh_session(
+    client: &HttpClient,
+    refresh_token: &str,
+    azure_client_id: &str,
+) -> Result<Session> {
+    // client_id передаёт вызывающий — из ФАКТИЧЕСКОГО корня данных,
+    // а не default_root (ломалось при кастомном каталоге, D4).
     let resp = client
         .raw()
         .post(format!("{AUTH_BASE}/token"))
         .form(&[
-            ("client_id", azure_client_id.as_str()),
+            ("client_id", azure_client_id),
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
             ("scope", SCOPE),

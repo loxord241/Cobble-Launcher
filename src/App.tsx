@@ -7,7 +7,7 @@ import { t } from "./i18n";
 import { useInstances } from "./state/instances";
 
 export default function App() {
-  const { settings, loaded, load } = useSettings();
+  const { settings, loaded, load, error: loadError, } = useSettings();
   const { error, setError, load: loadInstances } = useInstances();
   // onboardingDone читается один раз при старте; сброс из настроек
   // перезагружает состояние через update.
@@ -22,6 +22,19 @@ export default function App() {
       setShowOnboarding(!settings?.onboardingDone);
     }
   }, [loaded, settings, showOnboarding]);
+
+  if (loadError) {
+    // D6: ошибка начальной загрузки — текст + «Повторить», не вечное «…».
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-bg px-6 text-center">
+        <div className="text-[15px] font-semibold text-text">{t("app.loadError.title")}</div>
+        <div className="max-w-md text-[13px] text-text-muted">{loadError}</div>
+        <button onClick={() => void load()} className="btn-primary btn-sm">
+          {t("app.loadError.retry")}
+        </button>
+      </div>
+    );
+  }
 
   if (!loaded || showOnboarding === null) {
     return <div className="flex h-screen items-center justify-center bg-bg text-text-muted">…</div>;
