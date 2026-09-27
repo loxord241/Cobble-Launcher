@@ -162,3 +162,48 @@ access/refresh токен регистрируется в `util::redact`, file-�
 Спека: «хэш со страницы релиза». GitHub API для releases/latest отдаёт
 `assets[].digest` (`sha256:…`) — это и есть машинно-читаемый хэш релиза; без
 digest скачивание запрещается (правило §3).
+
+## D22. UI «Сланец»: тема = CSS-переменные через data-theme
+
+Дизайн ui-explorations/slate-pro.html перенесён в реальный React-UI без
+структурных изменений (вердикт владельца: «Сланец» во всех темах). Тема —
+только палитра: атрибут `data-theme` на `<html>` (dark — по умолчанию, без
+атрибута; light, cb-dark, cb-light, mc). Палитры 1-в-1 из slate-pro.html.
+Хранение — localStorage (`theme`), приоритет при старте: `?theme=` в URL >
+localStorage > dark. Тема применяется синхронно в main.tsx до createRoot
+(без мигания). settings.theme ядра (dark|light) продолжает работать: он
+применяется, только если localStorage ещё не выбран; выбор Тёмной/Светлой
+на странице «Темы» синхронизируется обратно в ядро через settings_set.
+Премиум-темы (Гроза, Хвоя, Кармин, Янтарь) — некликабельные карточки с
+замком; кнопка «Подписаться» disabled (URL подписки не согласован, фейковой
+оплаты нет). Ограничение: border-strong (рамки карточек/кнопок) на
+поверхности даёт <3:1 — это 1-в-1 значения эталона; интерактив различим
+текстом (≥4.5:1) и акцентом (≥3:1), рамка не единственный носитель.
+
+## D23. Кастомный титлбар: decorations:false + разрешения окна
+
+Титлбар 52px свой (бренд, поиск, чип аккаунта, кнопки окна) — в
+tauri.conf.json `decorations: false`. Кнопки — `@tauri-apps/api/window`
+(minimize/toggleMaximize/close), двойной клик по титлбару = maximize
+(встроенный обработчик data-tauri-drag-region, permission
+`core:window:allow-internal-toggle-maximize` из core:default). Для кнопок
+добавлены явные разрешения в src-tauri/capabilities/default.json
+(minimize/toggle-maximize/close/is-maximized/start-dragging) — это
+конфигурация ACL, не Rust-код. Перетаскивание — data-tauri-drag-region
+на титлбаре и его пассивных детях; на кнопках/инпуте атрибута нет.
+
+## D24. Шрифты офлайн: системные стеки вместо Inter
+
+Прототип использует Inter (Google Fonts) — лаунчер обязан выглядеть
+корректно без интернета, поэтому сетевые шрифты НЕ подключаются:
+UI — "Segoe UI", system-ui, sans-serif; mono — "Cascadia Mono",
+"JetBrains Mono", Consolas, monospace.
+
+## D25. Instance: snake_case от ядра → camelCase на границе фронтенда
+
+Rust-структура `Instance` сериализуется в snake_case (`mc_version`), а
+контракт docs/UI-CONTRACT.md и типы фронтенда требуют camelCase — из-за
+рассинхрона версии инстансов в UI были пустыми. Rust-ядро не трогалось:
+нормализация ключей добавлена в `api/client.ts` (camelize на выходе,
+snakify для instance_settings_set на входе). Правильное долгосрочное
+решение — `#[serde(rename_all = "camelCase")]` в ядре.

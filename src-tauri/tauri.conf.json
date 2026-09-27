@@ -14,7 +14,10 @@
       {
         "title": "mc-launcher-v2",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "minWidth": 720,
+        "minHeight": 480,
+        "decorations": false
       }
     ],
     "security": {
