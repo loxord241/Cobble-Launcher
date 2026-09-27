@@ -214,5 +214,15 @@
   "instances.delete.trash": "Видалити в кошик (можна відновити)",
   "instances.delete.forever": "Видалити назавжди, разом із даними",
   "settings.language": "Мова",
-  "onboarding.language": "Мова інтерфейсу"
+  "onboarding.language": "Мова інтерфейсу",
+  "settings.customizationSection": "Кастомізація",
+  "settings.font": "Шрифт інтерфейсу",
+  "settings.font.hint": "Застосовується до всього вікна одразу",
+  "settings.font.system": "Системний",
+  "settings.font.serif": "З засічками",
+  "settings.font.mono": "Монопросторовий",
+  "settings.font.round": "Округлий",
+  "settings.accent": "Акцентний колір",
+  "settings.accent.hint": "Кнопки, виділення, активні елементи",
+  "settings.accent.custom": "Свій колір…"
 }

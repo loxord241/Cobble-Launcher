@@ -214,5 +214,15 @@
   "instances.delete.trash": "Move to trash (recoverable)",
   "instances.delete.forever": "Delete forever, including data",
   "settings.language": "Language",
-  "onboarding.language": "Interface language"
+  "onboarding.language": "Interface language",
+  "settings.customizationSection": "Customization",
+  "settings.font": "Interface font",
+  "settings.font.hint": "Applies to the whole window instantly",
+  "settings.font.system": "System",
+  "settings.font.serif": "Serif",
+  "settings.font.mono": "Monospace",
+  "settings.font.round": "Rounded",
+  "settings.accent": "Accent color",
+  "settings.accent.hint": "Buttons, highlights, active elements",
+  "settings.accent.custom": "Custom color…"
 }

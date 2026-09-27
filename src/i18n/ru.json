@@ -214,5 +214,15 @@
   "instances.delete.trash": "Удалить в корзину (можно восстановить)",
   "instances.delete.forever": "Удалить навсегда, вместе с данными",
   "settings.language": "Язык",
-  "onboarding.language": "Язык интерфейса"
+  "onboarding.language": "Язык интерфейса",
+  "settings.customizationSection": "Кастомизация",
+  "settings.font": "Шрифт интерфейса",
+  "settings.font.hint": "Применяется ко всему окну сразу",
+  "settings.font.system": "Системный",
+  "settings.font.serif": "Серифный (с засечками)",
+  "settings.font.mono": "Монопространственный",
+  "settings.font.round": "Округлый",
+  "settings.accent": "Акцентный цвет",
+  "settings.accent.hint": "Кнопки, выделения, активные элементы",
+  "settings.accent.custom": "Свой цвет…"
 }
