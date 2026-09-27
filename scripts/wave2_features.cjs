@@ -18,6 +18,9 @@ async function main() {
   const ok = (m) => console.log("OK:", m);
   const fail = (m) => { failed++; console.error("FAIL:", m); };
   await page.goto("http://localhost:1420/", { waitUntil: "networkidle" }).catch(() => {});
+  // Язык интерфейса — ru: свежая установка стартует на en (D30), проверки ниже русскоязычные.
+  await page.evaluate(() => localStorage.setItem("lang", "ru"));
+  await page.reload({ waitUntil: "networkidle" }).catch(() => {});
 
   const iconPath = "C:/Users/Admin/AppData/Local/Temp/mcl-test-icon.png";
   fs.writeFileSync(iconPath, PNG_1PX);

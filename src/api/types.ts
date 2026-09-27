@@ -112,11 +112,27 @@ export interface AccountRefreshFailedEvent {
   reason: string;
 }
 
+/** Состояние очереди загрузок ядра (A30; зеркало Rust DlQueueState). */
+export interface QueueState {
+  pending: number;
+  downloading: number;
+  done: number;
+  failed: number;
+  cancelled: number;
+  /** (url, причина) — для списка «повторить» в UI. */
+  failedItems: [string, string][];
+}
+
+export interface QueueStateEvent extends QueueState {
+  event: "dl_queue_state";
+}
+
 export type CoreEvent =
   | DlProgressEvent
   | LaunchStateEvent
   | GameLogLineEvent
-  | AccountRefreshFailedEvent;
+  | AccountRefreshFailedEvent
+  | QueueStateEvent;
 
 // ---------- Modrinth (M5; зеркалит snake_case Rust-структур) ----------
 

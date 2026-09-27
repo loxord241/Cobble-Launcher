@@ -83,7 +83,13 @@ pub struct RamGuide {
 pub fn ram_guide() -> RamGuide {
     // sysinfo 0.39: total_memory() — БАЙТЫ; → МБ одним делением
     // (умножение на 1024 здесь завышало рекомендацию в ~1024 раза, D2).
-    let total = sysinfo::System::new_all().total_memory() / (1024 * 1024);
+    // A47: опрашиваем ТОЛЬКО память — `new_all()` перечислял все процессы
+    // системы и все датчики ради одного числа (сотни мс на слабых машинах).
+    let mut sys = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing().with_memory(sysinfo::MemoryRefreshKind::everything()),
+    );
+    sys.refresh_memory();
+    let total = sys.total_memory() / (1024 * 1024);
     let quarter = total / 4;
     let recommended = quarter.clamp(1024, 6144);
     let warning = if quarter > 8192 {

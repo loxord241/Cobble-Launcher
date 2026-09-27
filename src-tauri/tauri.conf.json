@@ -22,18 +22,31 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data: https://cdn.modrinth.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data: https://cdn.modrinth.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; base-uri 'none'; object-src 'none'; form-action 'none'"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "loxord241",
+    "copyright": "Copyright © 2026 loxord241",
+    "category": "Game",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "English",
+          "Russian",
+          "Ukrainian"
+        ]
+      }
+    }
   }
 }

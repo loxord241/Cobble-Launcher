@@ -15,7 +15,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api } from "../../api/client";
-import { apiErrorText, t } from "../../i18n";
+import { apiErrorText, currentLanguage, t } from "../../i18n";
 import type { ContentEntry, Instance, SearchHit, UpdateCheck } from "../../api/types";
 
 const PAGE_SIZE = 20;
@@ -461,7 +461,7 @@ export default function ModsPage({ query }: { query: string }) {
               <div className="min-w-0">
                 <div className="truncate text-[15px] font-semibold leading-tight">{h.title}</div>
                 <div className="font-mono text-[13px] text-text-muted">
-                  {t("mods.by", { author: h.author })} · {t("mods.downloads", { n: h.downloads.toLocaleString("ru") })}
+                  {t("mods.by", { author: h.author })} · {t("mods.downloads", { n: h.downloads.toLocaleString(currentLanguage()) })}
                 </div>
               </div>
               <button

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
+import { useModalA11y } from "../hooks/useModalA11y";
 import type { LoaderVersionEntry, VersionEntry } from "../../api/types";
 
 const LOADERS = [
@@ -31,6 +32,8 @@ export default function CreateInstanceDialog({
   const [loaderVersion, setLoaderVersion] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // A33/A34: Escape, ловушка фокуса и возврат фокуса на триггер.
+  const dialogRef = useModalA11y(onClose, { initialFocus: "#ci-name" });
 
   useEffect(() => {
     api
@@ -74,10 +77,15 @@ export default function CreateInstanceDialog({
 
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       role="dialog"
       aria-modal="true"
       aria-label={t("instances.create")}
+      tabIndex={-1}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
       <div className="w-[440px] rounded-lg border border-border-app bg-card p-5">
         <div className="flex items-center justify-between">

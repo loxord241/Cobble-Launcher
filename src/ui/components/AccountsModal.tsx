@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { X, Trash2, Globe, Shield, User, Plus, ExternalLink } from "lucide-react";
 import { useAccounts, accountKindLabelKey } from "../../state/accounts";
 import { useSettings } from "../../state/settings";
+import { useModalA11y } from "../hooks/useModalA11y";
 import { apiErrorText, t } from "../../i18n";
 
 type Tab = "msa" | "ely" | "offline";
@@ -23,6 +24,10 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
 
   const activeId = settings?.accountsActiveId ?? accounts[0]?.id;
+  // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
+  // busy-операции закрытие не блокируют (поведение до правки: onClose без
+  // guard'а) — хук получает тот же onClose, что и кнопки/оверлей.
+  const dialogRef = useModalA11y(onClose);
 
   const handleAddOffline = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -86,20 +91,14 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
     }
   };
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       role="dialog"
       aria-modal="true"
       aria-label={t("accounts.title")}
+      tabIndex={-1}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

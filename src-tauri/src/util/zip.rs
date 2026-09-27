@@ -58,6 +58,10 @@ pub fn extract_zip_filtered<R: Read + Seek>(
     }
     let dest_long = crate::util::fs::long_path(dest);
     std::fs::create_dir_all(&dest_long)?;
+    // A4: база для проверки вложенности — в том же виде, что и `target` ниже.
+    // `long_path` префиксует `\\?\` только путям ≥240 символов, поэтому сырое
+    // сравнение отвергало КОРРЕКТНЫЕ архивы, распакованные в глубокий каталог.
+    let dest_cmp = crate::util::fs::normalize_for_compare(&dest_long);
     let mut extracted = Vec::new();
     let mut total_uncompressed: u64 = 0;
 
@@ -81,7 +85,7 @@ pub fn extract_zip_filtered<R: Read + Seek>(
         let target = crate::util::fs::long_path(&dest.join(&rel));
 
         // Двойная проверка: итоговый путь обязан остаться внутри dest.
-        if !target.starts_with(&dest_long) {
+        if !crate::util::fs::normalize_for_compare(&target).starts_with(&dest_cmp) {
             return Err(LauncherError::ZipSlip(name));
         }
 
@@ -134,6 +138,8 @@ pub fn extract_zip_stripping<R: Read + Seek>(
     }
     let dest_long = crate::util::fs::long_path(dest);
     std::fs::create_dir_all(&dest_long)?;
+    // A4: та же нормализация базы, что и в `extract_zip_filtered`.
+    let dest_cmp = crate::util::fs::normalize_for_compare(&dest_long);
     let mut out = Vec::new();
     let mut total_uncompressed: u64 = 0;
     for i in 0..archive.len() {
@@ -142,6 +148,12 @@ pub fn extract_zip_stripping<R: Read + Seek>(
             .map_err(|e| LauncherError::Zip(format!("запись {i}: {e}")))?;
         let raw = file.name().to_string();
         if file.is_dir() || !raw.starts_with(strip) {
+            continue;
+        }
+        // A24: симлинки из ЧУЖОГО архива не материализуем (как в filtered-варианте):
+        // содержимое записи — цель ссылки, и запись её файлом только путает инструменты.
+        if file.is_symlink() {
+            tracing::warn!("zip: пропуск симлинка {raw}");
             continue;
         }
         total_uncompressed += file.size();
@@ -159,7 +171,7 @@ pub fn extract_zip_stripping<R: Read + Seek>(
             continue;
         }
         let target = crate::util::fs::long_path(&dest.join(&rel));
-        if !target.starts_with(&dest_long) {
+        if !crate::util::fs::normalize_for_compare(&target).starts_with(&dest_cmp) {
             return Err(LauncherError::ZipSlip(raw));
         }
         if let Some(parent) = target.parent() {
@@ -316,5 +328,98 @@ mod tests {
         let err = extract_zip(std::io::Cursor::new(truncated.to_vec()), dir.path(), |_| {})
             .unwrap_err();
         assert_eq!(err.code(), "zip");
+    }
+
+    /// Каталог, который сам ещё «короткий» (< порога префиксации), но
+    /// `каталог + запись архива` его переваливает — ровно случай A4.
+    fn base_just_below_long_threshold(base: &Path) -> PathBuf {
+        let mut p = base.to_path_buf();
+        let seg = "abcdefghijklmnopqrstuvwxyz0123456789";
+        while p.to_string_lossy().len() + seg.len() + 1 < 232 {
+            p.push(seg);
+        }
+        p
+    }
+
+    /// Имя записи, которого хватает, чтобы `dest.join(name)` стало ≥240 символов.
+    fn deep_entry_name(base: &Path) -> String {
+        let base_len = base.to_string_lossy().len();
+        let mut name = String::new();
+        while base_len + 1 + name.len() + "file.txt".len() < 245 {
+            name.push_str("dir123456789012345678901234567890/");
+        }
+        name.push_str("file.txt");
+        name
+    }
+
+    /// A4-регресс: длинный ИТОГОВЫЙ путь не должен давать ложный ZipSlip.
+    #[cfg(windows)]
+    #[test]
+    fn deep_dest_does_not_trigger_false_zipslip() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = base_just_below_long_threshold(dir.path());
+        let name = deep_entry_name(&base);
+        let joined = base.join(&name);
+        // Сам каталог распаковки — «короткий» (без `\\?\`), а итоговый файл — уже нет.
+        let dest_long = crate::util::fs::long_path(&base);
+        let target_long = crate::util::fs::long_path(&joined);
+        assert!(!dest_long.to_string_lossy().starts_with(r"\\?\"));
+        assert!(target_long.to_string_lossy().starts_with(r"\\?\"));
+        // Именно эта проверка стояла в коде до фикса и ложно отвергала валидный архив:
+        assert!(
+            !target_long.starts_with(&dest_long),
+            "асимметрия представлений обязана воспроизводиться"
+        );
+
+        let data = build_zip(&[(&name, b"AAA")]);
+        let files = extract_zip(std::io::Cursor::new(data.clone()), &base, |_| {})
+            .expect("валидный архив не должен получать ZipSlip");
+        assert_eq!(files.len(), 1);
+        assert_eq!(std::fs::read(base.join(&name)).unwrap(), b"AAA");
+
+        // Тот же случай для stripping-варианта (overrides/ из модпака).
+        let strip_name = format!("overrides/{name}");
+        let sdata = build_zip(&[(&strip_name, b"BBB")]);
+        let sbase = base_just_below_long_threshold(dir.path());
+        let files = extract_zip_stripping(
+            std::io::Cursor::new(sdata),
+            &sbase,
+            "overrides/",
+            |_| true,
+            |_| {},
+        )
+        .expect("stripping-вариант не должен получать ложный ZipSlip");
+        assert_eq!(files.len(), 1);
+        assert_eq!(std::fs::read(sbase.join(&name)).unwrap(), b"BBB");
+    }
+
+    /// A24: симлинк из чужого архива не материализуется (как в filtered-варианте).
+    #[test]
+    fn stripping_skips_symlink_entries() {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let opts: zip::write::SimpleFileOptions = Default::default();
+            w.add_symlink("overrides/link.txt", "../../outside.txt", opts)
+                .unwrap();
+            w.start_file("overrides/real.txt", opts).unwrap();
+            w.write_all(b"OK").unwrap();
+            w.finish().unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let files = extract_zip_stripping(
+            std::io::Cursor::new(buf.into_inner()),
+            dir.path(),
+            "overrides/",
+            |_| true,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(files.len(), 1, "распакован только обычный файл: {files:?}");
+        assert!(
+            !dir.path().join("link.txt").exists(),
+            "симлинк не должен появляться на диске"
+        );
+        assert_eq!(std::fs::read(dir.path().join("real.txt")).unwrap(), b"OK");
     }
 }

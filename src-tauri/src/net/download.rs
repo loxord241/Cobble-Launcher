@@ -212,12 +212,15 @@ impl DownloadEngine {
     /// Скачать один файл: `.part` → хэш → атомарный rename.
     /// Транспортные повторы (сеть/429/битый хэш) — до MAX_ATTEMPTS внутри.
     async fn download_one(&self, task: &DownloadTask, cancel: &AtomicBool) -> Result<()> {
-        let dest_l = long_path(&task.dest);
         if task.dest.exists() {
             match &task.sha1 {
                 Some(sha) => match sha1_file(&task.dest) {
                     Ok(actual) if &actual == sha => return Ok(()),
-                    _ => crate::util::fs::remove_file_ignore(&task.dest),
+                    // A26: битый файл может быть придержан Defender/OneDrive —
+                    // удаление с повторами вместо мгновенного отказа.
+                    _ => {
+                        let _ = crate::util::fs::remove_file_with_retry(&task.dest);
+                    }
                 },
                 None => return Ok(()),
             }
@@ -231,7 +234,7 @@ impl DownloadEngine {
             })?;
         }
         let part = long_path(&part_path(&task.dest));
-        crate::util::fs::remove_file_ignore(&part);
+        let _ = crate::util::fs::remove_file_with_retry(&part);
 
         for attempt in 1..=MAX_ATTEMPTS {
             if cancel.load(Ordering::SeqCst) {
@@ -246,7 +249,7 @@ impl DownloadEngine {
                             if let Some(sha) = &task.sha1 {
                                 let actual = sha1_file(&part)?;
                                 if &actual != sha {
-                                    crate::util::fs::remove_file_ignore(&part);
+                                    let _ = crate::util::fs::remove_file_with_retry(&part);
                                     if attempt == MAX_ATTEMPTS {
                                         return Err(LauncherError::HashMismatch {
                                             path: task.dest.to_string_lossy().into(),
@@ -258,15 +261,17 @@ impl DownloadEngine {
                                     continue;
                                 }
                             }
-                            std::fs::rename(&part, &dest_l)?;
+                            // A26: финальное переименование `.part` → цель
+                            // ретраится — антивирус/OneDrive держат файл миг.
+                            crate::util::fs::rename_with_retry(&part, &task.dest)?;
                             return Ok(());
                         }
                         Err(LauncherError::Cancelled) => {
-                            crate::util::fs::remove_file_ignore(&part);
+                            let _ = crate::util::fs::remove_file_with_retry(&part);
                             return Err(LauncherError::Cancelled);
                         }
                         Err(e) => {
-                            crate::util::fs::remove_file_ignore(&part);
+                            let _ = crate::util::fs::remove_file_with_retry(&part);
                             if attempt == MAX_ATTEMPTS {
                                 return Err(e);
                             }

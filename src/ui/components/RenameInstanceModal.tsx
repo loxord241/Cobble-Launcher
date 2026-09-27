@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { X, Check } from "lucide-react";
 import { useInstances } from "../../state/instances";
 import { t } from "../../i18n";
+import { useModalA11y } from "../hooks/useModalA11y";
 import type { Instance } from "../../api/types";
 
 export default function RenameInstanceModal({
@@ -15,6 +16,8 @@ export default function RenameInstanceModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { rename } = useInstances();
+  // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
+  const dialogRef = useModalA11y(onClose, { initialFocus: "#rename-input" });
 
   const submit = async () => {
     const trimmed = name.trim();
@@ -34,20 +37,14 @@ export default function RenameInstanceModal({
     }
   };
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       role="dialog"
       aria-modal="true"
       aria-label={t("instances.rename.title")}
+      tabIndex={-1}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

@@ -61,13 +61,22 @@ mcl store-cleanup                        # удалить объекты сто�
 
 ## Документация
 
-- [docs/PROGRESS.md](PROGRESS.md) — статус M0–M9, доказательства приёмки.
-- [docs/DECISIONS.md](DECISIONS.md) — 21 решение с причинами (расхождения со спекой).
+- [docs/PROGRESS.md](PROGRESS.md) — статус M0–M9 + стабилизация 2026-09-27, доказательства приёмки.
+- [docs/DECISIONS.md](DECISIONS.md) — реестр решений (D1–D30) с причинами (расхождения со спекой).
 - [docs/UI-CONTRACT.md](UI-CONTRACT.md) — контракт «ядро ↔ UI» (сменяемость UI).
 
 ## Лицензия
 
-GPL-3.0 (как у Prism Launcher). Minecraft © Mojang Studios; проект не связан с
-Mojang/Microsoft и не распространяет файлы игры — только скачивает с официальных
-серверов по сверенным хэшам. Third-party: Tauri, React, Tailwind, Modrinth API,
-Adoptium JRE, authlib-injector (лицензия в репозитории проекта).
+MIT — см. [LICENSE](../LICENSE) в корне репозитория и `license = "MIT"` в
+`src-tauri/Cargo.toml`. Копилефт-требований нет: код можно использовать,
+изменять и распространять при сохранении копирайта и текста лицензии.
+
+Minecraft © Mojang Studios; проект не связан с Mojang/Microsoft и не
+распространяет файлы игры — только скачивает с официальных серверов по
+сверенным хэшам (дисклеймер о брендах — в корневом
+[README](../README.md#лицензия-и-бренды)).
+
+Third-party: Tauri, React, Tailwind, Modrinth API, Adoptium JRE,
+authlib-injector (лицензия в репозитории проекта). Прямые зависимости и их
+лицензии — в [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md),
+атрибуция и товарные знаки — в [NOTICE](../NOTICE).

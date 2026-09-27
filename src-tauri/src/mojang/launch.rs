@@ -150,6 +150,14 @@ pub fn build_command(
         game_args = mc_args.split_whitespace().map(str::to_string).collect();
     }
 
+    // A49: консоль Windows по умолчанию в cp866/cp1251 — кириллица в путях
+    // (%LOCALAPPDATA%), в логах и в чате модов превращается в кракозябры,
+    // а часть модов на этом падает. Флаг ставится ПЕРВЫМ JVM-аргументом и
+    // только на Windows: на Linux/macOS UTF-8 и так по умолчанию (JEP 400).
+    if cfg!(windows) {
+        jvm_args.insert(0, "-Dfile.encoding=UTF-8".into());
+    }
+
     // log4j-конфиг: только если есть в JSON (спека §6.1.8).
     if let (Some(path), Some(log)) = (&values.log_config_path, &rv.logging) {
         if let Some(client) = &log.client {
@@ -265,5 +273,42 @@ mod tests {
         map.insert("b".to_string(), "2".to_string());
         assert_eq!(substitute("${a}-${b}-${a}", &map), "1-2-1");
         assert_eq!(substitute("plain", &map), "plain");
+    }
+
+    /// A49-регресс: на Windows кодировка файлов JVM обязана быть задана явно
+    /// (кириллица в путях/логах), и это первый JVM-флаг.
+    #[cfg(windows)]
+    #[test]
+    fn windows_pins_utf8_file_encoding() {
+        let rv = resolved_of(include_str!("../../tests/fixtures/version_1_20_1.json"));
+        let dir = tempfile::tempdir().unwrap();
+        let values = base_values(dir.path());
+        let cmd = build_command(&rv, &values, &os(), Path::new("java")).unwrap();
+        assert_eq!(
+            cmd.args.first().map(String::as_str),
+            Some("-Dfile.encoding=UTF-8"),
+            "первый JVM-аргумент: {:?}",
+            &cmd.args[..3.min(cmd.args.len())]
+        );
+        // Legacy-ветка (до 1.13) собирает jvm_args вручную — флаг обязан быть и там.
+        let legacy = resolved_of(include_str!("../../tests/fixtures/version_1_12_2.json"));
+        let mut lvalues = base_values(dir.path());
+        lvalues.resolution = None;
+        let lcmd = build_command(&legacy, &lvalues, &os(), Path::new("java")).unwrap();
+        assert_eq!(lcmd.args.first().map(String::as_str), Some("-Dfile.encoding=UTF-8"));
+    }
+
+    /// На не-Windows поведение не меняется (там UTF-8 по умолчанию, JEP 400).
+    #[cfg(not(windows))]
+    #[test]
+    fn non_windows_has_no_encoding_flag() {
+        let rv = resolved_of(include_str!("../../tests/fixtures/version_1_20_1.json"));
+        let dir = tempfile::tempdir().unwrap();
+        let values = base_values(dir.path());
+        let cmd = build_command(&rv, &values, &os(), Path::new("java")).unwrap();
+        assert!(!cmd
+            .args
+            .iter()
+            .any(|a| a.starts_with("-Dfile.encoding")));
     }
 }

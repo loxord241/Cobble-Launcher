@@ -219,11 +219,19 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
                 ))}
               </select>
             </div>
-            <Toggle checked={settings.showSnapshots} onChange={(v) => commit({ showSnapshots: v })} />
+            <Toggle
+              checked={settings.showSnapshots}
+              onChange={(v) => commit({ showSnapshots: v })}
+              label={t("settings.snapshots")}
+            />
           </Field>
 
           <Field label={t("settings.oldVersions")}>
-            <Toggle checked={settings.showOldVersions} onChange={(v) => commit({ showOldVersions: v })} />
+            <Toggle
+              checked={settings.showOldVersions}
+              onChange={(v) => commit({ showOldVersions: v })}
+              label={t("settings.oldVersions")}
+            />
           </Field>
         </div>
       </section>
@@ -376,11 +384,21 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  /** A35: доступное имя переключателя (role=switch без него анонимный). */
+  label: string;
+}) {
   return (
     <button
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       onClick={() => onChange(!checked)}
       className={`h-6 w-11 rounded-full transition-colors ${checked ? "bg-accent" : "bg-border-strong"}`}
     >

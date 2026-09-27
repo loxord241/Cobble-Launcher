@@ -1,7 +1,7 @@
 // Стейт настроек (zustand). Спека §8: темы/язык применяются мгновенно.
 import { create } from "zustand";
 import { api } from "../api/client";
-import { setLanguage } from "../i18n";
+import { hasStoredLanguage, setLanguage } from "../i18n";
 import { setTheme, isThemeId } from "../theme/theme";
 import type { Settings } from "../api/types";
 
@@ -25,7 +25,9 @@ function applySideEffects(s: Settings) {
       setTheme(s.theme);
     }
   }
-  setLanguage(s.language);
+  // A11/D30: ключ localStorage "lang" перекрывает settings — ровно как тема
+  // выше. Язык из ядра применяется, только если он ещё не выбран явно.
+  if (!hasStoredLanguage()) setLanguage(s.language);
   applyUiScale(s.uiScale);
 }
 
@@ -57,6 +59,9 @@ export const useSettings = create<SettingsState>((set, get) => ({
     if (!current) return;
     const next = { ...current, ...patch };
     await api.settingsSet(next);
+    // Явный выбор языка в UI — применяем и фиксируем в localStorage (A11),
+    // иначе сохранённый ранее "lang" перебил бы его на следующем старте.
+    if (patch.language !== undefined) setLanguage(patch.language);
     applySideEffects(next);
     set({ settings: next });
   },

@@ -318,7 +318,59 @@ pub fn authorize_url(client_id: &str, port: u16) -> String {
     )
 }
 
+/// Ответ браузеру после принятого redirect'а.
+const OAUTH_DONE_PAGE: &str = "HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+Connection: close
+
+<html><body style='font-family:sans-serif'><h2>OK</h2><p>close this tab</p></body></html>";
+
+/// Извлечь `?code=` из первой строки запроса redirect'а (percent-decode).
+fn extract_code(req: &str) -> Option<String> {
+    let line = req.lines().next().unwrap_or("");
+    let raw = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|path| path.split("code=").nth(1))
+        .map(|rest| rest.split('&').next().unwrap_or(rest))?;
+    let decoded = pct_decode(raw);
+    if decoded.is_empty() {
+        None
+    } else {
+        Some(decoded)
+    }
+}
+
 /// Принять redirect браузера на локальном порту и извлечь ?code=.
+/// Асинхронный вариант для GUI (A5/D15): listener живёт прямо в future, поэтому
+/// таймаут/отмена вызывающей стороны закрывают сокет вместе с ней — раньше
+/// блокирующий `accept` в `spawn_blocking` переживал таймаут и держал порт.
+pub async fn wait_auth_code_async(listener: tokio::net::TcpListener) -> Result<String> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .map_err(|e| LauncherError::network(format!("accept: {e}")))?;
+        let mut buf = vec![0u8; 8192];
+        let n = match stream.read(&mut buf).await {
+            Ok(0) => continue,
+            Ok(n) => n,
+            Err(e) => return Err(LauncherError::network(format!("read: {e}"))),
+        };
+        let req = String::from_utf8_lossy(&buf[..n]).to_string();
+        let code = extract_code(&req);
+        let _ = stream.write_all(OAUTH_DONE_PAGE.as_bytes()).await;
+        let _ = stream.shutdown().await;
+        if let Some(code) = code {
+            return Ok(code);
+        }
+    }
+}
+
+/// Принять redirect браузера на локальном порту и извлечь ?code=.
+/// Блокирующий вариант для CLI (`mcl auth-msa-web`): там процесс живёт до
+/// ответа браузера, закрывать сокет по таймауту не требуется.
 pub async fn wait_auth_code(
     listener: std::net::TcpListener,
 ) -> Result<String> {
@@ -335,24 +387,11 @@ pub async fn wait_auth_code(
                 Err(e) => return Err(LauncherError::network(format!("read: {e}"))),
             };
             let req = String::from_utf8_lossy(&buf[..n]).to_string();
-            let line = req.lines().next().unwrap_or("");
-            let code = line
-                .split_whitespace()
-                .nth(1)
-                .and_then(|path| path.split("code=").nth(1))
-                .map(|rest| rest.split('&').next().unwrap_or(rest).to_string());
-            let page = b"HTTP/1.1 200 OK
-Content-Type: text/html; charset=utf-8
-Connection: close
-
-<html><body style='font-family:sans-serif'><h2>OK</h2><p>close this tab</p></body></html>";
-            let _ = std::io::Write::write_all(&mut stream, page);
+            let code = extract_code(&req);
+            let _ = std::io::Write::write_all(&mut stream, OAUTH_DONE_PAGE.as_bytes());
             let _ = stream.shutdown(std::net::Shutdown::Both);
             if let Some(code) = code {
-                let decoded = pct_decode(&code);
-                if !decoded.is_empty() {
-                    return Ok(decoded);
-                }
+                return Ok(code);
             }
         }
         Err(LauncherError::network("listener закрыт без code"))
@@ -414,4 +453,55 @@ pub async fn finish_web_login(
     crate::util::redact::register_secret(&token.access_token);
     crate::util::redact::register_secret(&refresh);
     xbox_chain(client, &token.access_token, refresh).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A5: listener принимает реальный redirect браузера и разбирает `?code=`.
+    #[tokio::test]
+    async fn wait_auth_code_async_parses_redirect() {
+        use tokio::io::AsyncWriteExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(wait_auth_code_async(listener));
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        client
+            .write_all(b"GET /?code=abc%20123&state=x HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        assert_eq!(task.await.unwrap().unwrap(), "abc 123", "percent-decode сохранён");
+    }
+
+    /// A5/D15: по таймауту future отменяется и сокет закрывается — порт
+    /// свободен. Раньше блокирующий accept в spawn_blocking переживал таймаут
+    /// и держал порт до конца процесса.
+    #[tokio::test]
+    async fn timeout_closes_oauth_listener() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let res = tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_auth_code_async(listener),
+        )
+        .await;
+        assert!(res.is_err(), "таймаут ожидания входа наступил");
+        std::net::TcpListener::bind(("127.0.0.1", port))
+            .expect("порт освобождён вместе с listener'ом");
+    }
+
+    /// Разбор строки запроса: мусор без `code=` — не код, а не пустая строка.
+    #[test]
+    fn extract_code_ignores_requests_without_code() {
+        assert_eq!(extract_code("GET /favicon.ico HTTP/1.1"), None);
+        assert_eq!(extract_code("GET /?code=&state=x HTTP/1.1"), None);
+        assert_eq!(
+            extract_code("GET /?code=xyz&state=x HTTP/1.1"),
+            Some("xyz".into())
+        );
+    }
 }

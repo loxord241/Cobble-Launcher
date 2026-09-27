@@ -128,12 +128,13 @@ export const api = {
   accountActiveSet: (id: string) => invoke<{ ok: boolean }>("account_active_set", { id }),
 };
 
-/** Подписка на события ядра (dl_progress, launch_state, game_log_line, account_refresh_failed). */
+/** Подписка на события ядра (dl_progress, launch_state, game_log_line, dl_queue_state, account_refresh_failed). */
 export function onCoreEvent(handler: (event: CoreEvent) => void): Promise<UnlistenFn> {
   const unlisteners: Promise<UnlistenFn>[] = [
     listen<CoreEvent>("dl_progress", (e) => handler(e.payload)),
     listen<CoreEvent>("launch_state", (e) => handler(e.payload)),
     listen<CoreEvent>("game_log_line", (e) => handler(e.payload)),
+    listen<CoreEvent>("dl_queue_state", (e) => handler(e.payload)),
     listen<CoreEvent>("account_refresh_failed", (e) => handler(e.payload)),
   ];
   return Promise.all(unlisteners).then((uns) => () => uns.forEach((u) => u()));

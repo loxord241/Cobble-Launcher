@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getVersion } from "@tauri-apps/api/app";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { useShallow } from "zustand/react/shallow";
 import {
   House,
   FolderOpen,
@@ -21,7 +22,7 @@ import {
 } from "lucide-react";
 import { apiErrorText, t } from "../../i18n";
 import { api } from "../../api/client";
-import { useInstances } from "../../state/instances";
+import { useInstances, unsubscribeEvents } from "../../state/instances";
 import { useSettings } from "../../state/settings";
 import { useAccounts, accountKindLabelKey } from "../../state/accounts";
 import HomePage from "../pages/HomePage";
@@ -55,7 +56,17 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   const searchRef = useRef<HTMLInputElement>(null);
   const noticeTimer = useRef<number | null>(null);
   const dropBusy = useRef(false);
-  const { load, subscribeEvents, list, crashReport, clearCrashReport } = useInstances();
+  // A8: узкий селектор — сброс лог-буфера каждые 200 мс не должен
+  // перерисовывать всё дерево Shell (как в страницах, D8).
+  const { load, subscribeEvents, list, crashReport, clearCrashReport } = useInstances(
+    useShallow((s) => ({
+      load: s.load,
+      subscribeEvents: s.subscribeEvents,
+      list: s.list,
+      crashReport: s.crashReport,
+      clearCrashReport: s.clearCrashReport,
+    })),
+  );
   const { settings, load: loadSettings } = useSettings();
   const { list: accounts, load: loadAccounts, setActive } = useAccounts();
 
@@ -119,6 +130,8 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     void subscribeEvents();
     void loadAccounts();
     getVersion().then(setVersion).catch(() => setVersion("0.1.0"));
+    // A32: слушатели событий ядра живут ровно пока смонтирован Shell.
+    return () => unsubscribeEvents();
   }, [load, loadSettings, subscribeEvents, loadAccounts]);
 
   // Ctrl+K — фокус в поиск (спека фазы B); Esc чистит внутри инпута.
@@ -337,6 +350,8 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
           ))}
           <div className="mt-auto border-t border-border-app p-3 text-xs text-text-muted">
             {t("shell.footer.version")} <span className="font-mono">{version}</span>
+            {/* A14: обязательный дисклеймер Mojang об неофициальном статусе. */}
+            <div className="mt-1">{t("shell.disclaimer")}</div>
           </div>
         </nav>
 

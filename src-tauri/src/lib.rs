@@ -37,20 +37,57 @@ impl<W: std::io::Write> std::io::Write for RedactingWriter<W> {
     }
 }
 
+/// Куда пишет логгер: файл, а при недоступности файла — стандартный вывод.
+/// Лог не важнее запуска: при установке в `Program Files` (или занятом файле)
+/// прежний `.unwrap()` ронял процесс при первом же сообщении (A21/D22).
+enum LogSink {
+    File(std::fs::File),
+    Stdout(std::io::Stdout),
+}
+
+impl std::io::Write for LogSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            LogSink::File(f) => f.write(buf),
+            LogSink::Stdout(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            LogSink::File(f) => f.flush(),
+            LogSink::Stdout(s) => s.flush(),
+        }
+    }
+}
+
+/// Открыть `launcher.log` в каталоге логов; любая ошибка → stdout-fallback
+/// (без unwrap).
+fn log_sink(dir: &std::path::Path) -> LogSink {
+    let path = util::fs::long_path(&dir.join("launcher.log"));
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(f) => LogSink::File(f),
+        Err(e) => {
+            eprintln!("файловый лог недоступен ({e}) — пишу в стандартный вывод");
+            LogSink::Stdout(std::io::stdout())
+        }
+    }
+}
+
 struct RedactingMakeWriter {
     dir: std::path::PathBuf,
 }
 
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for RedactingMakeWriter {
-    type Writer = RedactingWriter<std::fs::File>;
+    type Writer = RedactingWriter<LogSink>;
 
     fn make_writer(&'a self) -> Self::Writer {
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(util::fs::long_path(&self.dir.join("launcher.log")))
-            .unwrap_or_else(|_| std::fs::File::create(std::path::PathBuf::from("launcher.log")).unwrap());
-        RedactingWriter { inner: file }
+        RedactingWriter {
+            inner: log_sink(&self.dir),
+        }
     }
 }
 
@@ -156,4 +193,37 @@ pub fn run() -> tauri::Result<()> {
             Ok(())
         })
         .run(tauri::generate_context!())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A21: недоступный файл лога не должен ронять процесс (был `.unwrap()`):
+    /// писатель уходит на стандартный вывод.
+    #[test]
+    fn log_sink_falls_back_to_stdout() {
+        let dir = tempfile::tempdir().unwrap();
+        // `launcher.log` — каталог: открыть его как файл нельзя.
+        std::fs::create_dir(dir.path().join("launcher.log")).unwrap();
+        let sink = log_sink(dir.path());
+        assert!(
+            matches!(sink, LogSink::Stdout(_)),
+            "падение файлового лога → stdout, а не паника"
+        );
+        // Fallback-канал тоже рабочий и с redaction.
+        let mut writer = RedactingWriter { inner: sink };
+        assert!(std::io::Write::write_all(&mut writer, b"info: token=secret\n").is_ok());
+        assert!(std::io::Write::flush(&mut writer).is_ok());
+    }
+
+    /// Обычный случай: каталог существует — пишем в файл.
+    #[test]
+    fn log_sink_uses_file_when_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let sink = log_sink(dir.path());
+        assert!(matches!(sink, LogSink::File(_)), "лог пишется в launcher.log");
+        drop(sink);
+        assert!(dir.path().join("launcher.log").exists());
+    }
 }

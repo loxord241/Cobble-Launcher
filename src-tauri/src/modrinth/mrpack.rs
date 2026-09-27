@@ -86,6 +86,47 @@ fn open_mrpack(path: &Path) -> Result<MrpackIndex> {
     Ok(index)
 }
 
+/// Хосты, с которых .mrpack имеет право тянуть файлы (A24). Чужой архив мог
+/// указать `http://127.0.0.1:8080/...` или адрес метаданных облака — лаунчер
+/// сходил бы туда из процесса пользователя (SSRF). Разрешены только
+/// официальные API/CDN Modrinth и GitHub-релизы, куда модпаки и кладут jar'ы.
+pub const ALLOWED_MRPACK_HOSTS: &[&str] = &[
+    "api.modrinth.com",
+    "cdn.modrinth.com",
+    "github.com",
+    "objects.githubusercontent.com",
+    "raw.githubusercontent.com",
+];
+
+/// Проверить URL загрузки из НЕдоверенного .mrpack: только https + allowlist.
+pub fn ensure_allowed_mrpack_url(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| {
+        LauncherError::InvalidInput(format!("в модпаке некорректный URL {url:?}: {e}"))
+    })?;
+    let host = parsed.host_str().unwrap_or_default();
+    // Тесты гоняют загрузку на локальном axum-сервере (http, внешней сети нет) —
+    // в test-сборке петельбек разрешён до проверок схемы и allowlist. В релизной
+    // сборке этой ветки не существует: прод-проверка не ослаблена.
+    #[cfg(test)]
+    if matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
+        return Ok(());
+    }
+    if parsed.scheme() != "https" {
+        return Err(LauncherError::InvalidInput(format!(
+            "в модпаке разрешены только https-ссылки: {url}"
+        )));
+    }
+    if ALLOWED_MRPACK_HOSTS
+        .iter()
+        .any(|h| host.eq_ignore_ascii_case(h))
+    {
+        return Ok(());
+    }
+    Err(LauncherError::InvalidInput(format!(
+        "модпак ссылается на недоверенный хост {host}: разрешены {ALLOWED_MRPACK_HOSTS:?}"
+    )))
+}
+
 /// Полная установка .mrpack: инстанс по dependencies → overrides поверх →
 /// файлы с хэшами → content-manifest. Возвращает созданный инстанс.
 ///
@@ -152,6 +193,11 @@ pub async fn install_mrpack(
                 f.path
             )));
         }
+        // A24: сначала проверяем все зеркала файла на allowlist (SSRF), потом
+        // уже строим задачу — до сети и до создания каталогов.
+        for url in &f.downloads {
+            ensure_allowed_mrpack_url(url)?;
+        }
         // Санитизация пути из ЧУЖОГО модпака (спека §3): только относительные
         // безопасные компоненты.
         let rel = crate::util::zip::safe_relative_path(&f.path)?;
@@ -190,24 +236,20 @@ pub async fn install_mrpack(
         return Err(LauncherError::Cancelled);
     }
 
-    // 5. Инстанс на диске + загрузчик (install_loader сохраняет инстанс сам).
-    crate::instances::save(paths, &inst)?;
-    if let Some((loader, loader_version)) = loader {
-        // Версию загрузчика можно не указывать: install_loader берёт latest
-        // стабильную, если None — но модпак требует конкретную.
-        inst = crate::instances::run::install_loader(
-            paths,
-            settings,
-            client,
-            &inst,
-            loader,
-            Some(loader_version),
-        )
-        .await?;
-    }
-
-    // 6. Overrides из .mrpack поверх каталога игры (zip-slip-защита в extract).
-    apply_overrides(mrpack_path, paths, &inst.id)?;
+    // 5–6. Инстанс на диске, загрузчик, overrides. A29: сбой на любом из этих
+    // шагов откатывает инстанс — до этого момента пользователь его не видел,
+    // а битый (без загрузчика/overrides) остался бы в списке навсегда.
+    // Наружу уходит исходная причина сбоя, откат только логируется.
+    let inst = match install_loader_and_overrides(paths, settings, client, &inst, loader, mrpack_path)
+        .await
+    {
+        Ok(updated) => updated,
+        Err(e) => {
+            tracing::warn!("установка модпака не удалась ({e}) — откатываю инстанс");
+            rollback_instance(paths, &inst.id);
+            return Err(e);
+        }
+    };
 
     // 7. content-manifest: только моды/рп/шейдеры (пути не в mods/ — local).
     let mut manifest = Vec::new();
@@ -249,6 +291,38 @@ fn rollback_instance(paths: &Paths, id: &str) {
             tracing::warn!("откат инстанса {id}: {} не удалён: {e}", dir.display());
         }
     }
+}
+
+/// Шаги 5–6 установки модпака: сохранить инстанс, поставить загрузчик
+/// (install_loader сам перезаписывает instance.json), накатить overrides.
+/// Отдельная функция — чтобы вызывающий мог откатить инстанс при ЛЮБОЙ ошибке
+/// одним местом (A29) и вернуть исходную причину.
+async fn install_loader_and_overrides(
+    paths: &Paths,
+    settings: &crate::settings::Settings,
+    client: Arc<HttpClient>,
+    inst: &Instance,
+    loader: Option<(&str, &str)>,
+    mrpack_path: &Path,
+) -> Result<Instance> {
+    crate::instances::save(paths, inst)?;
+    let mut updated = inst.clone();
+    if let Some((loader, loader_version)) = loader {
+        // Версию загрузчика можно не указывать: install_loader берёт latest
+        // стабильную, если None — но модпак требует конкретную.
+        updated = crate::instances::run::install_loader(
+            paths,
+            settings,
+            client,
+            inst,
+            loader,
+            Some(loader_version),
+        )
+        .await?;
+    }
+    // Overrides из .mrpack поверх каталога игры (zip-slip-защита в extract).
+    apply_overrides(mrpack_path, paths, &updated.id)?;
+    Ok(updated)
 }
 
 /// Распаковать `overrides/` из .mrpack поверх каталога игры.
@@ -354,12 +428,30 @@ mod tests {
 
     /// Минимально валидный .mrpack: zip с modrinth.index.json.
     fn write_mrpack(path: &Path, index_json: &str) {
+        write_mrpack_entries(path, index_json, &[]);
+    }
+
+    /// .mrpack с произвольными записями (для проверок overrides).
+    fn write_mrpack_entries(path: &Path, index_json: &str, entries: &[(&str, &[u8])]) {
         let file = std::fs::File::create(path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
         let opts: zip::write::SimpleFileOptions = Default::default();
         zip.start_file("modrinth.index.json", opts).unwrap();
         zip.write_all(index_json.as_bytes()).unwrap();
+        for (name, data) in entries {
+            zip.start_file(*name, opts).unwrap();
+            zip.write_all(data).unwrap();
+        }
         zip.finish().unwrap();
+    }
+
+    /// Индекс без файлов (нужен там, где проверяется только шаги 5–6).
+    fn index_without_files(name: &str) -> String {
+        format!(
+            r#"{{"formatVersion":1,"game":"minecraft","versionId":"test-1",
+                 "name":"{name}","files":[],
+                 "dependencies":{{"minecraft":"1.21.1"}}}}"#
+        )
     }
 
     fn index_with_mod(url: &str, sha1: &str) -> String {
@@ -455,15 +547,27 @@ mod tests {
     }
 
     /// Прогресс уходит в шину вызывающего (D11), а инстанс сохраняется только
-    /// после успешной загрузки (D12).
+    /// после успешной загрузки (D12). Ожидание — по событиям, а не по sleep (A42):
+    /// сервер отдаёт тело только после того, как тест увидел первый dl_progress.
     #[tokio::test]
     async fn progress_goes_to_caller_bus_and_instance_saved_after_download() {
-        // Ответ с задержкой: тикер движка (100 мс) успевает сэмитить dl_progress.
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate_srv = gate.clone();
         let app = axum::Router::new().route(
             "/mods/x.jar",
-            axum::routing::get(|| async {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                axum::body::Body::from(MOD_BYTES.to_vec())
+            axum::routing::get(move || {
+                let gate = gate_srv.clone();
+                async move {
+                    // Тикер движка шлёт dl_progress раз в 100 мс, но на локальном
+                    // диске загрузка успевает завершиться раньше — поэтому держим
+                    // ответ до сигнала теста (таймаут — предохранитель).
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        gate.notified(),
+                    )
+                    .await;
+                    axum::body::Body::from(MOD_BYTES.to_vec())
+                }
             }),
         );
         let base = spawn_axum(app).await;
@@ -483,24 +587,38 @@ mod tests {
         let mut rx = bus.subscribe();
         let client = Arc::new(HttpClient::new(None).unwrap());
         let engine = DownloadEngine::new(client.clone(), 2, bus);
-        let inst = install_mrpack(
-            &paths,
-            &Settings::default(),
-            engine,
-            client,
-            "mrpack:test",
-            &pack,
-            None,
-        )
-        .await
-        .unwrap();
+        let paths_task = paths.clone();
+        let pack_task = pack.clone();
+        let install = tokio::spawn(async move {
+            install_mrpack(
+                &paths_task,
+                &Settings::default(),
+                engine,
+                client,
+                "mrpack:test",
+                &pack_task,
+                None,
+            )
+            .await
+        });
 
+        // Ждём первый dl_progress: до сигнала загрузка висит, поэтому условие
+        // достижимо (не зависит от скорости диска и загрузки машины).
         let mut progress = 0;
-        while let Ok(event) = rx.try_recv() {
-            if matches!(event, LauncherEvent::DlProgress(_)) {
-                progress += 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while progress == 0 && std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(LauncherEvent::DlProgress(_)) => progress += 1,
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(_) => break,
             }
         }
+        gate.notify_one(); // отпускаем загрузку
+
+        let inst = install.await.unwrap().unwrap();
         assert!(progress > 0, "dl_progress должен идти в шину вызывающего");
         assert_eq!(
             crate::instances::list(&paths).len(),
@@ -510,5 +628,99 @@ mod tests {
         let game =
             crate::instances::minecraft_dir(&crate::instances::instance_dir(&paths, &inst.id));
         assert!(game.join("mods").join("x.jar").exists(), "файл мода на месте");
+    }
+
+    /// A24: URL из чужого .mrpack проходит проверку хоста (SSRF).
+    #[test]
+    fn mrpack_download_hosts_are_allowlisted() {
+        for url in [
+            "http://169.254.169.254/latest/meta-data/", // метаданные облака
+            "https://169.254.169.254/latest/meta-data/",
+            "https://evil.example/mod.jar",
+            "http://cdn.modrinth.com/data/x/y.jar", // только https
+            "file:///C:/Windows/System32/calc.exe",
+            "https://user:pw@evil.example/x.jar", // userinfo не обманывает allowlist
+            "не-url",
+        ] {
+            let err = ensure_allowed_mrpack_url(url).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "{url}: {err}");
+        }
+        for url in [
+            "https://api.modrinth.com/v2/version_file/x",
+            "https://CDN.modrinth.com/data/x/y.jar", // регистр не важен
+            "https://github.com/a/b/releases/download/v1/m.jar",
+            "https://objects.githubusercontent.com/github-production/x",
+            "https://raw.githubusercontent.com/a/b/main/x.jar",
+        ] {
+            ensure_allowed_mrpack_url(url).unwrap_or_else(|e| panic!("{url}: {e}"));
+        }
+    }
+
+    /// A24: модпак со ссылкой на внутренний хост отвергается ДО сети и до
+    /// создания каталогов инстанса.
+    #[tokio::test]
+    async fn mrpack_with_ssrf_url_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(&dir);
+        let pack = dir.path().join("ssrf.mrpack");
+        write_mrpack(
+            &pack,
+            &index_with_mod(
+                "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                "0000000000000000000000000000000000000000",
+            ),
+        );
+
+        let client = Arc::new(HttpClient::new(None).unwrap());
+        let engine = DownloadEngine::new(client.clone(), 2, EventBus::default());
+        let err = install_mrpack(
+            &paths,
+            &Settings::default(),
+            engine,
+            client,
+            "mrpack:test",
+            &pack,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+        assert!(
+            instance_dirs(&paths).is_empty(),
+            "недоверенный модпак не должен создавать инстанс"
+        );
+    }
+
+    /// A29: сбой overrides (запись с `..` внутри overrides/) уже ПОСЛЕ сохранения
+    /// инстанса — каталог обязан быть откачен, а исходная ошибка — видна наружу.
+    #[tokio::test]
+    async fn overrides_failure_rolls_back_instance_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(&dir);
+        let pack = dir.path().join("broken-overrides.mrpack");
+        write_mrpack_entries(
+            &pack,
+            &index_without_files("Битые overrides"),
+            &[("overrides/../evil.txt", b"X")],
+        );
+
+        let client = Arc::new(HttpClient::new(None).unwrap());
+        let engine = DownloadEngine::new(client.clone(), 2, EventBus::default());
+        let err = install_mrpack(
+            &paths,
+            &Settings::default(),
+            engine,
+            client,
+            "mrpack:test",
+            &pack,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), "zip_slip", "{err}");
+        assert!(
+            instance_dirs(&paths).is_empty(),
+            "инстанс не должен остаться после сбоя overrides"
+        );
     }
 }

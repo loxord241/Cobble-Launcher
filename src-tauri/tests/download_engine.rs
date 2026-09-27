@@ -299,9 +299,16 @@ async fn cancel_group_stops_and_cleans_parts() {
         dir.path().join("out.bin"),
         None,
     )]);
+    // A42: ждём не фиксированные 400 мс, а появление `.part` — то есть момент,
+    // когда загрузка реально началась и флаг группы уже существует. Иначе на
+    // медленной машине отмена приходила раньше старта задачи, и тест флапал.
+    let part = dir.path().join("out.bin.part");
     let e2 = engine.clone();
     let cancel_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !part.exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         e2.cancel_group("test");
     });
     engine.run().await.unwrap();

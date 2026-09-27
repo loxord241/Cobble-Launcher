@@ -348,3 +348,29 @@ content_features/wave2_features — зелёные; диалог удалени�
    русским — перевод строк ядра отдельное решение, не блокирует.
 5. Приёмка: живое переключение en→uk→ru в Настройках, персистентность
    после перезагрузки окна, ui_checks/e2e_features зелёные.
+
+## D31. Волна устранения аудита: A1–A58 (2026-09-27)
+
+По FULL_AUDIT_REPORT закрыто 47 находок, 2 частично, 8 отложено (реестр
+статусов — AUDIT.md §7.3.1). Пять агентов по файловым полосам + интеграция
+оркестратора. Ключевые решения:
+1. Валидация IPC (A1/A23): valid_id обязателен на границе (delete,
+   open_dir); политика [A-Za-z0-9-_].
+2. Корзина (A2): PowerShell-путь экранируется удвоением кавычек (ps_quote),
+   аргументы — массивом.
+3. JVM-флаги (A3): чёрный список агентов и колбэк-форм С "=" —
+   -XX:+HeapDumpOnOutOfMemoryError остаётся разрешённым; RAM clamp
+   256..=65536; java_path абсолютный.
+4. OAuth (A5/D15): tokio-listener + select/timeout — порт освобождается.
+5. Пути Windows (A4/A19/A50): normalize_for_compare снимает асимметрию \?\;
+   current_dir получает путь без префикса.
+6. Манифест контента (A18): отменённая загрузка не записывается.
+7. Modrinth (A24/A25): allowlist хостов .mrpack + батч version_files/update.
+8. instance.json (A28): SAVE_LOCK + instances::update(load→modify→save
+   атомарно) — супервизор переведён на него.
+9. Фронт: Shell на узком селекторе, unlisten-менеджмент, отложенный
+   crashAnalyze, общий DeleteInstanceDialog (Главная = Инстансам), фокус-
+   ловушки useModalA11y (initialFocus для полей имён), плюрализация,
+   localStorage "lang" для детерминированных приёмок.
+10. Юридическое: NOTICE + THIRD-PARTY-LICENSES, MIT в docs/README,
+    дисклеймер Mojang (README + футер, 3 языка).

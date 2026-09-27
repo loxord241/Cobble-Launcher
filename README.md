@@ -83,7 +83,7 @@ npm run tauri build
 
 ```bash
 npm run build                # TypeScript strict + Vite
-cd src-tauri && cargo test   # 96 тестов ядра и движка загрузок
+cd src-tauri && cargo test   # более 100 тестов ядра и движка загрузок
 ```
 
 ## Стек и структура
@@ -94,7 +94,24 @@ cd src-tauri && cargo test   # 96 тестов ядра и движка загр
 | Ядро | Rust, Tauri 2, tokio |
 | Контент | Modrinth API, манифесты Mojang, Adoptium |
 
-- `src/` — интерфейс: страницы, компоненты, темы, i18n (ru + en)
+- `src/` — интерфейс: страницы, компоненты, темы, i18n (en, ru, uk)
 - `src-tauri/src/` — ядро: инстансы и запуск, загрузки по хэшам, Modrinth, авторизация
 - `docs/` — [карта документации](docs/README.md): [контракт ядро↔UI](docs/UI-CONTRACT.md), [реестр решений](docs/DECISIONS.md), [статус этапов](docs/PROGRESS.md), [реестр аудита](AUDIT.md)
 - `scripts/` — приёмочные тесты: сквозные проверки UI, жизненного цикла процесса, интеграции Modrinth
+
+## Лицензия и бренды
+
+Код проекта — под лицензией **MIT** (см. [LICENSE](LICENSE)); прямые зависимости
+и их лицензии — в [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md),
+атрибуция и товарные знаки — в [NOTICE](NOTICE).
+
+**Не официальный продукт Minecraft. Не связан с Mojang и Microsoft.**
+
+Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.
+
+**Не офіційний продукт Minecraft. Не пов'язаний з Mojang та Microsoft.**
+
+Minecraft — товарный знак Mojang Synergies AB. Названия Mojang, Microsoft, Xbox
+и Minecraft используются только для описания совместимости; лаунчер не
+распространяет файлы игры, а скачивает их с официальных серверов Mojang по
+сверенным хэшам.

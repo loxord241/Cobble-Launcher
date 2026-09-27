@@ -178,7 +178,10 @@ fn instance_file(dir: &Path) -> PathBuf {
     dir.join("instance.json")
 }
 
-fn valid_id(id: &str) -> Result<()> {
+/// Строгая проверка id инстанса: только ASCII-буквы/цифры, `-`, `_`.
+/// Единственный барьер против path traversal в IPC-командах, принимающих id
+/// (`..`, разделители, `:` не проходят) — A1/A23.
+pub(crate) fn valid_id(id: &str) -> Result<()> {
     if id.is_empty()
         || !id
             .chars()
@@ -199,12 +202,87 @@ pub fn load(paths: &crate::paths::Paths, id: &str) -> Result<Instance> {
     Ok(serde_json::from_slice(&data)?)
 }
 
+/// Мьютекс записи `instance.json`: супервизор игры (run.rs) и настройки из UI
+/// (instance_settings_set) пишут один файл из разных потоков — без сериализации
+/// последний писатель затирает свежие поля другого (A28/D19).
+static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn save(paths: &crate::paths::Paths, instance: &Instance) -> Result<()> {
     valid_id(&instance.id)?;
+    // Отравленный мьютекс не должен каскадно ронять все последующие записи.
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    save_locked(paths, instance)
+}
+
+/// Внутренняя запись БЕЗ захвата SAVE_LOCK (вызывается из save/update).
+fn save_locked(paths: &crate::paths::Paths, instance: &Instance) -> Result<()> {
     let dir = instance_dir(paths, &instance.id);
     std::fs::create_dir_all(long_path(&dir))?;
     let data = serde_json::to_vec_pretty(instance)?;
     atomic_write(&instance_file(&dir), &data)
+}
+
+/// Атомарное обновление инстанса (A28): load → modify → save под SAVE_LOCK
+/// одним куском. Супервизор игры обязан писать статистику только через него,
+/// иначе затирает свежие настройки из UI (и наоборот).
+pub fn update<F: FnOnce(&mut Instance)>(
+    paths: &crate::paths::Paths,
+    id: &str,
+    f: F,
+) -> Result<()> {
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut inst = load(paths, id)?;
+    f(&mut inst);
+    save_locked(paths, &inst)
+}
+
+/// Пределы RAM инстанса (МБ): ниже игра не стартует, выше — `-Xmx` съедает
+/// память машины (спека §6.9).
+pub const MIN_RAM_MB: u32 = 256;
+pub const MAX_RAM_MB: u32 = 65536;
+
+/// Подстроки JVM-флагов, запрещённые в настройках инстанса (A3). Агенты и
+/// колбэки JVM исполняют произвольный код в ОС при старте игры:
+/// `-javaagent:evil.jar`, `-agentlib:…`, `-Xrun…`, `-XX:OnError="cmd /c …"`.
+const FORBIDDEN_JVM_SUBSTRINGS: &[&str] = &[
+    "-javaagent",
+    "-agentlib",
+    "-agentpath",
+    "-xrun",
+    // Колбэк-формы запрещаем только с "=" — безобидный
+    // -XX:+HeapDumpOnOutOfMemoryError без "=" остаётся разрешённым.
+    "onerror=",
+    "onoutofmemoryerror=",
+];
+
+/// Валидация настроек запуска на IPC-границе (A3): опасные JVM-флаги и
+/// аргументы игры, RAM вне диапазона, относительный `java_path` — отклоняются.
+/// Легитимный `-javaagent` для ely.by собирает сам лаунчер (auth::ely), а не
+/// это поле, поэтому белый список не нужен — достаточно чёрного.
+pub fn validate_instance_settings(inst: &Instance) -> Result<()> {
+    if !(MIN_RAM_MB..=MAX_RAM_MB).contains(&inst.ram_mb) {
+        return Err(LauncherError::InvalidInput(format!(
+            "RAM инстанса {0} МБ вне диапазона {MIN_RAM_MB}–{MAX_RAM_MB} МБ",
+            inst.ram_mb
+        )));
+    }
+    for arg in inst.jvm_flags.iter().chain(inst.game_args_extra.iter()) {
+        let low = arg.to_ascii_lowercase();
+        if let Some(bad) = FORBIDDEN_JVM_SUBSTRINGS.iter().find(|b| low.contains(*b)) {
+            return Err(LauncherError::InvalidInput(format!(
+                "недопустимый аргумент запуска «{arg}» (совпадение с {bad})"
+            )));
+        }
+    }
+    if let Some(java) = &inst.java_path {
+        let trimmed = java.trim();
+        if !trimmed.is_empty() && !Path::new(trimmed).is_absolute() {
+            return Err(LauncherError::InvalidInput(
+                "путь к Java должен быть абсолютным".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Все инстансы, отсортированные по имени. Битые instance.json пропускаются
@@ -289,6 +367,9 @@ pub fn duplicate(paths: &crate::paths::Paths, id: &str) -> Result<Instance> {
 /// напрямую: данные остаются в сторе, а корзина на таких деревьях падает.
 /// В корзину идёт уникальное: saves/mods/config/instance.json.
 pub fn delete(paths: &crate::paths::Paths, id: &str, wipe: bool) -> Result<()> {
+    // Без валидации id `..\backups` с wipe:true удалял бы каталог бэкапов,
+    // а `..\..` — что угодно в данных/домашнем каталоге (A1).
+    valid_id(id)?;
     let dir = instance_dir(paths, id);
     if !dir.exists() {
         return Err(LauncherError::NotFound(format!("инстанс {id}")));
@@ -313,13 +394,25 @@ pub fn delete(paths: &crate::paths::Paths, id: &str, wipe: bool) -> Result<()> {
     Ok(())
 }
 
+/// Экранирование значения для PowerShell-литерала в одинарных кавычках:
+/// внутри `'…'` спецсимвол только один — сама кавычка, и она удваивается.
+/// Без этого апостроф в пути (например `C:\Users\O'Brien\…`) разрывал бы
+/// строку и позволял исполнить произвольный скрипт (A2).
+#[cfg(windows)]
+fn ps_quote(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
 /// Корзина ОС. Крейт `trash` на части систем падает с «operations aborted»,
 /// поэтому — PowerShell + VisualBasic.FileIO (документированный путь Windows).
+/// Скрипт передаётся отдельным аргументом `Command` (массив `args`, без
+/// строковой интерполяции шелла), а путь внутри скрипта — экранированным
+/// PS-литералом: инъекция через имя каталога невозможна (A2).
 #[cfg(windows)]
 fn recycle_dir(dir: &Path) -> Result<()> {
     let ps = format!(
         "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
-        dir.display()
+        ps_quote(&dir.display().to_string())
     );
     let mut cmd = std::process::Command::new("powershell");
     cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps]);
@@ -672,6 +765,119 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join(".lock")).unwrap().trim(), "2222");
 
         let _ = std::fs::remove_file(dir.join(".lock"));
+    }
+
+    /// A1: `instance_delete` не должен выходить за каталог инстансов
+    /// (`..\backups` с wipe:true удалял каталог бэкапов).
+    #[test]
+    fn delete_rejects_traversal_id() {
+        let (_d, paths) = test_paths();
+        let victim = paths.root().join("backups");
+        std::fs::create_dir_all(long_path(&victim)).unwrap();
+        std::fs::write(victim.join("world.zip"), b"backup").unwrap();
+
+        for id in ["..\\backups", "../backups", "..", ".", "a/b", ""] {
+            let err = delete(&paths, id, true).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "id {id:?} отклонён");
+        }
+        assert!(long_path(&victim).exists(), "посторонний каталог не тронут");
+        assert!(victim.join("world.zip").exists(), "бэкап на месте");
+    }
+
+    /// A3: опасные флаги JVM и аргументы игры отклоняются, нормальные проходят.
+    #[test]
+    fn validate_settings_rejects_dangerous_flags() {
+        let mut inst = Instance::new("x", "1.20.1");
+        for flag in [
+            "-XX:OnError=calc.exe",
+            "-XX:OnOutOfMemoryError=\"cmd /c powershell\"",
+            "-javaagent:C:\\evil.jar",
+            "-agentlib:jdwp=transport=dt_socket",
+            "-agentpath:C:\\evil.dll",
+            "-Xrunjdwp:transport=dt_socket",
+        ] {
+            inst.jvm_flags = vec![flag.to_string()];
+            let err = validate_instance_settings(&inst).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "флаг {flag:?} отклонён");
+        }
+        // Аргументы игры тоже приходят по IPC — та же проверка.
+        inst.jvm_flags.clear();
+        inst.game_args_extra = vec!["--demo -javaagent:evil.jar".into()];
+        assert!(validate_instance_settings(&inst).is_err(), "флаг в game_args_extra");
+        // Нормальные настройки не задеты.
+        inst.game_args_extra.clear();
+        inst.jvm_flags = vec![
+            "-XX:+UseG1GC".into(),
+            "-XX:MaxGCPauseMillis=50".into(),
+            "-Dfile.encoding=UTF-8".into(),
+        ];
+        assert!(validate_instance_settings(&inst).is_ok());
+    }
+
+    /// A3: RAM клампится, относительный путь к Java отклоняется.
+    #[test]
+    fn validate_settings_clamps_ram_and_java_path() {
+        let mut inst = Instance::new("x", "1.20.1");
+        inst.ram_mb = MIN_RAM_MB - 1;
+        assert!(validate_instance_settings(&inst).is_err(), "мало RAM");
+        inst.ram_mb = MAX_RAM_MB + 1;
+        assert!(validate_instance_settings(&inst).is_err(), "много RAM");
+        inst.ram_mb = 4096;
+        assert!(validate_instance_settings(&inst).is_ok());
+        inst.java_path = Some("java.exe".into());
+        assert!(validate_instance_settings(&inst).is_err(), "относительный путь");
+        inst.java_path = Some(String::new());
+        assert!(validate_instance_settings(&inst).is_ok(), "пустой путь = авто");
+        inst.java_path = Some(r"C:\Program Files\Java\bin\java.exe".into());
+        assert!(validate_instance_settings(&inst).is_ok());
+    }
+
+    /// A2: удвоение одинарных кавычек — единственный спецсимвол PS-литерала.
+    #[cfg(windows)]
+    #[test]
+    fn ps_quote_doubles_apostrophes() {
+        assert_eq!(ps_quote(r"C:\Users\O'Brien\inst"), r"C:\Users\O''Brien\inst");
+        assert_eq!(ps_quote("a'; calc; 'b"), "a''; calc; ''b");
+        assert_eq!(ps_quote("без кавычек"), "без кавычек");
+    }
+
+    /// A2: каталог с апострофом и «payload» уходит в корзину, а сам payload
+    /// остаётся данными. Без экранирования PowerShell разорвал бы литерал:
+    /// `exit 42` исполнился бы (или скрипт не распарсился) — и вызов упал бы.
+    #[cfg(windows)]
+    #[test]
+    fn recycle_dir_does_not_execute_injected_code() {
+        let (_d, paths) = test_paths();
+        let target = paths.root().join("Steve's; exit 42; '");
+        std::fs::create_dir_all(long_path(&target)).unwrap();
+        std::fs::write(target.join("data.txt"), b"x").unwrap();
+
+        recycle_dir(&target).expect("каталог уходит в корзину, инъекция не исполнилась");
+        assert!(!long_path(&target).exists(), "каталог перемещён в корзину");
+    }
+
+    /// A28: запись `instance.json` сериализуется глобальным мьютексом —
+    /// супервизор игры и настройки из UI не пишут файл одновременно.
+    #[test]
+    fn save_waits_for_global_lock() {
+        let (_d, paths) = test_paths();
+        let inst = Instance::new("x", "1.20.1");
+        let guard = SAVE_LOCK.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (thread_paths, thread_inst) = (paths.clone(), inst.clone());
+        let handle = std::thread::spawn(move || {
+            let _ = tx.send(save(&thread_paths, &thread_inst).is_ok());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+            "save обязан ждать мьютекс, пока его держит другой поток"
+        );
+        drop(guard);
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(),
+            "после снятия лока запись проходит"
+        );
+        handle.join().unwrap();
     }
 
     #[test]

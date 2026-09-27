@@ -234,12 +234,39 @@ pub fn export_mrpack(paths: &Paths, inst: &Instance) -> Result<ArchiveResult> {
     })
 }
 
+/// Смягчение A16: файл иконки обязан быть абсолютным путём внутри домашнего
+/// каталога пользователя (оттуда его и отдаёт нативный диалог выбора файла).
+/// Без этого рендер читал любой файл системы до 300 КБ (эксфильтрация) и
+/// получал оракул существования файлов по разнице ошибок.
+fn ensure_icon_source_allowed(path: &std::path::Path) -> Result<()> {
+    if !path.is_absolute() {
+        return Err(LauncherError::InvalidInput(
+            "путь к иконке должен быть абсолютным".into(),
+        ));
+    }
+    let home = dirs::home_dir()
+        .ok_or_else(|| LauncherError::Internal("не определён домашний каталог".into()))?;
+    // canonicalize снимает `..` и симлинки: иначе `C:\Users\u\..\Windows\x`
+    // формально проходил бы проверку starts_with.
+    let real = std::fs::canonicalize(crate::util::fs::long_path(path))
+        .map_err(|_| LauncherError::NotFound(format!("файл иконки: {}", path.display())))?;
+    let home_real = std::fs::canonicalize(crate::util::fs::long_path(&home)).unwrap_or(home);
+    if !real.starts_with(&home_real) {
+        return Err(LauncherError::InvalidInput(format!(
+            "иконку можно выбрать только из домашнего каталога: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Иконка инстанса: data-URL в instance.json (`icon`). Пользовательский файл
 /// с диска: PNG/JPEG/WebP, до ~300 КБ (чтобы instance.json не раздувать).
 /// Data-URL — фронт не зависит от asset-протокола и его областей доступа.
 pub fn set_icon(paths: &Paths, id: &str, path: &str) -> Result<Instance> {
     const MAX_ICON_BYTES: usize = 300 * 1024;
     let p = std::path::Path::new(path);
+    ensure_icon_source_allowed(p)?;
     let data = std::fs::read(crate::util::fs::long_path(p))
         .map_err(|_| LauncherError::NotFound(format!("файл иконки: {path}")))?;
     if data.len() > MAX_ICON_BYTES {
@@ -432,5 +459,26 @@ mod tests {
         std::fs::write(&bad, b"not an image at all").unwrap();
         assert!(set_icon(&paths, &inst.id, bad.to_str().unwrap()).is_err());
         assert!(set_icon(&paths, &inst.id, _d.path().join("nope.png").to_str().unwrap()).is_err());
+    }
+
+    /// A16: относительный путь и путь вне домашнего каталога отклоняются до
+    /// чтения файла (эксфильтрация/оракул файлов с диска).
+    #[test]
+    fn icon_rejects_path_outside_home() {
+        let (_d, paths, inst) = setup();
+        // Относительный путь — не абсолютный.
+        let err = set_icon(&paths, &inst.id, "icon.png").unwrap_err();
+        assert_eq!(err.code(), "invalid_input");
+        // Файл вне home: системный файл (в home пользователя его нет).
+        #[cfg(windows)]
+        let outside = r"C:\Windows\System32\drivers\etc\hosts";
+        #[cfg(not(windows))]
+        let outside = "/etc/hosts";
+        let err = set_icon(&paths, &inst.id, outside).unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "путь вне home отклонён: {outside}");
+        // Traversal через `..` из home наружу тоже не проходит.
+        let home = dirs::home_dir().expect("домашний каталог");
+        let escape = home.join("../outside.png");
+        assert!(set_icon(&paths, &inst.id, escape.to_str().unwrap()).is_err());
     }
 }

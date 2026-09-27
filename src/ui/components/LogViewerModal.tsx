@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { X, Copy, Check, FolderOpen, ArrowDown } from "lucide-react";
 import { useInstances } from "../../state/instances";
 import { api } from "../../api/client";
-import { t } from "../../i18n";
+import { plural, t } from "../../i18n";
+import { useModalA11y } from "../hooks/useModalA11y";
 import type { Instance } from "../../api/types";
 
 export default function LogViewerModal({
@@ -16,21 +17,14 @@ export default function LogViewerModal({
   const { logs } = useInstances();
   const [copied, setCopied] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
-  const [fallbackLogs, setFallbackLogs] = useState<string[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A33: Escape + ловушка фокуса + возврат фокуса на кебаб-триггер.
+  const dialogRef = useModalA11y(onClose);
 
-  const instanceLogs = logs[instance.id];
-  const displayLogs =
-    instanceLogs && instanceLogs.length > 0 ? instanceLogs : fallbackLogs;
-
-  useEffect(() => {
-    // Если в памяти еще нет логов сессии, подтягиваем последние строки из файла логов лаунчера
-    if (!instanceLogs || instanceLogs.length === 0) {
-      api.logsTail(150).then((txt) => {
-        if (txt.trim()) setFallbackLogs(txt.split("\n"));
-      }).catch(() => undefined);
-    }
-  }, [instance.id, instanceLogs]);
+  // A31: показываем только логи этой сессии инстанса. Системный launcher.log
+  // лаунчера под игровой лог не подмешиваем — пусто значит пусто.
+  const displayLogs = logs[instance.id] ?? [];
 
   useEffect(() => {
     if (autoScroll && containerRef.current) {
@@ -38,11 +32,23 @@ export default function LogViewerModal({
     }
   }, [displayLogs, autoScroll]);
 
+  // A56: таймер индикатора «Скопировано!» не должен жить после закрытия окна.
+  useEffect(
+    () => () => {
+      if (copyTimer.current !== null) clearTimeout(copyTimer.current);
+    },
+    [],
+  );
+
   const copyLogs = async () => {
     try {
       await navigator.clipboard.writeText(displayLogs.join("\n"));
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copyTimer.current !== null) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => {
+        copyTimer.current = null;
+        setCopied(false);
+      }, 2000);
     } catch {
       // fallback
     }
@@ -52,32 +58,28 @@ export default function LogViewerModal({
     void api.instanceOpenDir(instance.id);
   };
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("instances.logs.title", { name: instance.name })}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex h-[80vh] w-[860px] max-w-full flex-col rounded-lg border border-border-app bg-card p-5 shadow-2xl">
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("instances.logs.title", { name: instance.name })}
+        className="flex h-[80vh] w-[860px] max-w-full flex-col rounded-lg border border-border-app bg-card p-5 shadow-2xl"
+      >
         <div className="flex items-center justify-between border-b border-border-app pb-3">
           <div className="flex items-center gap-3">
             <h2 className="text-lg font-semibold text-text">
               {t("instances.logs.title", { name: instance.name })}
             </h2>
             <span className="chip-mono text-xs">
-              {displayLogs.length} {t("instances.logs.lines")}
+              {displayLogs.length} {plural("instances.logs.lines", displayLogs.length)}
             </span>
           </div>
           <button

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { X, Save, Sparkles } from "lucide-react";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
+import { useModalA11y } from "../hooks/useModalA11y";
 import type { Instance, JavaInstall, RamGuide } from "../../api/types";
 
 export default function InstanceSettingsModal({
@@ -23,6 +24,8 @@ export default function InstanceSettingsModal({
   const [notes, setNotes] = useState(instance.notes ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
+  const dialogRef = useModalA11y(onClose);
 
   useEffect(() => {
     api.ramGuide().then(setRamGuide).catch(() => setRamGuide(null));
@@ -70,20 +73,14 @@ export default function InstanceSettingsModal({
     }
   };
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       role="dialog"
       aria-modal="true"
       aria-label={t("instances.settings.title", { name: instance.name })}
+      tabIndex={-1}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

@@ -11,20 +11,97 @@ type ErrorEntry = Record<"ru" | "en" | "uk", string>;
 
 const dicts: Record<string, Dict> = { ru: ru as Dict, en: en as Dict, uk: uk as Dict };
 const errorDict = errors as unknown as Record<string, ErrorEntry>;
-let current = "en";
+
+/**
+ * A11/D30: язык можно задать ключом localStorage "lang" — он перекрывает
+ * settings.language при старте (та же механика, что у тем: theme.ts/STORAGE_KEY).
+ * Нужно для локале-независимых приёмочных скриптов.
+ */
+const LANG_STORAGE_KEY = "lang";
+
+function isLang(v: string): boolean {
+  return Object.prototype.hasOwnProperty.call(dicts, v);
+}
+
+function storedLanguage(): string | null {
+  try {
+    const v = localStorage.getItem(LANG_STORAGE_KEY);
+    return v && isLang(v) ? v : null;
+  } catch {
+    return null; // приватный режим — выбор языка не переживёт перезапуск
+  }
+}
+
+/** Язык уже выбран явно (localStorage)? Тогда settings его не перебивает. */
+export function hasStoredLanguage(): boolean {
+  return storedLanguage() !== null;
+}
+
+let current = storedLanguage() ?? "en";
 
 export function setLanguage(lang: string) {
-  if (dicts[lang]) current = lang;
+  if (!isLang(lang)) return;
+  current = lang;
+  try {
+    localStorage.setItem(LANG_STORAGE_KEY, lang);
+  } catch {
+    /* приватный режим — язык просто не переживёт перезапуск */
+  }
+}
+
+/** Текущий код языка (ru/en/uk) — для toLocaleString и форматов дат (A38). */
+export function currentLanguage(): string {
+  return current;
+}
+
+/** A58: подстановка {key} — во ВСЕ вхождения, без спецсимволов $ в replace. */
+function interpolate(text: string, params?: Record<string, string | number>): string {
+  if (!params) return text;
+  let out = text;
+  for (const [k, v] of Object.entries(params)) {
+    out = out.split(`{${k}}`).join(String(v));
+  }
+  return out;
+}
+
+function lookup(key: string): string | undefined {
+  return dicts[current][key] ?? dicts.en[key];
 }
 
 export function t(key: string, params?: Record<string, string | number>): string {
-  let text = dicts[current][key] ?? dicts.en[key] ?? key;
-  if (params) {
-    for (const [k, v] of Object.entries(params)) {
-      text = text.replace(`{${k}}`, String(v));
-    }
+  const text = lookup(key);
+  return interpolate(text ?? key, params);
+}
+
+/**
+ * A40: плюрализация числительных. Ключ — база, форма выбирается правилами
+ * языка: ru/uk — one/few/many (1 строка, 2 строки, 5 строк), en — one/other.
+ * Набор форм `one/few/many/other` есть во всех словарях (паритет ключей);
+ * недостижимые для языка формы служат только этому паритету.
+ * {n} подставляется всегда.
+ */
+function pluralCandidates(lang: string, n: number): string[] {
+  if (lang === "ru" || lang === "uk") {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    const primary =
+      mod10 === 1 && mod100 !== 11
+        ? "one"
+        : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+          ? "few"
+          : "many";
+    return [primary, "many", "few", "one", "other"];
   }
-  return text;
+  return [n === 1 ? "one" : "other", "other", "many", "one"];
+}
+
+export function plural(key: string, n: number, params?: Record<string, string | number>): string {
+  const withN = { n, ...params };
+  for (const form of pluralCandidates(current, n)) {
+    const text = lookup(`${key}.${form}`);
+    if (text !== undefined) return interpolate(text, withN);
+  }
+  return t(key, withN);
 }
 
 /** Ошибка ядра → локализованный текст по текущему языку; message — fallback. */

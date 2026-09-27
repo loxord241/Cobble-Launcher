@@ -96,7 +96,12 @@ pub struct OkMsg {
 
 #[tauri::command]
 pub async fn instance_list(state: State<'_, AppState>) -> Result<Vec<Instance>> {
-    Ok(instances::list(&state.paths))
+    // Чтение всех instance.json — тяжёлый дисковый I/O: не блокируем
+    // рабочий поток Tokio (A20/D14).
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::list(&paths))
+        .await
+        .map_err(join_err)
 }
 
 #[tauri::command]
@@ -121,22 +126,35 @@ pub async fn instance_rename(
     id: String,
     name: String,
 ) -> Result<Instance> {
-    instances::rename(&state.paths, &id, &name)
+    // Дисковые операции инстанса — в блокирующий пул (A27/D14).
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::rename(&paths, &id, &name))
+        .await
+        .map_err(join_err)?
 }
 
 #[tauri::command]
 pub async fn instance_duplicate(state: State<'_, AppState>, id: String) -> Result<Instance> {
-    instances::duplicate(&state.paths, &id)
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::duplicate(&paths, &id))
+        .await
+        .map_err(join_err)?
 }
 
 #[tauri::command]
 pub async fn instance_delete(state: State<'_, AppState>, id: String, wipe: bool) -> Result<OkMsg> {
-    instances::delete(&state.paths, &id, wipe)?;
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::delete(&paths, &id, wipe))
+        .await
+        .map_err(join_err)??;
     Ok(OkMsg { ok: true })
 }
 
 #[tauri::command]
 pub async fn instance_open_dir(state: State<'_, AppState>, id: String) -> Result<OkMsg> {
+    // Без валидации id `..\..\Windows` открывал бы произвольный каталог/файл
+    // через opener (A23).
+    instances::valid_id(&id)?;
     let dir = instances::instance_dir(&state.paths, &id);
     std::fs::create_dir_all(crate::util::fs::long_path(&dir))?;
     opener::open(dir).map_err(|e| LauncherError::Internal(format!("открытие папки: {e}")))?;
@@ -156,8 +174,17 @@ pub async fn instance_settings_set(
     state: State<'_, AppState>,
     instance: Instance,
 ) -> Result<Instance> {
-    instances::save(&state.paths, &instance)?;
-    Ok(instance)
+    // IPC-граница: флаги JVM, аргументы, RAM и путь к Java приходят из рендера
+    // и до старта игры не проверяются нигде — валидируем здесь (A3).
+    instances::validate_instance_settings(&instance)?;
+    let paths = state.paths.clone();
+    let saved = tauri::async_runtime::spawn_blocking(move || {
+        instances::save(&paths, &instance)?;
+        Ok::<_, LauncherError>(instance)
+    })
+    .await
+    .map_err(join_err)??;
+    Ok(saved)
 }
 
 /// Запуск инстанса из UI: подготовка + спавн; супервизия живёт в фоне,
@@ -554,7 +581,11 @@ pub async fn instance_kill(state: State<'_, AppState>, instance_id: String) -> R
 
 #[tauri::command]
 pub async fn process_status(state: State<'_, AppState>) -> Result<Vec<(String, u32)>> {
-    Ok(instances::running_instances(&state.paths))
+    // Сканирование всех instance.json + живость PID — не в async-потоке (A20).
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::running_instances(&paths))
+        .await
+        .map_err(join_err)
 }
 
 // ---------- аккаунты (спека §6.8) ----------
@@ -599,7 +630,11 @@ pub async fn account_add_msa_browser(
             )
         })?;
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+    // Асинхронный listener (A5): по таймауту future отменяется и сокет
+    // закрывается вместе с ней — блокирующий accept в spawn_blocking раньше
+    // оставался жить и держал порт до конца процесса.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
         .map_err(|e| LauncherError::network(format!("локальный порт для OAuth: {e}")))?;
     let port = listener
         .local_addr()
@@ -612,7 +647,7 @@ pub async fn account_add_msa_browser(
 
     let code = tokio::time::timeout(
         std::time::Duration::from_secs(300),
-        crate::auth::msa::wait_auth_code(listener),
+        crate::auth::msa::wait_auth_code_async(listener),
     )
     .await
     .map_err(|_| LauncherError::network("таймаут ожидания входа в браузере (5 мин)"))??;
@@ -761,7 +796,10 @@ pub async fn crash_analyze(log_text: String) -> Result<Vec<crate::process::crash
 
 // ---------- версии и загрузчики ----------
 
+/// Версия в каталоге (`manifest_versions`): camelCase — фронт читает
+/// `releaseTime` (A7), `type` задан явным rename.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VersionEntry {
     pub id: String,
     #[serde(rename = "type")]
@@ -954,3 +992,32 @@ pub async fn dir_open(state: State<'_, AppState>) -> Result<OkMsg> {
 
 #[allow(unused_imports)]
 use opener as _opener_reexport;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A7: фронт (`src/api/types.ts`) читает `releaseTime` и `type` —
+    /// snake_case `release_time` ломал каталог версий в UI.
+    #[test]
+    fn version_entry_serializes_camel_case() {
+        let v = VersionEntry {
+            id: "1.20.1".into(),
+            version_type: "release".into(),
+            release_time: "2023-06-12T12:00:00+00:00".into(),
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        assert!(
+            json.contains("\"releaseTime\""),
+            "фронт ждёт releaseTime: {json}"
+        );
+        assert!(
+            json.contains("\"type\":\"release\""),
+            "type сохраняется явным rename: {json}"
+        );
+        assert!(
+            !json.contains("release_time") && !json.contains("version_type"),
+            "snake_case ушёл из контракта: {json}"
+        );
+    }
+}

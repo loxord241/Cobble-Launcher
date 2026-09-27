@@ -18,6 +18,12 @@ async function main() {
     await page.waitForTimeout(400);
   };
 
+  // Язык интерфейса — ru: свежая установка стартует на en (D30), подписи ниже русские.
+  await page.goto("http://localhost:1420/", { waitUntil: "networkidle" }).catch(() => {});
+  await page.evaluate(() => localStorage.setItem("lang", "ru"));
+  await page.reload({ waitUntil: "networkidle" }).catch(() => {});
+  await page.waitForTimeout(800);
+
   for (const theme of THEMES) {
     await page.goto(`http://localhost:1420/?theme=${theme}`, { waitUntil: "networkidle" }).catch(() => {});
     await page.waitForTimeout(1200);

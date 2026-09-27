@@ -9,11 +9,13 @@ import { useInstances } from "../../state/instances";
 import { useAccounts } from "../../state/accounts";
 import { useSettings } from "../../state/settings";
 import { api } from "../../api/client";
-import { t } from "../../i18n";
+import { apiErrorText, currentLanguage, t } from "../../i18n";
+import { pickImagePath } from "../components/pickFile";
 import InstanceRow from "../components/InstanceRow";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
 import LogViewerModal from "../components/LogViewerModal";
+import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import type { Instance, SearchHit } from "../../api/types";
 
 /** Колбэки строки (без status): строятся один раз на инстанс, чтобы memo работал. */
@@ -27,6 +29,10 @@ type RowCallbacks = {
   onSettings: () => void;
   onRename: () => void;
   onLogs: () => void;
+  onBackup: () => void;
+  onExport: () => void;
+  onIconSet: () => void;
+  onIconClear?: () => void;
 };
 
 export default function HomePage({
@@ -59,6 +65,9 @@ export default function HomePage({
   const [settingsInst, setSettingsInst] = useState<Instance | null>(null);
   const [renameInst, setRenameInst] = useState<Instance | null>(null);
   const [logsInst, setLogsInst] = useState<Instance | null>(null);
+  // A10: паритет с InstancesPage — честный диалог удаления и итог бэкапа/экспорта.
+  const [deleteInst, setDeleteInst] = useState<Instance | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Активный профиль — тот же выбор, что в чипе титлбара.
   const activeAccount =
@@ -107,7 +116,7 @@ export default function HomePage({
   const rowCallbacks = useMemo(() => {
     const byId = new Map<string, RowCallbacks>();
     for (const inst of list) {
-      byId.set(inst.id, {
+      const cb: RowCallbacks = {
         onLaunch: () =>
           void launch(inst.id, activeAccount?.name ?? "Player").catch((e) => setError(String(e))),
         onStop: () => void stop(inst.id).catch((e) => setError(String(e))),
@@ -117,18 +126,52 @@ export default function HomePage({
         onSettings: () => setSettingsInst(inst),
         onRename: () => setRenameInst(inst),
         onLogs: () => setLogsInst(inst),
-        onDelete: () => {
-          if (window.confirm(t("instances.confirmDelete", { name: inst.name }))) {
-            void remove(inst.id, false).catch((e) => setError(String(e)));
-          }
+        onBackup: () =>
+          void api
+            .instanceBackup(inst.id)
+            .then((r) => setNotice(t("instances.backup.done", { path: r.path })))
+            .catch((e) => setError(String(e))),
+        onExport: () =>
+          void api
+            .instanceExport(inst.id)
+            .then((r) => setNotice(t("instances.export.done", { path: r.path })))
+            .catch((e) => setError(String(e))),
+        onIconSet: () => {
+          void (async () => {
+            try {
+              const path = await pickImagePath();
+              if (!path) return; // отмена диалога
+              await api.instanceIconSet(inst.id, path);
+              await load();
+            } catch (e) {
+              setError(apiErrorText(e));
+            }
+          })();
         },
-      });
+        // A10: не window.confirm, а диалог с выбором «в корзину/навсегда».
+        onDelete: () => setDeleteInst(inst),
+      };
+      if (inst.icon) {
+        cb.onIconClear = () =>
+          void api
+            .instanceIconRemove(inst.id)
+            .then(() => void load())
+            .catch((e) => setError(String(e)));
+      }
+      byId.set(inst.id, cb);
     }
     return byId;
-  }, [list, activeAccount?.name, launch, stop, optimize, duplicate, remove, setError]);
+  }, [list, activeAccount?.name, launch, stop, optimize, duplicate, setError, load]);
 
   return (
     <div className="mx-auto flex max-w-[980px] flex-col gap-5">
+      {/* A10: итог бэкапа/экспорта — тот же инлайн-баннер, что на «Инстансах». */}
+      {notice && (
+        <div className="rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-success">
+          {notice}
+        </div>
+      )}
+
       {/* HERO: быстрый запуск последнего инстанса */}
       {hero && (
         <section
@@ -152,7 +195,7 @@ export default function HomePage({
               {" · "}
               {hero.lastPlayed
                 ? t("home.hero.lastPlayed", {
-                    when: new Date(hero.lastPlayed * 1000).toLocaleString("ru", {
+                    when: new Date(hero.lastPlayed * 1000).toLocaleString(currentLanguage(), {
                       day: "numeric",
                       month: "short",
                       hour: "2-digit",
@@ -275,7 +318,7 @@ export default function HomePage({
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold leading-tight">{p.title}</div>
                   <div className="font-mono text-[12px] text-text-muted">
-                    {t("mods.downloads", { n: p.downloads.toLocaleString("ru") })}
+                    {t("mods.downloads", { n: p.downloads.toLocaleString(currentLanguage()) })}
                   </div>
                 </div>
                 <button
@@ -317,6 +360,18 @@ export default function HomePage({
         <LogViewerModal
           instance={logsInst}
           onClose={() => setLogsInst(null)}
+        />
+      )}
+
+      {deleteInst && (
+        <DeleteInstanceDialog
+          instance={deleteInst}
+          onCancel={() => setDeleteInst(null)}
+          onConfirm={(wipe) => {
+            const target = deleteInst;
+            setDeleteInst(null);
+            void remove(target.id, wipe).catch((e) => setError(String(e)));
+          }}
         />
       )}
     </div>

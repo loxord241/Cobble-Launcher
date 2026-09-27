@@ -146,6 +146,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             {step > 1 && (
               <button
                 onClick={() => setStep(step - 1)}
+                aria-label={t("onboarding.back")}
                 className="btn-ghost btn-sm"
               >
                 ←

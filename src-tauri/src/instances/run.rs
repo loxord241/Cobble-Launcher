@@ -38,6 +38,28 @@ fn emit(bus: &EventBus, instance_id: &str, phase: LaunchPhase) {
     });
 }
 
+/// Строка игры одновременно уходит в `latest.log` и в событие UI — ОБА вывода
+/// обязаны проходить redaction (A15): логи модов/чата печатают токен доступа,
+/// а реестр секретов наполняется при авторизации (спека §11, «секреты не
+/// покидают процесс»). Логировался без redact только launcher.log — этого мало.
+fn write_game_line(
+    log_file: Option<&mut std::fs::File>,
+    bus: &EventBus,
+    instance_id: &str,
+    line: &str,
+    stream: crate::events::LogStream,
+) {
+    let safe = crate::util::redact::redact(line);
+    if let Some(f) = log_file {
+        let _ = std::io::Write::write_all(f, format!("{safe}\n").as_bytes());
+    }
+    bus.emit(LauncherEvent::GameLogLine {
+        instance_id: instance_id.to_string(),
+        line: safe,
+        stream,
+    });
+}
+
 /// Подготовить инстанс к запуску: файлы, Java, команда (без спавна).
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare(
@@ -160,6 +182,9 @@ pub async fn prepare(
     let game_dir = minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
     std::fs::create_dir_all(crate::util::fs::long_path(&game_dir))
         .map_err(|e| LauncherError::Internal(format!("create_dir_all {}: {e}", game_dir.display())))?;
+    // A51: с этого шага подготовка успевает оставить следы на диске — уборка
+    // висит на Drop и снимается только при успешном возврате (см. PrepareCleanup).
+    let mut cleanup = PrepareCleanup::new(game_dir.clone());
     let mc_version_dir = game_dir.join("versions").join(&rv.id);
     let client_sha = rv
         .client_download
@@ -194,6 +219,7 @@ pub async fn prepare(
 
     // 5. Нативы распаковываются в каталог версии (1.19+: пустой каталог).
     let natives_dir = game_dir.join("bin").join(&rv.id);
+    cleanup.track_natives(natives_dir.clone());
     std::fs::create_dir_all(crate::util::fs::long_path(&natives_dir))?;
     let mut natives_count = 0;
     for l in &libs {
@@ -306,12 +332,89 @@ pub async fn prepare(
     };
     let command = build_command(&rv, &values, &os_ctx, &java.java_exe)?;
 
+    cleanup.disarm();
     Ok(PreparedLaunch {
         command,
         game_dir,
         version_id: rv.id,
         java,
     })
+}
+
+/// Уборка недоделанной подготовки запуска (A51): до фикса сбой на шагах
+/// 5–7 (нативы, virtual-ассеты, сборка команды) оставлял в инстансе
+/// полураспакованные нативы и `.part`-хвосты — следующий запуск считал их
+/// готовыми. Убираем best-effort (ошибки только в лог) и отдаём наружу
+/// исходную причину сбоя.
+///
+/// Hardlink'и библиотек/клиента НЕ трогаем: ссылка не бывает частичной
+/// (файл в сторе уже прошёл проверку хэша), а `link_or_copy` идемпотентен.
+struct PrepareCleanup {
+    game_dir: PathBuf,
+    natives_dir: Option<PathBuf>,
+    armed: bool,
+}
+
+impl PrepareCleanup {
+    fn new(game_dir: PathBuf) -> Self {
+        Self {
+            game_dir,
+            natives_dir: None,
+            armed: true,
+        }
+    }
+
+    /// Запомнить каталог нативов ДО его создания/распаковки.
+    fn track_natives(&mut self, dir: PathBuf) {
+        self.natives_dir = Some(dir);
+    }
+
+    /// Подготовка прошла успешно — убирать нечего.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PrepareCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        tracing::warn!(
+            "подготовка запуска прервана: чищу недоделанное в {}",
+            self.game_dir.display()
+        );
+        if let Some(natives) = self.natives_dir.clone() {
+            if natives.exists() {
+                if let Err(e) = std::fs::remove_dir_all(crate::util::fs::long_path(&natives)) {
+                    tracing::warn!("нативы {} не удалены: {e}", natives.display());
+                }
+            }
+        }
+        // `.part` пишутся рядом с целевым файлом — обходим сам каталог игры и
+        // каталоги контента (глубже в libraries/assets `.part` не бывает).
+        for dir in [
+            self.game_dir.clone(),
+            self.game_dir.join("mods"),
+            self.game_dir.join("resourcepacks"),
+            self.game_dir.join("shaderpacks"),
+        ] {
+            remove_part_files(&dir);
+        }
+    }
+}
+
+/// Удалить `*.part` на одном уровне каталога (best-effort, ошибки игнорируем).
+fn remove_part_files(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(crate::util::fs::long_path(dir)) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "part") {
+            crate::util::fs::remove_file_ignore(&p);
+        }
+    }
 }
 
 /// Личность аккаунта для запуска (offline/MSA/ely — спека §6.8).
@@ -380,6 +483,14 @@ fn java_exe_of(dir_or_exe: PathBuf) -> PathBuf {
     }
 }
 
+/// Каталог для `Command::current_dir` (A50): дочерний процесс получает его
+/// через SetCurrentDirectoryW/CreateProcessW, которые расширенные пути `\\?\`
+/// не принимают (в отличие от файловых API) — префикс снимаем. Для игры
+/// длинный путь тут и не помогал: лимит Win32 на рабочий каталог не обойти.
+fn spawn_dir(game_dir: &std::path::Path) -> PathBuf {
+    crate::util::fs::strip_long_prefix(game_dir)
+}
+
 /// Полный запуск инстанса с `.lock`, обновлением статистики и супервизией.
 /// Возвращает (найден маркер меню?, PID игры) — логика ожидания переиспользуется
 /// из CLI; в UI (M4) заменяется на события GameLogLine.
@@ -403,7 +514,7 @@ pub fn launch_blocking(
     let mut command = std::process::Command::new(&prepared.command.program);
     command
         .args(&prepared.command.args)
-        .current_dir(crate::util::fs::long_path(&prepared.game_dir))
+        .current_dir(spawn_dir(&prepared.game_dir))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = command
@@ -429,7 +540,7 @@ fn supervise_to_menu(
     instance_id: &str,
     timeout_secs: u64,
 ) -> Result<bool> {
-    use std::io::{BufRead, Write};
+    use std::io::BufRead;
     let logs_dir = game_dir.join("logs");
     std::fs::create_dir_all(crate::util::fs::long_path(&logs_dir))?;
     let log_path = crate::util::fs::long_path(&logs_dir.join("latest.log"));
@@ -473,12 +584,7 @@ fn supervise_to_menu(
         }
         match rx.recv_timeout(std::time::Duration::from_millis(250)) {
             Ok(line) => {
-                let _ = writeln!(log_file, "{line}");
-                bus.emit(LauncherEvent::GameLogLine {
-                    instance_id: instance_id.to_string(),
-                    line: line.clone(),
-                    stream: crate::events::LogStream::Stdout,
-                });
+                write_game_line(Some(&mut log_file), bus, instance_id, &line, crate::events::LogStream::Stdout);
                 if found_at.is_none() && line.contains("Sound engine started") {
                     found_at = Some(std::time::Instant::now());
                 }
@@ -616,7 +722,7 @@ pub fn launch_detached(
     let mut command = std::process::Command::new(&prepared.command.program);
     command
         .args(&prepared.command.args)
-        .current_dir(crate::util::fs::long_path(&prepared.game_dir))
+        .current_dir(spawn_dir(&prepared.game_dir))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let child = command
@@ -682,14 +788,7 @@ fn supervise_detached(
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(500)) {
             Ok((line, stream)) => {
-                if let Some(f) = &mut log_file {
-                    let _ = std::io::Write::write_all(f, format!("{line}\n").as_bytes());
-                }
-                bus.emit(LauncherEvent::GameLogLine {
-                    instance_id: instance_id.to_string(),
-                    line,
-                    stream,
-                });
+                write_game_line(log_file.as_mut(), bus, instance_id, &line, stream);
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if let Ok(Some(status)) = child.try_wait() {
@@ -699,12 +798,13 @@ fn supervise_detached(
                         phase: LaunchPhase::Exited,
                         exit_code: code,
                     });
-                    if let Ok(mut inst) = crate::instances::load(paths, instance_id) {
+                    // A28: статистика пишется атомарно под SAVE_LOCK,
+                    // чтобы не затереть настройки, сохранённые из UI во время игры.
+                    let _ = crate::instances::update(paths, instance_id, |inst| {
                         inst.last_played = Some(crate::instances::now_secs());
                         inst.launch_count += 1;
                         inst.play_seconds += started.elapsed().as_secs();
-                        let _ = crate::instances::save(paths, &inst);
-                    }
+                    });
                     drop(lock);
                     return;
                 }
@@ -718,12 +818,12 @@ fn supervise_detached(
         phase: LaunchPhase::Exited,
         exit_code,
     });
-    if let Ok(mut inst) = crate::instances::load(paths, instance_id) {
+    // A28: атомарно под SAVE_LOCK (см. instances::update).
+    let _ = crate::instances::update(paths, instance_id, |inst| {
         inst.last_played = Some(crate::instances::now_secs());
         inst.launch_count += 1;
         inst.play_seconds += started.elapsed().as_secs();
-        let _ = crate::instances::save(paths, &inst);
-    }
+    });
     drop(lock);
 }
 
@@ -741,5 +841,125 @@ pub fn fallback_major(mc_version: &str) -> u32 {    let parts: Vec<u32> = mc_ver
         (1, m) if m >= 20 => 21,
         (1, m) if (17..=19).contains(&m) => 17,
         _ => 8,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::LogStream;
+
+    /// A15-регресс: строка игры с зарегистрированным секретом не должна
+    /// попадать ни в `latest.log`, ни в событие UI. Секрет уникален для теста —
+    /// реестр redact глобальный на процесс (A43).
+    #[test]
+    fn game_lines_are_redacted_in_log_and_bus() {
+        let secret = "A15-GAMELOG-SECRET-7c1f";
+        crate::util::redact::register_secret(secret);
+
+        let bus = EventBus::new(64);
+        let mut rx = bus.subscribe();
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("latest.log");
+        let mut f = std::fs::File::create(&log_path).unwrap();
+        write_game_line(
+            Some(&mut f),
+            &bus,
+            "inst-1",
+            &format!("Authorization: Bearer {secret}"),
+            LogStream::Stdout,
+        );
+        drop(f);
+
+        let text = std::fs::read_to_string(&log_path).unwrap();
+        assert!(!text.contains(secret), "секрет утёк в latest.log: {text}");
+        assert!(text.contains("[REDACTED]"), "{text}");
+
+        let LauncherEvent::GameLogLine {
+            line, instance_id, ..
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("ожидалось событие GameLogLine");
+        };
+        assert_eq!(instance_id, "inst-1");
+        assert!(!line.contains(secret), "секрет утёк в событие: {line}");
+        assert!(line.contains("[REDACTED]"), "{line}");
+
+        // Детальный запуск: файл лога может не открыться — событие всё равно чистое.
+        write_game_line(
+            None,
+            &bus,
+            "inst-2",
+            &format!("token={secret}"),
+            LogStream::Stderr,
+        );
+        let LauncherEvent::GameLogLine { line, .. } = rx.try_recv().unwrap() else {
+            panic!("ожидалось событие GameLogLine");
+        };
+        assert!(!line.contains(secret) && line.contains("[REDACTED]"), "{line}");
+        assert!(
+            !std::fs::read_to_string(&log_path).unwrap().contains(secret),
+            "файл лога не должен получать строки без буфера"
+        );
+    }
+
+    /// A50: рабочий каталог дочернего процесса не может быть `\\?\`-путём
+    /// (SetCurrentDirectoryW), поэтому префикс снимается перед спавном.
+    #[cfg(windows)]
+    #[test]
+    fn spawn_dir_has_no_extended_prefix() {
+        let mut deep = PathBuf::from(r"C:\");
+        let seg = "abcdefghijklmnopqrstuvwxyz0123456789";
+        for _ in 0..8 {
+            deep.push(seg);
+        }
+        let lp = crate::util::fs::long_path(&deep);
+        assert!(lp.to_string_lossy().starts_with(r"\\?\"));
+        let dir = spawn_dir(&lp);
+        assert!(
+            !dir.to_string_lossy().starts_with(r"\\?\"),
+            "префикс обязан быть снят: {}",
+            dir.display()
+        );
+        assert_eq!(dir, deep);
+    }
+
+    /// A51: сбой подготовки не оставляет полураспакованные нативы и `.part`.
+    #[test]
+    fn prepare_cleanup_removes_natives_and_part_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("minecraft");
+        let natives = game.join("bin").join("1.20.1");
+        std::fs::create_dir_all(&natives).unwrap();
+        std::fs::write(natives.join("libnatives.so"), b"x").unwrap();
+        let mods = game.join("mods");
+        std::fs::create_dir_all(&mods).unwrap();
+        std::fs::write(mods.join("a.jar.part"), b"partial").unwrap();
+        std::fs::write(mods.join("keep.jar"), b"ok").unwrap();
+
+        {
+            // Ошибка подготовки: guard уходит из scope без disarm.
+            let mut c = PrepareCleanup::new(game.clone());
+            c.track_natives(natives.clone());
+        }
+        assert!(!natives.exists(), "нативы сбойной версии удалены");
+        assert!(!mods.join("a.jar.part").exists(), ".part удалён");
+        assert!(mods.join("keep.jar").exists(), "готовый контент не тронут");
+    }
+
+    /// A51: успешная подготовка (disarm) не должна ничего удалять.
+    #[test]
+    fn prepare_cleanup_disarmed_keeps_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("minecraft");
+        let natives = game.join("bin").join("1.20.1");
+        std::fs::create_dir_all(&natives).unwrap();
+        std::fs::write(natives.join("keep.so"), b"x").unwrap();
+        {
+            let mut c = PrepareCleanup::new(game.clone());
+            c.track_natives(natives.clone());
+            c.disarm();
+        }
+        assert!(natives.join("keep.so").exists(), "успех → уборки нет");
     }
 }

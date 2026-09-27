@@ -15,7 +15,13 @@ pub fn link_or_copy(src: &Path, dst: &Path) -> Result<()> {
         return Ok(()); // уже на месте
     }
     if std::fs::hard_link(&src_l, &dst_l).is_err() {
-        std::fs::copy(&src_l, &dst_l)?;
+        // A22: сбой копирования (диск полон/оборвалось чтение) оставлял бы
+        // усечённый файл, а следующий вызов видел бы `exists()` и считал его
+        // готовым — недописанное убираем, чтобы повтор перекопировал честно.
+        if let Err(e) = std::fs::copy(&src_l, &dst_l) {
+            let _ = std::fs::remove_file(&dst_l);
+            return Err(e.into());
+        }
     }
     Ok(())
 }
@@ -111,10 +117,15 @@ pub fn walk_files(root: &Path) -> Vec<PathBuf> {
 /// Копирование дерева при дублировании инстанса (спека §6.12): файлы в
 /// уникальных каталогах (saves/mods/…) — КОПИЯ байтами, остальные — hardlink.
 pub fn copy_tree_mixed(src_root: &Path, dst_root: &Path) -> Result<()> {
+    // A19: `walk_files` отдаёт потомков в форме, которую выбрал `long_path`
+    // на каждом уровне (родитель короткий — без `\\?\`, длинный потомок — с ним).
+    // Сырой `strip_prefix` из-за этой асимметрии не срабатывал, `rel` оставался
+    // АБСОЛЮТНЫМ путём источника, и `dst_root.join(rel)` (join с абсолютным
+    // путём заменяет всё) указывал на сам источник — файл не дублировался.
+    let base = crate::util::fs::normalize_for_compare(src_root);
     for file in walk_files(src_root) {
-        let rel = file
-            .strip_prefix(crate::util::fs::long_path(src_root))
-            .unwrap_or(&file);
+        let file_cmp = crate::util::fs::normalize_for_compare(&file);
+        let rel = file_cmp.strip_prefix(&base).unwrap_or(&file_cmp);
         let dst = dst_root.join(rel);
         let rel_lossy = rel.to_string_lossy().replace('\\', "/");
         let is_unique = super::UNIQUE_SUBDIRS
@@ -207,5 +218,67 @@ mod tests {
         assert_eq!(removed, 1);
         assert!(linked.exists(), "связанный остался");
         assert!(!unlinked.exists(), "несвязанный удалён");
+    }
+
+    /// A22: сбой копирования (фолбэк после неудачного hardlink) не оставляет
+    /// на диске файл-призрак, который следующий вызов сочёл бы готовым.
+    #[test]
+    fn failed_copy_leaves_no_ghost_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        // Источник — КАТАЛОГ: hardlink невозможен, копирование обязано упасть.
+        // (На Unix `File::create` уже создаёт цель и бросает её при ошибке чтения;
+        // на Windows CopyFileExW падает до создания цели — инвариант один.)
+        let src_dir = dir.path().join("as-dir");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let dst = dir.path().join("out").join("dst.bin");
+        let err = link_or_copy(&src_dir, &dst).unwrap_err();
+        assert_eq!(err.code(), "io", "{err}");
+        assert!(!dst.exists(), "недописанный файл не должен остаться: {dst:?}");
+    }
+
+    /// A19-регресс: глубокий уникальный файл (saves/…) обязан скопироваться в
+    /// дубликат, а источник — остаться нетронутым. До фикса `strip_prefix`
+    /// ломался на `\\?\`-асимметрии (родитель короткий, потомок длинный),
+    /// `rel` становился абсолютным путём источника, и `join` заменял им
+    /// каталог назначения — файл в копию не попадал.
+    #[test]
+    fn copy_tree_mixed_handles_deep_unique_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_root = dir.path().join("src");
+        let seg = "abcdefghijklmnopqrstuvwxyz0123456789";
+        // Промежуточный каталог сам длиннее порога префиксации (240): именно
+        // тогда `read_dir` внутри walk_files зовётся на `\\?\`-пути и потомки
+        // приходят в другой форме, чем корень.
+        let mut deep_dir = src_root.join("saves");
+        while deep_dir.to_string_lossy().len() < 245 {
+            deep_dir.push(seg);
+        }
+        std::fs::create_dir_all(crate::util::fs::long_path(&deep_dir)).unwrap();
+        let deep_file = deep_dir.join("level.dat");
+        std::fs::write(crate::util::fs::long_path(&deep_file), b"save-bytes").unwrap();
+        // Общий файл (как libraries): должен стать hardlink'ом.
+        let lib = src_root.join("libraries").join("lib.jar");
+        std::fs::create_dir_all(crate::util::fs::long_path(lib.parent().unwrap())).unwrap();
+        std::fs::write(&lib, b"lib-bytes").unwrap();
+
+        let dst_root = dir.path().join("dst");
+        copy_tree_mixed(&src_root, &dst_root).unwrap();
+
+        let rel_deep = deep_file.strip_prefix(&src_root).unwrap();
+        let dst_deep = dst_root.join(rel_deep);
+        assert_eq!(
+            std::fs::read(crate::util::fs::long_path(&dst_deep)).unwrap(),
+            b"save-bytes",
+            "глубокая копия уникального файла обязана появиться"
+        );
+        assert_eq!(hardlink_count(&dst_deep), 1, "уникальное копируется байтами");
+        assert_eq!(
+            std::fs::read(crate::util::fs::long_path(&deep_file)).unwrap(),
+            b"save-bytes",
+            "источник не должен изменяться"
+        );
+        let dst_lib = dst_root.join("libraries").join("lib.jar");
+        assert_eq!(std::fs::read(&dst_lib).unwrap(), b"lib-bytes");
+        assert_eq!(hardlink_count(&dst_lib), 2, "общее линкуется, а не копируется");
     }
 }

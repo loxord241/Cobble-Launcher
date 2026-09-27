@@ -7,6 +7,9 @@ async function main() {
   const page = browser.contexts()[0].pages()[0];
   page.setDefaultTimeout(20000);
   await page.goto("http://localhost:1420/?theme=dark", { waitUntil: "networkidle" }).catch(() => {});
+  // Язык интерфейса — ru: свежая установка стартует на en (D30), проверки ниже русскоязычные.
+  await page.evaluate(() => localStorage.setItem("lang", "ru"));
+  await page.reload({ waitUntil: "networkidle" }).catch(() => {});
   await page.waitForTimeout(500);
 
   console.log("==> 1. Открытие страницы Инстансы");

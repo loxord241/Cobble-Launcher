@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// A6: в UI (src/api/types.ts) поля ждут camelCase — без rename список Java
+// приходил как java_exe/arch_bits и выпадающий список в настройках пустел.
+#[serde(rename_all = "camelCase")]
 pub struct JavaInstall {
     /// Путь к исполнимому файлу java.
     pub java_exe: PathBuf,
@@ -231,5 +234,23 @@ mod tests {
         assert_eq!(pick_java(17, &list).unwrap().major, 17);
         assert_eq!(pick_java(21, &list).unwrap().major, 25);
         assert_eq!(pick_java(26, &list).map(|j| j.major), None);
+    }
+
+    /// A6-регресс: контракт с UI — camelCase (`javaExe`/`archBits`).
+    /// Убрав `rename_all`, получим пустой список Java в настройках.
+    #[test]
+    fn serializes_camel_case_for_ui() {
+        let j = JavaInstall {
+            java_exe: PathBuf::from(r"C:\jdk\bin\java.exe"),
+            major: 21,
+            arch_bits: 64,
+            origin: "PATH".into(),
+        };
+        let v = serde_json::to_value(&j).unwrap();
+        assert_eq!(v["javaExe"], r"C:\jdk\bin\java.exe");
+        assert_eq!(v["archBits"], 64);
+        assert_eq!(v["major"], 21);
+        assert!(v.get("java_exe").is_none(), "snake_case не должен утекать в UI");
+        assert!(v.get("arch_bits").is_none());
     }
 }

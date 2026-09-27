@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, X, Copy, Check, FolderOpen, ChevronDown, ChevronUp } from "lucide-react";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
+import { useModalA11y } from "../hooks/useModalA11y";
 import type { CrashReport } from "../../state/instances";
 
 export default function CrashReportModal({
@@ -13,6 +14,17 @@ export default function CrashReportModal({
 }) {
   const [showLog, setShowLog] = useState(false);
   const [copied, setCopied] = useState(false);
+  // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
+  const dialogRef = useModalA11y(onClose);
+  const copyTimer = useRef<number | null>(null);
+
+  // A56: таймер индикатора «Скопировано!» не переживает размонтирование.
+  useEffect(
+    () => () => {
+      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+    },
+    [],
+  );
 
   const copyLog = async () => {
     try {
@@ -25,7 +37,7 @@ export default function CrashReportModal({
       ].join("\n");
       await navigator.clipboard.writeText(summary);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 2000);
     } catch {
       // fallback
     }
@@ -35,20 +47,14 @@ export default function CrashReportModal({
     void api.instanceOpenDir(report.instanceId);
   };
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
       role="alertdialog"
       aria-modal="true"
       aria-label={t("crash.title")}
+      tabIndex={-1}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

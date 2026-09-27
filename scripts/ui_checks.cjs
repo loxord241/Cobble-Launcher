@@ -16,7 +16,9 @@ async function main() {
   const fail = (msg) => { failed++; console.error("FAIL:", msg); };
 
   // 1. Персистентность: без query тема из localStorage; ?theme= перекрывает.
+  // Язык — ru: свежая установка стартует на en (D30), а подписи ниже русские.
   await page.goto("http://localhost:1420/", { waitUntil: "networkidle" }).catch(() => {});
+  await page.evaluate(() => localStorage.setItem("lang", "ru"));
   await page.evaluate(() => localStorage.setItem("theme", "mc"));
   await page.reload({ waitUntil: "networkidle" }).catch(() => {});
   let th = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));

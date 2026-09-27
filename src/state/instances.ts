@@ -1,7 +1,8 @@
 // Стейт инстансов + статусы запуска (события ядра → UI).
 import { create } from "zustand";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api, onCoreEvent } from "../api/client";
-import type { Diagnosis, Instance, LaunchPhase } from "../api/types";
+import type { Diagnosis, Instance, LaunchPhase, QueueState } from "../api/types";
 
 export interface LaunchStatus {
   phase: LaunchPhase;
@@ -22,6 +23,8 @@ interface InstancesState {
   loaded: boolean;
   status: Record<string, LaunchStatus>;
   logs: Record<string, string[]>;
+  /** Состояние очереди загрузок ядра (A30): данные есть, UI-панели пока нет. */
+  queueState: QueueState | null;
   crashReport: CrashReport | null;
   error: string | null;
   load: () => Promise<void>;
@@ -39,6 +42,16 @@ interface InstancesState {
 }
 
 let isSubscribed = false;
+// A32: слушатели Tauri держим модульно, иначе их нельзя снять (утечка).
+let unlistenCore: UnlistenFn | null = null;
+
+/** A32: снять слушатели событий ядра (размонтирование Shell, повторная подписка). */
+export function unsubscribeEvents() {
+  isSubscribed = false;
+  const unlisten = unlistenCore;
+  unlistenCore = null;
+  unlisten?.();
+}
 
 // D8: при запущенной игре game_log_line приходит десятками в секунду, а каждый
 // set() перерисовывает всех подписчиков стора. Копим строки в буфере и
@@ -46,6 +59,14 @@ let isSubscribed = false;
 const LOG_FLUSH_MS = 200;
 const LOG_BUFFER_MAX = 500;
 const LOG_KEEP = 300;
+
+/**
+ * A9: событие `exited` приходит раньше последних строк stdout (они ещё идут по
+ * IPC), а crash-анализ читает logs сразу. Буфер сбрасываем немедленно (flushLogs
+ * в обработчике), а сам анализ откладываем — иначе в отчёт попадёт лог без
+ * хвоста падения.
+ */
+const CRASH_TAIL_MS = 600;
 
 let logBuffer = new Map<string, string[]>();
 let logFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -98,6 +119,7 @@ export const useInstances = create<InstancesState>((set, get) => ({
   loaded: false,
   status: {},
   logs: {},
+  queueState: null,
   crashReport: null,
   error: null,
   load: async () => {
@@ -130,7 +152,8 @@ export const useInstances = create<InstancesState>((set, get) => ({
     if (isSubscribed) return;
     isSubscribed = true;
 
-    await onCoreEvent((event) => {
+    // A32: unlisten держим модульно — иначе слушатели Tauri не снять.
+    const unlisten = await onCoreEvent((event) => {
       if (event.event === "launch_state") {
         const { instanceId, phase, exitCode } = event;
         // D18: владелец прогресса — тот, кто реально начал скачивание.
@@ -151,31 +174,42 @@ export const useInstances = create<InstancesState>((set, get) => ({
           void get().load();
 
           if (exitCode !== undefined && exitCode !== 0) {
-            const instanceLogs = get().logs[instanceId] ?? [];
-            const logText = instanceLogs.join("\n");
-            void api.crashAnalyze(logText).then((diagnoses) => {
-              set({
-                crashReport: {
-                  instanceId,
-                  exitCode,
-                  diagnoses,
-                  logTail: instanceLogs.slice(-50).join("\n"),
-                },
+            // A9: анализ запускаем с задержкой — последние строки stdout ещё
+            // идут по IPC, и без паузы хвост падения в отчёт не попадает.
+            setTimeout(() => {
+              const status = get().status[instanceId];
+              // Инстанс успели перезапустить — отчёт о прошлом падении неактуален.
+              if (status && status.phase !== "exited") return;
+              const instanceLogs = get().logs[instanceId] ?? [];
+              const logText = instanceLogs.join("\n");
+              void api.crashAnalyze(logText).then((diagnoses) => {
+                set({
+                  crashReport: {
+                    instanceId,
+                    exitCode,
+                    diagnoses,
+                    logTail: instanceLogs.slice(-50).join("\n"),
+                  },
+                });
+              }).catch(() => {
+                set({
+                  crashReport: {
+                    instanceId,
+                    exitCode,
+                    diagnoses: [],
+                    logTail: instanceLogs.slice(-50).join("\n"),
+                  },
+                });
               });
-            }).catch(() => {
-              set({
-                crashReport: {
-                  instanceId,
-                  exitCode,
-                  diagnoses: [],
-                  logTail: instanceLogs.slice(-50).join("\n"),
-                },
-              });
-            });
+            }, CRASH_TAIL_MS);
           }
         }
       } else if (event.event === "game_log_line") {
         queueLogLine(event.instanceId, event.line);
+      } else if (event.event === "dl_queue_state") {
+        // A30: состояние очереди загрузок (pending/downloading/done/failed).
+        // UI-панели под него пока нет — данные честно храним в сторе.
+        set({ queueState: event });
       } else if (event.event === "dl_progress") {
         const id = downloadOwnerId;
         if (!id) return;
@@ -199,6 +233,15 @@ export const useInstances = create<InstancesState>((set, get) => ({
         }));
       }
     });
+
+    if (!isSubscribed) {
+      // Отписаться успели, пока шла подписка — снимаем свежие слушатели.
+      unlisten();
+      return;
+    }
+    // Гонка повторной подписки: прежние слушатели не оставляем висеть.
+    if (unlistenCore) unlistenCore();
+    unlistenCore = unlisten;
   },
   launch: async (id, player) => {
     // Очистить логи перед новым запуском (в т.ч. ещё не сброшенный буфер)
