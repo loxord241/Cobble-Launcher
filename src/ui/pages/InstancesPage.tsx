@@ -21,6 +21,7 @@ export default function InstancesPage({ query }: { query: string }) {
   const [settingsInst, setSettingsInst] = useState<Instance | null>(null);
   const [renameInst, setRenameInst] = useState<Instance | null>(null);
   const [logsInst, setLogsInst] = useState<Instance | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const activeAccount =
     accounts.find((a) => a.id === settings?.accountsActiveId) ?? accounts[0] ?? null;
@@ -39,6 +40,16 @@ export default function InstancesPage({ query }: { query: string }) {
     onSettings: () => setSettingsInst(inst),
     onRename: () => setRenameInst(inst),
     onLogs: () => setLogsInst(inst),
+    onBackup: () =>
+      void api
+        .instanceBackup(inst.id)
+        .then((r) => setNotice(t("instances.backup.done", { path: r.path })))
+        .catch((e) => setError(String(e))),
+    onExport: () =>
+      void api
+        .instanceExport(inst.id)
+        .then((r) => setNotice(t("instances.export.done", { path: r.path })))
+        .catch((e) => setError(String(e))),
     onDelete: () => {
       const wipe = window.confirm(
         `${t("instances.confirmDelete", { name: inst.name })}\n\nНажмите OK для удаления в корзину (или Отмена для отмены).`,
@@ -64,6 +75,11 @@ export default function InstancesPage({ query }: { query: string }) {
         <p className="rounded-lg border border-error/40 bg-error/10 p-3 text-sm text-error" role="alert">
           {error}
         </p>
+      )}
+      {notice && (
+        <div className="rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-success">
+          {notice}
+        </div>
       )}
 
       {list.length === 0 ? (

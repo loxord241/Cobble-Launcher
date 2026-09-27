@@ -2,7 +2,7 @@
 //! Чужие zip (импорты, модпаки) — недоверенный вход.
 
 use crate::errors::{LauncherError, Result};
-use std::io::{Read, Seek};
+use std::io::{Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 
 /// Лимиты на архив по умолчанию: защита от zip-bomb.
@@ -157,10 +157,61 @@ pub fn extract_zip_stripping<R: Read + Seek>(
     Ok(out)
 }
 
+/// Запаковать каталог в ZipWriter: записи идут под `prefix/`, пустые
+/// каталоги не создаются. `skip` получает путь (каталог или файл)
+/// относительно `dir`, слэши; true для каталога = поддерево целиком.
+/// Возвращает число записанных файлов. Наш собственный zip — доверенный вход.
+pub fn write_zip_dir(
+    dir: &Path,
+    zip: &mut zip::ZipWriter<impl std::io::Write + std::io::Seek>,
+    prefix: &str,
+    skip: &dyn Fn(&str) -> bool,
+) -> Result<usize> {
+    let opts: zip::write::SimpleFileOptions = Default::default();
+    let mut count = 0usize;
+    fn walk(
+        base: &Path,
+        cur: &Path,
+        zip: &mut zip::ZipWriter<impl std::io::Write + std::io::Seek>,
+        opts: &zip::write::SimpleFileOptions,
+        prefix: &str,
+        skip: &dyn Fn(&str) -> bool,
+        count: &mut usize,
+    ) -> Result<()> {
+        let it = std::fs::read_dir(crate::util::fs::long_path(cur))?;
+        let mut entries: Vec<_> = it.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let path = e.path();
+            let rel = path
+                .strip_prefix(base)
+                .map_err(|_| LauncherError::InvalidInput("walk: префикс".into()))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let ft = e.file_type()?;
+            if ft.is_dir() {
+                if skip(&rel) {
+                    continue;
+                }
+                walk(base, &path, zip, opts, prefix, skip, count)?;
+            } else if ft.is_file() && !skip(&rel) {
+                let name = format!("{prefix}{rel}");
+                zip.start_file(name, *opts)
+                    .map_err(|err| LauncherError::Zip(format!("start_file {rel}: {err}")))?;
+                let data = std::fs::read(crate::util::fs::long_path(&path))?;
+                zip.write_all(&data)?;
+                *count += 1;
+            }
+        }
+        Ok(())
+    }
+    walk(dir, dir, zip, &opts, prefix, skip, &mut count)?;
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
 
     fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf = std::io::Cursor::new(Vec::new());

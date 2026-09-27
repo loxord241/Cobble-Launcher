@@ -1,6 +1,7 @@
 //! Инстансы (спека §6.12, §7): изоляция, instance.json атомарно,
 //! удаление в корзину ОС, `.lock` на время работы.
 
+pub mod content;
 pub mod run;
 pub mod store;
 
@@ -127,6 +128,10 @@ pub struct ContentEntry {
     pub version_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha1: Option<String>,
+    /// URL загрузки на Modrinth — для экспорта .mrpack (files[]). Записи
+    /// без url (Local/старые манифесты) при экспорте уходят в overrides/.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     pub enabled: bool,
 }
 

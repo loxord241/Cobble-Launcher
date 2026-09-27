@@ -199,6 +199,7 @@ async fn install_recursive(
         project_id: Some(project_id.to_string()),
         version_id: Some(version.id.clone()),
         sha1: file.hashes.get("sha1").cloned(),
+        url: Some(file.url.clone()),
         enabled: true,
     };
     let mut manifest = crate::instances::load_content_manifest(paths, &inst.id);

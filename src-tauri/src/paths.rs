@@ -112,6 +112,16 @@ impl Paths {
         self.root.join("instances")
     }
 
+    /// Бэкапы инстансов (zip): `backups/`.
+    pub fn backups_dir(&self) -> PathBuf {
+        self.root.join("backups")
+    }
+
+    /// Экспорт инстансов (.mrpack): `exports/`.
+    pub fn exports_dir(&self) -> PathBuf {
+        self.root.join("exports")
+    }
+
     /// Каталог игры для CLI-прогона M1 (до появления инстансов).
     pub fn cli_run_dir(&self, mc_version: &str) -> PathBuf {
         self.root.join("cli-run").join(mc_version)
@@ -131,6 +141,8 @@ impl Paths {
             self.runtime_dir(),
             self.logs_dir(),
             self.instances_dir(),
+            self.backups_dir(),
+            self.exports_dir(),
         ] {
             std::fs::create_dir_all(crate::util::fs::long_path(&d))?;
         }

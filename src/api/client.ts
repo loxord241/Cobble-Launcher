@@ -14,6 +14,7 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 }
 import type {
   Account,
+  ArchiveResult,
   ContentEntry,
   Diagnosis,
   RamGuide,
@@ -72,6 +73,10 @@ export const api = {
     invoke<ContentEntry[]>("content_install", { instanceId, projectId, versionId }),
   contentInstalled: (instanceId: string) =>
     invoke<ContentEntry[]>("content_installed", { instanceId }),
+  contentToggle: (instanceId: string, file: string) =>
+    invoke<ContentEntry>("content_toggle", { instanceId, file }),
+  contentRemove: (instanceId: string, file: string) =>
+    invoke<void>("content_remove", { instanceId, file }),
   contentUpdateCheck: (instanceId: string) =>
     invoke<UpdateCheck[]>("content_update_check", { instanceId }),
   contentUpdateAll: (instanceId: string) => invoke<number>("content_update_all", { instanceId }),
@@ -79,6 +84,9 @@ export const api = {
     invoke<Instance>("mrpack_install", { path, name }),
   modpackInstall: (projectId: string, name?: string) =>
     invoke<Instance>("modpack_install", { projectId, name }),
+
+  instanceBackup: (id: string) => invoke<ArchiveResult>("instance_backup", { id }),
+  instanceExport: (id: string) => invoke<ArchiveResult>("instance_export", { id }),
 
   instanceOptimize: (instanceId: string) =>
     invoke<string[]>("instance_optimize", { instanceId }),

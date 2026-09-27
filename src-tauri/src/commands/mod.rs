@@ -3,6 +3,7 @@
 
 use crate::errors::{LauncherError, Result};
 use crate::events::{EventBus, LauncherEvent};
+use crate::instances::content::ArchiveResult;
 use crate::instances::{self, Instance};
 use crate::java::detect::JavaInstall;
 use crate::mojang::manifest::{filter_versions, fetch_manifest, resolve_entry};
@@ -291,6 +292,60 @@ pub async fn content_installed(
     Ok(crate::instances::load_content_manifest(&state.paths, &instance_id))
 }
 
+/// Вкл/выкл контента: `.disabled`-суффикс на диске + флаг в манифесте.
+#[tauri::command]
+pub async fn content_toggle(
+    state: State<'_, AppState>,
+    instance_id: String,
+    file: String,
+) -> Result<crate::instances::ContentEntry> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        instances::content::toggle(&paths, &instance_id, &file)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Удалить контент инстанса (файл + запись манифеста).
+#[tauri::command]
+pub async fn content_remove(
+    state: State<'_, AppState>,
+    instance_id: String,
+    file: String,
+) -> Result<()> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        instances::content::remove(&paths, &instance_id, &file)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Бэкап инстанса целиком в zip (каталог backups/ в данных лаунчера).
+#[tauri::command]
+pub async fn instance_backup(state: State<'_, AppState>, id: String) -> Result<ArchiveResult> {
+    let paths = state.paths.clone();
+    let inst = instances::load(&state.paths, &id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        instances::content::backup(&paths, &inst)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Экспорт инстанса в .mrpack (формат Modrinth) в каталог exports/.
+#[tauri::command]
+pub async fn instance_export(state: State<'_, AppState>, id: String) -> Result<ArchiveResult> {
+    let paths = state.paths.clone();
+    let inst = instances::load(&state.paths, &id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        instances::content::export_mrpack(&paths, &inst)
+    })
+    .await
+    .map_err(join_err)?
+}
+
 #[tauri::command]
 pub async fn content_update_check(
     state: State<'_, AppState>,
@@ -312,6 +367,12 @@ pub async fn content_update_all(
     crate::modrinth::updates::update_all(&state.paths, http, engine, &inst)
         .await
 }
+
+
+fn join_err(e: tauri::Error) -> LauncherError {
+    LauncherError::Io(std::io::Error::other(format!("фоновая задача: {e}")))
+}
+
 
 /// Установка .mrpack в новый инстанс (путь выбирается диалогом/drag&drop).
 #[tauri::command]

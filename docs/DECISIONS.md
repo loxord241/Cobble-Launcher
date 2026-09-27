@@ -215,3 +215,34 @@ snakify для instance_settings_set на входе). Правильное до
 (camelize/snakify/snakeToCamel) из `api/client.ts` удалены; invoke
 нормализует ошибки IPC в `Error` (d2b2e7b). Контракт ядро↔UI теперь
 camelCase на обоих концах.
+
+## D26. Управление контентом, бэкап и экспорт инстанса (2026-09-27)
+
+Закрыты два P2-гэпа из AUDIT (Prism/Modrinth App parity):
+
+1. **Вкл/выкл контента** — паттерн Prism: переименование файла на диске
+   `mods/x.jar` ↔ `mods/x.jar.disabled` (загрузчики его игнорируют) + флаг
+   `enabled` в content-manifest. Логический путь в манифесте не меняется,
+   обновления работают по `project_id` независимо от состояния. Путь из UI
+   валидируется: только `mods|resourcepacks|shaderpacks`, только вниз,
+   без `..` и `:` (traversal — ошибка `invalid_input`).
+2. **Экспорт .mrpack** (формат Modrinth): `files[]` — записи манифеста
+   с `url`+`sha1` (поле `url` добавлено в ContentEntry, пишется при
+   установке; старые записи и Local-контент уходят в `overrides/`).
+   Конфиги/опции включаются, **сейвы — нет** (личное и тяжёлое) — в отличие
+   от бэкапа zip, куда сейвы входят. Шум (`logs`, `crash-reports`, `cache`)
+   не входит никуда; `.lock` — в бэкап не входит.
+3. **Бэкап zip** — весь каталог инстанса под корнем `instance/` в
+   `%LOCALAPPDATA%\mc-launcher-v2\backups\`; экспорт — в `exports\`.
+   Восстановление бэкапа = импорт zip (существующая `instance_import`),
+   отдельной команды не нужно.
+4. Контент-манифест получил поле `url` (serde default) — старые файлы
+   читаются; в `files[]` экспорта попадают только включённые записи
+   с известным url (честный .mrpack, ставящийся Modrinth App).
+
+Команды: `content_toggle`, `content_remove`, `instance_backup`,
+`instance_export`. UI: вкладки типов каталога (моды/шейдеры/ресурспаки/
+модпаки — фильтр `project_type` уже был в ядре), панель «Установленные»
+(тумблер/удаление), пункты кебаб-меню «Бэкап (zip)»/«Экспорт .mrpack».
+Тесты: 91 lib (в т.ч. 6 новых в `content.rs`) + приёмка
+`scripts/content_features.cjs` (вкладки, тумблер вживую, zip на диске).

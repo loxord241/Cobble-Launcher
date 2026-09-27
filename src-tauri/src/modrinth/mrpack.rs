@@ -209,6 +209,7 @@ pub async fn install_mrpack(
             project_id: None,
             version_id: Some(index.version_id.clone()),
             sha1: f.hashes.get("sha1").cloned(),
+            url: f.downloads.first().cloned(),
             enabled: true,
         });
     }

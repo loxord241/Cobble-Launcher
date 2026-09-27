@@ -1,14 +1,40 @@
 // Браузер контента Modrinth (спека §8): поиск, бесконечный скролл, установка
-// в инстанс, установка .mrpack, проверка/применение обновлений. Паттерн строк «Сланца».
+// в инстанс, вкладки типов (моды/шейдеры/ресурспаки/модпаки), установка
+// .mrpack, проверка/применение обновлений и управление установленным
+// (вкл/выкл, удаление). Паттерн строк «Сланца».
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, RefreshCw, Search, SearchX, PackageSearch } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  Download,
+  RefreshCw,
+  Search,
+  SearchX,
+  PackageSearch,
+  Trash2,
+} from "lucide-react";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
-import type { Instance, SearchHit, UpdateCheck } from "../../api/types";
+import type { ContentEntry, Instance, SearchHit, UpdateCheck } from "../../api/types";
 
 const PAGE_SIZE = 20;
 
+type Tab = "mod" | "shader" | "resourcepack" | "modpack";
+
+const TABS: { id: Tab; defaultQuery: string }[] = [
+  { id: "mod", defaultQuery: "mods" },
+  { id: "shader", defaultQuery: "shaders" },
+  { id: "resourcepack", defaultQuery: "resourcepacks" },
+  { id: "modpack", defaultQuery: "modpacks" },
+];
+
+function fileBase(file: string): string {
+  const base = file.slice(file.lastIndexOf("/") + 1);
+  return base.endsWith(".disabled") ? base.slice(0, -".disabled".length) : base;
+}
+
 export default function ModsPage({ query }: { query: string }) {
+  const [tab, setTab] = useState<Tab>("mod");
   const [localQuery, setLocalQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [total, setTotal] = useState(0);
@@ -20,6 +46,8 @@ export default function ModsPage({ query }: { query: string }) {
   const [error, setError] = useState<string | null>(null);
   const [installedInfo, setInstalledInfo] = useState<string | null>(null);
   const [updates, setUpdates] = useState<UpdateCheck[] | null>(null);
+  const [installed, setInstalled] = useState<ContentEntry[]>([]);
+  const [showInstalled, setShowInstalled] = useState(false);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -29,16 +57,29 @@ export default function ModsPage({ query }: { query: string }) {
     });
   }, []);
 
+  const loadInstalled = useCallback(async () => {
+    if (!targetId) return;
+    try {
+      setInstalled(await api.contentInstalled(targetId));
+    } catch {
+      setInstalled([]);
+    }
+  }, [targetId]);
+
+  useEffect(() => {
+    void loadInstalled();
+  }, [loadInstalled, installedInfo]);
+
   const doSearch = async () => {
     setBusy(true);
     setError(null);
     try {
       const target = instances.find((i) => i.id === targetId);
       const r = await api.modrinthSearch(
-        localQuery || "mods",
+        localQuery || TABS.find((x) => x.id === tab)!.defaultQuery,
         target?.mcVersion,
         target?.loader,
-        undefined,
+        tab,
         PAGE_SIZE,
         0,
       );
@@ -52,6 +93,12 @@ export default function ModsPage({ query }: { query: string }) {
     }
   };
 
+  // Смена вкладки — повторный поиск по выбранному типу контента.
+  useEffect(() => {
+    if (searched) void doSearch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
   // Дозагрузка следующей страницы (offset = сколько уже загрузили).
   const loadMore = useCallback(async () => {
     if (loadingMore || busy || !searched || hits.length >= total) return;
@@ -60,10 +107,10 @@ export default function ModsPage({ query }: { query: string }) {
     try {
       const target = instances.find((i) => i.id === targetId);
       const r = await api.modrinthSearch(
-        localQuery || "mods",
+        localQuery || TABS.find((x) => x.id === tab)!.defaultQuery,
         target?.mcVersion,
         target?.loader,
-        undefined,
+        tab,
         PAGE_SIZE,
         hits.length,
       );
@@ -76,7 +123,7 @@ export default function ModsPage({ query }: { query: string }) {
       setLoadingMore(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadingMore, busy, searched, hits, total, instances, targetId, localQuery]);
+  }, [loadingMore, busy, searched, hits, total, instances, targetId, localQuery, tab]);
 
   // Автопоиск при первом открытии каталога + бесконечный скролл по sentinel.
   useEffect(() => {
@@ -103,13 +150,21 @@ export default function ModsPage({ query }: { query: string }) {
     setError(null);
     setInstalledInfo(null);
     try {
-      const entries = await api.contentInstall(targetId, projectId);
-      setInstalledInfo(
-        t("mods.installedInto", {
-          name: instances.find((i) => i.id === targetId)?.name ?? "?",
-          files: entries.map((e) => e.file).join(", "),
-        }),
-      );
+      if (tab === "modpack") {
+        // Модпак ставится в НОВЫЙ инстанс (ядро: latest → .mrpack → установщик).
+        const inst = await api.modpackInstall(projectId);
+        setInstances(await api.instanceList());
+        setTargetId(inst.id);
+        setInstalledInfo(t("mods.packInstalled", { name: inst.name, version: inst.mcVersion }));
+      } else {
+        const entries = await api.contentInstall(targetId, projectId);
+        setInstalledInfo(
+          t("mods.installedInto", {
+            name: instances.find((i) => i.id === targetId)?.name ?? "?",
+            files: entries.map((e) => e.file).join(", "),
+          }),
+        );
+      }
     } catch (e) {
       setError((e as { message?: string })?.message ?? String(e));
     } finally {
@@ -158,17 +213,57 @@ export default function ModsPage({ query }: { query: string }) {
     }
   };
 
+  const toggleEntry = async (file: string) => {
+    setError(null);
+    try {
+      const e = await api.contentToggle(targetId, file);
+      setInstalledInfo(t(e.enabled ? "mods.switchedOn" : "mods.switchedOff", { file }));
+    } catch (e) {
+      setError((e as { message?: string })?.message ?? String(e));
+    }
+  };
+
+  const removeEntry = async (file: string) => {
+    setError(null);
+    try {
+      await api.contentRemove(targetId, file);
+      setInstalledInfo(t("mods.removed", { file }));
+    } catch (e) {
+      setError((e as { message?: string })?.message ?? String(e));
+    }
+  };
+
   // Глобальный поиск из титлбара фильтрует результаты по подстроке.
   const q = query.trim().toLowerCase();
   const visibleHits = hits.filter(
     (h) => !q || h.title.toLowerCase().includes(q) || h.author.toLowerCase().includes(q),
   );
+  const target = instances.find((i) => i.id === targetId);
 
   return (
     <div className="mx-auto flex max-w-[980px] flex-col gap-4">
       <div className="mt-1 flex items-baseline gap-2">
         <h2 className="text-lg font-semibold tracking-tight">{t("nav.mods")}</h2>
         {searched && <span className="chip-mono">{t("mods.shown", { loaded: hits.length, total })}</span>}
+      </div>
+
+      {/* Вкладки типов контента (как в Modrinth App). */}
+      <div role="tablist" aria-label={t("mods.tabs.label")} className="flex gap-1">
+        {TABS.map((x) => (
+          <button
+            key={x.id}
+            role="tab"
+            aria-selected={tab === x.id}
+            onClick={() => setTab(x.id)}
+            className={`h-9 rounded-lg px-3 text-sm font-medium transition-colors ${
+              tab === x.id
+                ? "bg-accent text-on-accent"
+                : "text-text-muted hover:bg-surface-2 hover:text-text"
+            }`}
+          >
+            {t(`mods.tab.${x.id}`)}
+          </button>
+        ))}
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -225,6 +320,68 @@ export default function ModsPage({ query }: { query: string }) {
           {installedInfo}
         </p>
       )}
+
+      {/* Установленное в целевом инстансе: вкл/выкл и удаление. */}
+      <div className="rounded-lg border border-border-app bg-card">
+        <button
+          onClick={() => setShowInstalled((v) => !v)}
+          aria-expanded={showInstalled}
+          className="flex h-11 w-full items-center gap-2 px-3 text-sm font-semibold"
+        >
+          {showInstalled ? <ChevronUp size={16} aria-hidden /> : <ChevronDown size={16} aria-hidden />}
+          {t("mods.installed")}
+          <span className="chip-mono">{installed.length}</span>
+          {target && <span className="truncate text-text-muted">· {target.name}</span>}
+        </button>
+        {showInstalled && (
+          <div className="border-t border-border-app p-2">
+            {installed.length === 0 ? (
+              <p className="px-2 py-3 text-[13px] text-text-muted">
+                {t("mods.installed.empty", { name: target?.name ?? "?" })}
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-1">
+                {installed.map((e) => (
+                  <li
+                    key={e.file}
+                    className={`grid min-h-10 grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded-md px-2 ${
+                      e.enabled ? "" : "opacity-55"
+                    }`}
+                  >
+                    <span className="truncate font-mono text-[13px]" title={e.file}>
+                      {fileBase(e.file)}
+                    </span>
+                    <span className="badge-soft">{t(`mods.kind.${e.kind}`)}</span>
+                    <button
+                      role="switch"
+                      aria-checked={e.enabled}
+                      aria-label={t(e.enabled ? "mods.installed.disable" : "mods.installed.enable", { file: fileBase(e.file) })}
+                      onClick={() => void toggleEntry(e.file)}
+                      className={`h-6 w-10 rounded-full border border-border-strong transition-colors ${
+                        e.enabled ? "bg-accent" : "bg-surface-2"
+                      }`}
+                    >
+                      <span
+                        aria-hidden
+                        className={`block size-4 rounded-full bg-on-accent transition-transform ${
+                          e.enabled ? "translate-x-5" : "translate-x-1"
+                        }`}
+                      />
+                    </button>
+                    <button
+                      aria-label={t("mods.installed.delete", { file: fileBase(e.file) })}
+                      onClick={() => void removeEntry(e.file)}
+                      className="icon-btn text-error"
+                    >
+                      <Trash2 size={15} aria-hidden />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
 
       {updates !== null && (
         <div className="rounded-lg border border-border-app bg-card p-3">
@@ -283,12 +440,12 @@ export default function ModsPage({ query }: { query: string }) {
               </div>
               <button
                 onClick={() => void install(h.project_id)}
-                disabled={busy || !targetId}
+                disabled={busy}
                 className="btn-ghost btn-sm"
-                aria-label={`${t("mods.installInto")} — ${h.title}`}
+                aria-label={`${tab === "modpack" ? t("mods.installPack") : t("mods.installInto")} — ${h.title}`}
               >
                 <Download size={14} aria-hidden />
-                {t("mods.installInto")}
+                {tab === "modpack" ? t("mods.installPack") : t("mods.installInto")}
               </button>
             </div>
           ))}

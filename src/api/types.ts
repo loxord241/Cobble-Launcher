@@ -147,7 +147,15 @@ export interface ContentEntry {
   projectId?: string;
   versionId?: string;
   sha1?: string;
+  url?: string;
   enabled: boolean;
+}
+
+/** Результат архивной операции (бэкап zip / экспорт .mrpack). */
+export interface ArchiveResult {
+  path: string;
+  files: number;
+  bytes: number;
 }
 
 export interface UpdateCheck {

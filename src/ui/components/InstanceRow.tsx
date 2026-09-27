@@ -12,6 +12,8 @@ import {
   Settings,
   Pencil,
   FileText,
+  Archive,
+  Share,
 } from "lucide-react";
 import { t } from "../../i18n";
 import type { Instance } from "../../api/types";
@@ -29,6 +31,8 @@ export default function InstanceRow({
   onSettings,
   onRename,
   onLogs,
+  onBackup,
+  onExport,
 }: {
   inst: Instance;
   status?: LaunchStatus;
@@ -41,6 +45,8 @@ export default function InstanceRow({
   onSettings?: () => void;
   onRename?: () => void;
   onLogs?: () => void;
+  onBackup?: () => void;
+  onExport?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const firstItemRef = useRef<HTMLButtonElement>(null);
@@ -170,6 +176,28 @@ export default function InstanceRow({
                     onOptimize();
                   }}
                 />
+                {onBackup && (
+                  <MenuItem
+                    icon={Archive}
+                    label={t("instances.backup.menu")}
+                    disabled={busy}
+                    onClick={() => {
+                      closeMenu();
+                      onBackup();
+                    }}
+                  />
+                )}
+                {onExport && (
+                  <MenuItem
+                    icon={Share}
+                    label={t("instances.export.menu")}
+                    disabled={busy}
+                    onClick={() => {
+                      closeMenu();
+                      onExport();
+                    }}
+                  />
+                )}
                 <MenuItem
                   icon={FolderOpen}
                   label={t("instances.folder")}

@@ -1,0 +1,375 @@
+//! Управление установленным контентом инстанса: вкл/выкл (суффикс
+//! `.disabled` — паттерн Prism, загрузчики его игнорируют), удаление,
+//! бэкап zip и экспорт .mrpack (формат Modrinth, spec modrinth.com).
+//!
+//! Манифест хранит логический путь (`mods/sodium.jar`) без суффикса;
+//! выключение = переименование файла на диске + `enabled: false`.
+
+use crate::errors::{LauncherError, Result};
+use crate::instances::{
+    instance_dir, load_content_manifest, minecraft_dir, save_content_manifest, ContentEntry,
+    Instance,
+};
+use crate::paths::Paths;
+use serde::Serialize;
+use std::io::Write as _;
+use std::path::PathBuf;
+
+const DISABLED_SUFFIX: &str = ".disabled";
+
+/// Каталоги контента, которыми управляет манифест (вкл/выкл/удаление).
+const CONTENT_DIRS: [&str; 3] = ["mods", "resourcepacks", "shaderpacks"];
+
+/// Каталоги-шум: ни в бэкап, ни в экспорт (логи, краши, временный кэш).
+const NOISE_DIRS: [&str; 3] = ["logs", "crash-reports", "cache"];
+
+/// Сейвы — личные и тяжёлые: в бэкап входят, в шаринговый .mrpack нет.
+const EXPORT_SKIP_DIRS: [&str; 1] = ["saves"];
+
+/// Результат архивной операции (бэкап/экспорт) для UI.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveResult {
+    pub path: String,
+    pub files: usize,
+    pub bytes: u64,
+}
+
+/// `file` ("mods/x.jar") → абсолютный путь внутри minecraft/ инстанса.
+/// Только каталоги контента, только вниз: traversal и чужие каталоги — ошибка.
+fn resolve_content_file(paths: &Paths, id: &str, file: &str) -> Result<PathBuf> {
+    let norm = file.replace('\\', "/");
+    let parts: Vec<&str> = norm.split('/').collect();
+    if parts.len() < 2
+        || !CONTENT_DIRS.contains(&parts[0])
+        || parts[1..].iter().any(|p| p.is_empty() || *p == ".." || p.contains(':'))
+    {
+        return Err(LauncherError::InvalidInput(format!(
+            "недопустимый путь контента: {file}"
+        )));
+    }
+    let mut p = minecraft_dir(&instance_dir(paths, id));
+    for seg in &parts {
+        p.push(seg);
+    }
+    Ok(p)
+}
+
+fn disk_path(entry_file: &str, enabled: bool) -> PathBuf {
+    let mut s = entry_file.replace('/', "\\");
+    if !enabled {
+        s.push_str(DISABLED_SUFFIX);
+    }
+    PathBuf::from(s)
+}
+
+/// Вкл/выкл: переименовать файл (+/- `.disabled`) и перевернуть флаг.
+/// Логический путь в манифесте не меняется.
+pub fn toggle(paths: &Paths, id: &str, file: &str) -> Result<ContentEntry> {
+    resolve_content_file(paths, id, file)?;
+    let mut manifest = load_content_manifest(paths, id);
+    let entry = manifest
+        .iter_mut()
+        .find(|e| e.file == file)
+        .ok_or_else(|| LauncherError::InvalidInput(format!("нет записи в манифесте: {file}")))?;
+    let new_enabled = !entry.enabled;
+    let base = minecraft_dir(&instance_dir(paths, id));
+    let from = base.join(disk_path(file, entry.enabled));
+    let to = base.join(disk_path(file, new_enabled));
+    let from_long = crate::util::fs::long_path(&from);
+    if from_long.exists() {
+        std::fs::rename(from_long, crate::util::fs::long_path(&to))?;
+    } else if !new_enabled {
+        // Включаем, но активного файла нет: может лежать выключенным.
+        if !crate::util::fs::long_path(&to).exists() {
+            return Err(LauncherError::NotFound(from.to_string_lossy().into()));
+        }
+    } else {
+        return Err(LauncherError::NotFound(from.to_string_lossy().into()));
+    }
+    entry.enabled = new_enabled;
+    let updated = entry.clone();
+    save_content_manifest(paths, id, &manifest)?;
+    Ok(updated)
+}
+
+/// Удалить контент: файл в обоих вариантах имени + запись из манифеста.
+pub fn remove(paths: &Paths, id: &str, file: &str) -> Result<()> {
+    resolve_content_file(paths, id, file)?;
+    let mut manifest = load_content_manifest(paths, id);
+    let before = manifest.len();
+    manifest.retain(|e| e.file != file);
+    if manifest.len() == before {
+        return Err(LauncherError::InvalidInput(format!(
+            "нет записи в манифесте: {file}"
+        )));
+    }
+    let base = minecraft_dir(&instance_dir(paths, id));
+    for enabled in [true, false] {
+        let p = crate::util::fs::long_path(&base.join(disk_path(file, enabled)));
+        if p.exists() {
+            std::fs::remove_file(p)?;
+        }
+    }
+    save_content_manifest(paths, id, &manifest)
+}
+
+/// Бэкап инстанса целиком (zip): instance.json, манифест контента, versions/,
+/// minecraft/ (моды, сейвы, конфиги) — без логов/крашей/кэша и .lock.
+pub fn backup(paths: &Paths, inst: &Instance) -> Result<ArchiveResult> {
+    let src = instance_dir(paths, &inst.id);
+    if !crate::util::fs::long_path(&src).exists() {
+        return Err(LauncherError::NotFound(src.to_string_lossy().into()));
+    }
+    std::fs::create_dir_all(crate::util::fs::long_path(&paths.backups_dir()))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = format!(
+        "{}-{}.zip",
+        crate::util::names::sanitize_user_name(&inst.name, "instance"),
+        stamp
+    );
+    let dest = paths.backups_dir().join(name);
+
+    let file = std::fs::File::create(crate::util::fs::long_path(&dest))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let count = crate::util::zip::write_zip_dir(&src, &mut zip, "instance/", &|rel| {
+        rel == ".lock" || is_skipped_dir(rel, &NOISE_DIRS)
+    })?;
+    zip.finish()
+        .map_err(|e| LauncherError::Zip(format!("finish: {e}")))?;
+    let bytes = std::fs::metadata(crate::util::fs::long_path(&dest))?.len();
+    Ok(ArchiveResult {
+        path: dest.to_string_lossy().into(),
+        files: count,
+        bytes,
+    })
+}
+
+/// Является ли `rel` (путь относительно корня инстанса) пропускаемым
+/// поддеревом minecraft/ (`minecraft/<dir>` или глубже).
+fn is_skipped_dir(rel: &str, dirs: &[&str]) -> bool {
+    let mut it = rel.split('/');
+    let first = it.next();
+    let second = it.next();
+    first == Some("minecraft") && second.is_some_and(|d| dirs.contains(&d))
+}
+
+/// Экспорт в .mrpack (формат Modrinth): modrinth.index.json (files[] — записи
+/// с url+sha1), overrides/ — конфиги, ресурспаки, шейдеры, локальные моды.
+/// Сейвы и шум не включаются. Файлы из files[] в overrides не дублируются.
+pub fn export_mrpack(paths: &Paths, inst: &Instance) -> Result<ArchiveResult> {
+    let src = instance_dir(paths, &inst.id);
+    std::fs::create_dir_all(crate::util::fs::long_path(&paths.exports_dir()))?;
+    let name = format!(
+        "{}.mrpack",
+        crate::util::names::sanitize_user_name(&inst.name, "instance")
+    );
+    let dest = paths.exports_dir().join(name);
+
+    let manifest = load_content_manifest(paths, &inst.id);
+    let mut index_files = Vec::new();
+    let mut in_index: Vec<String> = Vec::new();
+    for e in manifest.iter().filter(|e| e.enabled) {
+        if let (Some(url), Some(sha1)) = (&e.url, &e.sha1) {
+            let abs = minecraft_dir(&src).join(disk_path(&e.file, true));
+            let size = std::fs::metadata(crate::util::fs::long_path(&abs))
+                .map(|m| m.len())
+                .unwrap_or(0);
+            index_files.push(serde_json::json!({
+                "path": e.file,
+                "hashes": { "sha1": sha1 },
+                "downloads": [url],
+                "fileSize": size,
+            }));
+            in_index.push(e.file.clone());
+        }
+    }
+
+    let mut deps = serde_json::Map::new();
+    deps.insert("minecraft".into(), serde_json::json!(inst.mc_version));
+    if let (Some(loader), Some(ver)) = (&inst.loader, &inst.loader_version) {
+        let key = match loader.as_str() {
+            "fabric" => "fabric-loader",
+            "quilt" => "quilt-loader",
+            "forge" => "forge",
+            "neoforge" => "neoforge",
+            other => other,
+        };
+        deps.insert(key.into(), serde_json::json!(ver));
+    }
+    let index = serde_json::json!({
+        "formatVersion": 1,
+        "game": "minecraft",
+        "versionId": inst.mc_version,
+        "files": index_files,
+        "dependencies": deps,
+    });
+
+    let mc = minecraft_dir(&src);
+    let file = std::fs::File::create(crate::util::fs::long_path(&dest))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts: zip::write::SimpleFileOptions = Default::default();
+    let index_bytes = serde_json::to_vec_pretty(&index)?;
+    zip.start_file("modrinth.index.json", opts)
+        .map_err(|e| LauncherError::Zip(format!("index: {e}")))?;
+    zip.write_all(&index_bytes)?;
+    let mut count = 1usize;
+    if crate::util::fs::long_path(&mc).exists() {
+        count += crate::util::zip::write_zip_dir(&mc, &mut zip, "overrides/", &|rel| {
+            rel.split('/').next().is_some_and(|d| {
+                EXPORT_SKIP_DIRS.contains(&d) || NOISE_DIRS.contains(&d)
+            }) || in_index.iter().any(|f| *f == rel)
+        })?;
+    }
+    zip.finish()
+        .map_err(|e| LauncherError::Zip(format!("finish: {e}")))?;
+    let bytes = std::fs::metadata(crate::util::fs::long_path(&dest))?.len();
+    Ok(ArchiveResult {
+        path: dest.to_string_lossy().into(),
+        files: count,
+        bytes,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::instances::{save_content_manifest, Instance};
+
+    fn setup() -> (tempfile::TempDir, Paths, Instance) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let inst = Instance::new("Тест", "1.20.1");
+        crate::instances::save(&paths, &inst).unwrap();
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        std::fs::create_dir_all(long(&mc.join("mods"))).unwrap();
+        std::fs::create_dir_all(long(&mc.join("saves/w1"))).unwrap();
+        std::fs::create_dir_all(long(&mc.join("logs"))).unwrap();
+        std::fs::write(long(&mc.join("mods/a.jar")), b"AAA").unwrap();
+        std::fs::write(long(&mc.join("saves/w1/level.dat")), b"W").unwrap();
+        std::fs::write(long(&mc.join("logs/latest.log")), b"L").unwrap();
+        (dir, paths, inst)
+    }
+
+    fn long(p: &std::path::Path) -> PathBuf {
+        crate::util::fs::long_path(p)
+    }
+
+    fn zip_names<R: std::io::Read + std::io::Seek>(z: &mut zip::ZipArchive<R>) -> Vec<String> {
+        (0..z.len())
+            .map(|i| z.by_index(i).unwrap().name().to_string())
+            .collect()
+    }
+
+    fn entry(file: &str, url: Option<&str>) -> ContentEntry {
+        ContentEntry {
+            kind: crate::instances::ContentKind::Mod,
+            file: file.into(),
+            source: crate::instances::ContentSource::Modrinth,
+            project_id: Some("aaa".into()),
+            version_id: Some("v1".into()),
+            sha1: Some("deadbeef".into()),
+            url: url.map(|s| s.into()),
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn toggle_renames_file_and_flips_flag() {
+        let (_d, paths, inst) = setup();
+        save_content_manifest(&paths, &inst.id, &[entry("mods/a.jar", None)]).unwrap();
+        let e = toggle(&paths, &inst.id, "mods/a.jar").unwrap();
+        assert!(!e.enabled);
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        assert!(!long(&mc.join("mods/a.jar")).exists());
+        assert!(long(&mc.join("mods/a.jar.disabled")).exists());
+        // Обратно.
+        let e = toggle(&paths, &inst.id, "mods/a.jar").unwrap();
+        assert!(e.enabled);
+        assert!(long(&mc.join("mods/a.jar")).exists());
+    }
+
+    #[test]
+    fn toggle_unknown_entry_and_traversal_fail() {
+        let (_d, paths, inst) = setup();
+        assert!(toggle(&paths, &inst.id, "mods/ghost.jar").is_err());
+        assert!(resolve_content_file(&paths, &inst.id, "../escape").is_err());
+        assert!(resolve_content_file(&paths, &inst.id, "saves/w1/x").is_err());
+        assert!(resolve_content_file(&paths, &inst.id, "mods/sub/../../x").is_err());
+        assert!(resolve_content_file(&paths, &inst.id, "mods/C:/x").is_err());
+    }
+
+    #[test]
+    fn remove_deletes_both_variants_and_manifest_entry() {
+        let (_d, paths, inst) = setup();
+        save_content_manifest(&paths, &inst.id, &[entry("mods/a.jar", None)]).unwrap();
+        // Выключим (файл станет .disabled), затем удалим.
+        toggle(&paths, &inst.id, "mods/a.jar").unwrap();
+        remove(&paths, &inst.id, "mods/a.jar").unwrap();
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        assert!(!long(&mc.join("mods/a.jar.disabled")).exists());
+        assert!(load_content_manifest(&paths, &inst.id).is_empty());
+        assert!(remove(&paths, &inst.id, "mods/a.jar").is_err());
+    }
+
+    #[test]
+    fn backup_contains_data_but_not_noise() {
+        let (_d, paths, inst) = setup();
+        let res = backup(&paths, &inst).unwrap();
+        assert!(res.files >= 3, "ожидаем instance.json, сейв, мод; {}", res.files);
+        let f = std::fs::File::open(long(std::path::Path::new(&res.path))).unwrap();
+        let mut z = zip::ZipArchive::new(f).unwrap();
+        let names = zip_names(&mut z);
+        assert!(names.iter().any(|n| n == "instance/instance.json"));
+        assert!(names.iter().any(|n| n == "instance/minecraft/saves/w1/level.dat"));
+        assert!(!names.iter().any(|n| n.contains("logs/")));
+    }
+
+    #[test]
+    fn export_mrpack_index_and_overrides() {
+        let (_d, paths, mut inst) = setup();
+        inst.loader = Some("fabric".into());
+        inst.loader_version = Some("0.16.0".into());
+        crate::instances::save(&paths, &inst).unwrap();
+        // Мод с url → files[]; локальный мод → overrides.
+        let local = ContentEntry {
+            source: crate::instances::ContentSource::Local,
+            file: "mods/local.jar".into(),
+            project_id: None,
+            version_id: None,
+            sha1: Some("cafe".into()),
+            url: None,
+            kind: crate::instances::ContentKind::Mod,
+            enabled: true,
+        };
+        std::fs::write(long(&minecraft_dir(&instance_dir(&paths, &inst.id)).join("mods/local.jar")), b"LOC").unwrap();
+        save_content_manifest(&paths, &inst.id, &[entry("mods/a.jar", Some("https://example/a.jar")), local]).unwrap();
+
+        let res = export_mrpack(&paths, &inst).unwrap();
+        assert!(res.path.ends_with(".mrpack"));
+        let f = std::fs::File::open(long(std::path::Path::new(&res.path))).unwrap();
+        let mut z = zip::ZipArchive::new(f).unwrap();
+        let mut idx_raw = Vec::new();
+        {
+            use std::io::Read as _;
+            z.by_name("modrinth.index.json").unwrap().read_to_end(&mut idx_raw).unwrap();
+        }
+        let idx: serde_json::Value = serde_json::from_slice(&idx_raw).unwrap();
+        assert_eq!(idx["formatVersion"], 1);
+        assert_eq!(idx["dependencies"]["minecraft"], "1.20.1");
+        assert_eq!(idx["dependencies"]["fabric-loader"], "0.16.0");
+        let files = idx["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "только запись с url");
+        assert_eq!(files[0]["path"], "mods/a.jar");
+        assert_eq!(files[0]["downloads"][0], "https://example/a.jar");
+        // Локальный мод в overrides, дубль файла из files[] — нет, сейвы — нет.
+        let names = zip_names(&mut z);
+        assert!(names.iter().any(|n| n == "overrides/mods/local.jar"));
+        assert!(!names.iter().any(|n| n == "overrides/mods/a.jar"));
+        assert!(!names.iter().any(|n| n.contains("saves")));
+    }
+}
