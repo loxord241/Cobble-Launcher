@@ -50,6 +50,21 @@ export default function InstancesPage({ query }: { query: string }) {
         .instanceExport(inst.id)
         .then((r) => setNotice(t("instances.export.done", { path: r.path })))
         .catch((e) => setError(String(e))),
+    onIconSet: () => {
+      const path = window.prompt(t("instances.icon.prompt"));
+      if (!path) return;
+      void api
+        .instanceIconSet(inst.id, path)
+        .then(() => void load())
+        .catch((e) => setError(String(e)));
+    },
+    onIconClear: inst.icon
+      ? () =>
+          void api
+            .instanceIconRemove(inst.id)
+            .then(() => void load())
+            .catch((e) => setError(String(e)))
+      : undefined,
     onDelete: () => {
       const wipe = window.confirm(
         `${t("instances.confirmDelete", { name: inst.name })}\n\nНажмите OK для удаления в корзину (или Отмена для отмены).`,

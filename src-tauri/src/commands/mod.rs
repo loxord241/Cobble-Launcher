@@ -334,6 +334,30 @@ pub async fn instance_backup(state: State<'_, AppState>, id: String) -> Result<A
     .map_err(join_err)?
 }
 
+/// Установить иконку инстанса из локального файла (PNG/JPEG/WebP ≤ 300 КБ).
+#[tauri::command]
+pub async fn instance_icon_set(
+    state: State<'_, AppState>,
+    id: String,
+    path: String,
+) -> Result<Instance> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        instances::content::set_icon(&paths, &id, &path)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Убрать иконку инстанса.
+#[tauri::command]
+pub async fn instance_icon_remove(state: State<'_, AppState>, id: String) -> Result<Instance> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::content::clear_icon(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
 /// Экспорт инстанса в .mrpack (формат Modrinth) в каталог exports/.
 #[tauri::command]
 pub async fn instance_export(state: State<'_, AppState>, id: String) -> Result<ArchiveResult> {

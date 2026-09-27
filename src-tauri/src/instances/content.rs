@@ -234,6 +234,49 @@ pub fn export_mrpack(paths: &Paths, inst: &Instance) -> Result<ArchiveResult> {
     })
 }
 
+/// Иконка инстанса: data-URL в instance.json (`icon`). Пользовательский файл
+/// с диска: PNG/JPEG/WebP, до ~300 КБ (чтобы instance.json не раздувать).
+/// Data-URL — фронт не зависит от asset-протокола и его областей доступа.
+pub fn set_icon(paths: &Paths, id: &str, path: &str) -> Result<Instance> {
+    const MAX_ICON_BYTES: usize = 300 * 1024;
+    let p = std::path::Path::new(path);
+    let data = std::fs::read(crate::util::fs::long_path(p))
+        .map_err(|_| LauncherError::NotFound(format!("файл иконки: {path}")))?;
+    if data.len() > MAX_ICON_BYTES {
+        return Err(LauncherError::InvalidInput(
+            "иконка больше 300 КБ — выберите файл поменьше".into(),
+        ));
+    }
+    let mime = sniff_image(&data)
+        .ok_or_else(|| LauncherError::InvalidInput("поддерживаются PNG, JPEG и WebP".into()))?;
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+    let mut inst = crate::instances::load(paths, id)?;
+    inst.icon = Some(format!("data:{mime};base64,{b64}"));
+    crate::instances::save(paths, &inst)?;
+    Ok(inst)
+}
+
+/// Убрать иконку инстанса.
+pub fn clear_icon(paths: &Paths, id: &str) -> Result<Instance> {
+    let mut inst = crate::instances::load(paths, id)?;
+    inst.icon = None;
+    crate::instances::save(paths, &inst)?;
+    Ok(inst)
+}
+
+fn sniff_image(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(&[0x89, b'P', b'N', b'G']) {
+        Some("image/png")
+    } else if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if data.len() > 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,5 +414,23 @@ mod tests {
         assert!(names.iter().any(|n| n == "overrides/mods/local.jar"));
         assert!(!names.iter().any(|n| n == "overrides/mods/a.jar"));
         assert!(!names.iter().any(|n| n.contains("saves")));
+    }
+
+    #[test]
+    fn icon_set_clear_and_sniff() {
+        let (_d, paths, inst) = setup();
+        let png = [0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let icon_path = _d.path().join("icon.png");
+        std::fs::write(&icon_path, png).unwrap();
+        let updated = set_icon(&paths, &inst.id, icon_path.to_str().unwrap()).unwrap();
+        let icon = updated.icon.expect("иконка установлена");
+        assert!(icon.starts_with("data:image/png;base64,"));
+        let cleared = clear_icon(&paths, &inst.id).unwrap();
+        assert!(cleared.icon.is_none());
+        // Не-изображение и отсутствующий файл — честные ошибки.
+        let bad = _d.path().join("bad.png");
+        std::fs::write(&bad, b"not an image at all").unwrap();
+        assert!(set_icon(&paths, &inst.id, bad.to_str().unwrap()).is_err());
+        assert!(set_icon(&paths, &inst.id, _d.path().join("nope.png").to_str().unwrap()).is_err());
     }
 }

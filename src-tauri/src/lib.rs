@@ -124,6 +124,8 @@ pub fn run() -> tauri::Result<()> {
             commands::modpack_install,
             commands::instance_backup,
             commands::instance_export,
+            commands::instance_icon_set,
+            commands::instance_icon_remove,
             commands::instance_optimize,
             commands::ram_guide,
             commands::instance_kill,

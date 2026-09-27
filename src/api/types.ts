@@ -52,6 +52,8 @@ export interface Settings {
   accountsActiveId?: string;
   onboardingDone: boolean;
   extraJavaPaths: string[];
+  /** Масштаб интерфейса в процентах (80–150). */
+  uiScale: number;
 }
 
 export interface VersionEntry {

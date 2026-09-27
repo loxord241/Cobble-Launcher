@@ -116,6 +116,24 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
           </Field>
 
           <Field label={t("settings.snapshots")}>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="text-sm font-medium">{t("settings.uiScale")}</div>
+                <div className="text-[13px] text-text-muted">{t("settings.uiScale.hint")}</div>
+              </div>
+              <select
+                value={String(settings.uiScale ?? 100)}
+                onChange={(e) => void update({ uiScale: Number(e.target.value) })}
+                aria-label={t("settings.uiScale")}
+                className="h-10 rounded-lg border border-border-strong bg-card px-3 text-sm"
+              >
+                {[90, 100, 110, 125, 150].map((v) => (
+                  <option key={v} value={v}>
+                    {v}%
+                  </option>
+                ))}
+              </select>
+            </div>
             <Toggle checked={settings.showSnapshots} onChange={(v) => void update({ showSnapshots: v })} />
           </Field>
 

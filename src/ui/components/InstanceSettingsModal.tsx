@@ -31,6 +31,12 @@ export default function InstanceSettingsModal({
 
   const totalRam = ramGuide?.totalMb ?? 16384;
   const maxRam = Math.min(totalRam, 32768);
+  // Честная статистика из instance.json (пишется ядром при запусках).
+  const hours = Math.floor((instance.playSeconds ?? 0) / 3600);
+  const minutes = Math.round(((instance.playSeconds ?? 0) % 3600) / 60);
+  const lastPlayed = instance.lastPlayed
+    ? new Date(instance.lastPlayed * 1000).toLocaleString()
+    : null;
 
   const save = async () => {
     setBusy(true);
@@ -90,6 +96,16 @@ export default function InstanceSettingsModal({
           >
             <X size={18} aria-hidden />
           </button>
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-2 text-[13px]">
+          <span className="chip-mono">{t("instances.stats.launches", { n: instance.launchCount ?? 0 })}</span>
+          <span className="chip-mono">
+            {t("instances.stats.playTime", { h: hours, m: minutes })}
+          </span>
+          {lastPlayed && (
+            <span className="chip-mono">{t("instances.stats.lastPlayed", { at: lastPlayed })}</span>
+          )}
         </div>
 
         <div className="mt-4 flex flex-col gap-4">

@@ -208,5 +208,13 @@
   "instances.backup.menu": "Backup (zip)",
   "instances.export.menu": "Export .mrpack",
   "instances.backup.done": "Backup created: {path}",
-  "instances.export.done": "Export ready: {path}"
+  "instances.export.done": "Export ready: {path}",
+  "instances.icon.menu": "Change icon…",
+  "instances.icon.clearMenu": "Remove icon",
+  "instances.icon.prompt": "Path to image (PNG/JPEG/WebP, up to 300 KB):",
+  "instances.stats.launches": "Launches: {n}",
+  "instances.stats.playTime": "Play time: {h} h {m} min",
+  "instances.stats.lastPlayed": "Last played: {at}",
+  "settings.uiScale": "Interface scale",
+  "settings.uiScale.hint": "Size of all elements (90–150%)"
 }

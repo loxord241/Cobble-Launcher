@@ -44,6 +44,8 @@ pub struct Settings {
     pub onboarding_done: bool,
     /// Пути к Java, добавленные пользователем вручную (спека §6.5).
     pub extra_java_paths: Vec<String>,
+    /// Масштаб интерфейса в процентах (80–150), как zoom в больших лаунчерах.
+    pub ui_scale: u32,
 }
 
 impl Default for Settings {
@@ -65,6 +67,7 @@ impl Default for Settings {
             accounts_active_id: None,
             onboarding_done: false,
             extra_java_paths: Vec::new(),
+            ui_scale: 100,
         }
     }
 }

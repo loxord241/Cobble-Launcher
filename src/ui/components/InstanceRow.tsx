@@ -14,6 +14,8 @@ import {
   FileText,
   Archive,
   Share,
+  Image,
+  ImageOff,
 } from "lucide-react";
 import { t } from "../../i18n";
 import type { Instance } from "../../api/types";
@@ -33,6 +35,8 @@ export default function InstanceRow({
   onLogs,
   onBackup,
   onExport,
+  onIconSet,
+  onIconClear,
 }: {
   inst: Instance;
   status?: LaunchStatus;
@@ -47,6 +51,8 @@ export default function InstanceRow({
   onLogs?: () => void;
   onBackup?: () => void;
   onExport?: () => void;
+  onIconSet?: () => void;
+  onIconClear?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const firstItemRef = useRef<HTMLButtonElement>(null);
@@ -77,12 +83,20 @@ export default function InstanceRow({
 
   return (
     <div className="group grid grid-cols-[44px_1fr_auto_auto] items-center gap-3 rounded-lg border border-border-app bg-card px-3 py-2 transition-colors hover:border-border-strong hover:bg-card-hover">
-      <span
-        aria-hidden
-        className="grid size-11 place-items-center rounded-lg bg-accent-soft text-lg font-bold text-accent"
-      >
-        {inst.name.slice(0, 1).toUpperCase()}
-      </span>
+      {inst.icon ? (
+        <img
+          src={inst.icon}
+          alt=""
+          className="size-11 rounded-lg border border-border-app object-cover"
+        />
+      ) : (
+        <span
+          aria-hidden
+          className="grid size-11 place-items-center rounded-lg bg-accent-soft text-lg font-bold text-accent"
+        >
+          {inst.name.slice(0, 1).toUpperCase()}
+        </span>
+      )}
 
       <div className="min-w-0">
         <div className="truncate text-[15px] font-semibold leading-tight" title={inst.name}>
@@ -195,6 +209,28 @@ export default function InstanceRow({
                     onClick={() => {
                       closeMenu();
                       onExport();
+                    }}
+                  />
+                )}
+                {onIconSet && (
+                  <MenuItem
+                    icon={Image}
+                    label={t("instances.icon.menu")}
+                    disabled={busy}
+                    onClick={() => {
+                      closeMenu();
+                      onIconSet();
+                    }}
+                  />
+                )}
+                {onIconClear && (
+                  <MenuItem
+                    icon={ImageOff}
+                    label={t("instances.icon.clearMenu")}
+                    disabled={busy}
+                    onClick={() => {
+                      closeMenu();
+                      onIconClear();
                     }}
                   />
                 )}

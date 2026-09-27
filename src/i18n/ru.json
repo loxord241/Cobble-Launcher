@@ -208,5 +208,13 @@
   "instances.backup.menu": "Бэкап (zip)",
   "instances.export.menu": "Экспорт .mrpack",
   "instances.backup.done": "Бэкап создан: {path}",
-  "instances.export.done": "Экспорт готов: {path}"
+  "instances.export.done": "Экспорт готов: {path}",
+  "instances.icon.menu": "Сменить иконку…",
+  "instances.icon.clearMenu": "Убрать иконку",
+  "instances.icon.prompt": "Путь к картинке (PNG/JPEG/WebP, до 300 КБ):",
+  "instances.stats.launches": "Запусков: {n}",
+  "instances.stats.playTime": "В игре: {h} ч {m} мин",
+  "instances.stats.lastPlayed": "Последний запуск: {at}",
+  "settings.uiScale": "Масштаб интерфейса",
+  "settings.uiScale.hint": "Размер всех элементов (90–150%)"
 }

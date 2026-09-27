@@ -24,6 +24,13 @@ function applySideEffects(s: Settings) {
     }
   }
   setLanguage(s.language);
+  applyUiScale(s.uiScale);
+}
+
+/** Масштаб интерфейса: html font-size в % — Tailwind на rem масштабируется целиком. */
+export function applyUiScale(percent?: number) {
+  const clamped = Math.min(150, Math.max(80, Math.round(percent ?? 100)));
+  document.documentElement.style.fontSize = `${clamped}%`;
 }
 
 export const useSettings = create<SettingsState>((set, get) => ({

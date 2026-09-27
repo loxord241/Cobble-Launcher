@@ -87,6 +87,8 @@ export const api = {
 
   instanceBackup: (id: string) => invoke<ArchiveResult>("instance_backup", { id }),
   instanceExport: (id: string) => invoke<ArchiveResult>("instance_export", { id }),
+  instanceIconSet: (id: string, path: string) => invoke<Instance>("instance_icon_set", { id, path }),
+  instanceIconRemove: (id: string) => invoke<Instance>("instance_icon_remove", { id }),
 
   instanceOptimize: (instanceId: string) =>
     invoke<string[]>("instance_optimize", { instanceId }),
