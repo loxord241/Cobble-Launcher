@@ -1,6 +1,17 @@
-// ЕДИНСТВЕННОЕ место, знающее имена Tauri-команд (спека §4.3).
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
+async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await tauriInvoke<T>(cmd, args);
+  } catch (err: unknown) {
+    const errorObj = err as { code?: string; message?: string };
+    const msg = errorObj?.message || (typeof err === "string" ? err : JSON.stringify(err));
+    const error = new Error(msg);
+    Object.assign(error, err);
+    throw error;
+  }
+}
 import type {
   Account,
   ContentEntry,

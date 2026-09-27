@@ -1,5 +1,4 @@
-// Диалог краш-репорта: отображение результатов анализа лога и рекомендаций.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertTriangle, X, Copy, Check, FolderOpen, ChevronDown, ChevronUp } from "lucide-react";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
@@ -36,14 +35,22 @@ export default function CrashReportModal({
     void api.instanceOpenDir(report.instanceId);
   };
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
       role="alertdialog"
       aria-modal="true"
       aria-label={t("crash.title")}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
       }}
     >
       <div className="flex max-h-[90vh] w-[640px] max-w-full flex-col rounded-lg border border-error/50 bg-card p-6 shadow-2xl">

@@ -1,5 +1,4 @@
-// Диалог переименования инстанса.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { X, Check } from "lucide-react";
 import { useInstances } from "../../state/instances";
 import { t } from "../../i18n";
@@ -35,14 +34,22 @@ export default function RenameInstanceModal({
     }
   };
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       role="dialog"
       aria-modal="true"
       aria-label={t("instances.rename.title")}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
       }}
     >
       <div className="w-[420px] rounded-lg border border-border-app bg-card p-5 shadow-xl">

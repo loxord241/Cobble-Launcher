@@ -199,12 +199,26 @@ pub async fn instance_launch(
     }
     .await;
 
-    // Снимаем признак запуска/подготовки
-    state.launching.lock().await.remove(&inst_id_clone);
+    // Проверяем, не был ли запуск отменён пользователем во время prepare
+    let cancelled = {
+        let launching = state.launching.lock().await;
+        !launching.contains(&inst_id_clone)
+    };
+
+    if cancelled {
+        tracing::info!("Запуск инстанса {inst_id_clone} был отменён до спавна процесса");
+        state.bus.emit(crate::events::LauncherEvent::LaunchState {
+            instance_id: inst_id_clone,
+            phase: crate::events::LaunchPhase::Exited,
+            exit_code: None,
+        });
+        return Ok(OkMsg { ok: true });
+    }
 
     let (inst, prepared) = match res {
         Ok(pair) => pair,
         Err(e) => {
+            state.launching.lock().await.remove(&inst_id_clone);
             state.bus.emit(crate::events::LauncherEvent::LaunchState {
                 instance_id: inst_id_clone,
                 phase: crate::events::LaunchPhase::Exited,
@@ -214,16 +228,12 @@ pub async fn instance_launch(
         }
     };
 
-    // Спавн + фоновая супервизия: логи → события, lock до выхода игры.
-    let bus = state.bus.clone();
-    let paths = state.paths.clone();
+    // Спавн игры: дочерний процесс спавнится сразу с записью PID в .lock,
+    // супервизия читает логи в фоне. Снимаем launching только ПОСЛЕ спавна!
     let instance_id = inst.id.clone();
-    std::thread::spawn(move || {
-        let result = instances::run::launch_detached(&paths, &instance_id, prepared, &bus);
-        if let Err(e) = result {
-            tracing::error!("супервизия инстанса {instance_id}: {e}");
-        }
-    });
+    let spawn_res = instances::run::launch_detached(&state.paths, &instance_id, prepared, &state.bus);
+    state.launching.lock().await.remove(&inst_id_clone);
+    spawn_res?;
     Ok(OkMsg { ok: true })
 }
 
@@ -372,10 +382,26 @@ pub async fn instance_kill(state: State<'_, AppState>, instance_id: String) -> R
             phase: crate::events::LaunchPhase::Exited,
             exit_code: None,
         });
+        // Если процесс уже успел запуститься — гарантированно гасим его тоже
+        let inst_dir = instances::instance_dir(&state.paths, &instance_id);
+        if instances::running_pid(&inst_dir).is_some() {
+            let _ = instances::kill(&inst_dir);
+        }
         return Ok(OkMsg { ok: true });
     }
 
-    instances::kill(&instances::instance_dir(&state.paths, &instance_id))?;
+    let inst_dir = instances::instance_dir(&state.paths, &instance_id);
+    if instances::running_pid(&inst_dir).is_some() {
+        instances::kill(&inst_dir)?;
+    } else {
+        // Если PID уже неактивен, гарантируем очистку .lock и отправку события Exited в UI
+        let _ = std::fs::remove_file(crate::util::fs::long_path(&inst_dir.join(".lock")));
+        state.bus.emit(crate::events::LauncherEvent::LaunchState {
+            instance_id,
+            phase: crate::events::LaunchPhase::Exited,
+            exit_code: None,
+        });
+    }
     Ok(OkMsg { ok: true })
 }
 

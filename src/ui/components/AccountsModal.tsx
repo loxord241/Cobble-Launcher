@@ -1,5 +1,4 @@
-// Модальное окно управления аккаунтами (Microsoft, Ely.by, Офлайн).
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { X, Trash2, Globe, Shield, User, Plus, ExternalLink } from "lucide-react";
 import { useAccounts, accountKindLabelKey } from "../../state/accounts";
 import { useSettings } from "../../state/settings";
@@ -32,7 +31,8 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await addOffline(nick);
+      const acc = await addOffline(nick);
+      await setActive(acc.id);
       setOfflineNick("");
       setStatusMsg(t("accounts.offlineAdded", { name: nick }));
     } catch (err) {
@@ -48,6 +48,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
     setStatusMsg(t("accounts.msaWaiting"));
     try {
       const acc = await addMsaBrowser();
+      await setActive(acc.id);
       setStatusMsg(t("accounts.msaSuccess", { name: acc.name }));
     } catch (err) {
       setError(String((err as { message?: string })?.message ?? err));
@@ -64,6 +65,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
     setError(null);
     try {
       const acc = await addEly(elyUser.trim(), elyPass);
+      await setActive(acc.id);
       setElyUser("");
       setElyPass("");
       setStatusMsg(t("accounts.elySuccess", { name: acc.name }));
@@ -84,14 +86,22 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
     }
   };
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       role="dialog"
       aria-modal="true"
       aria-label={t("accounts.title")}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
       }}
     >
       <div className="flex max-h-[90vh] w-[620px] max-w-full flex-col rounded-lg border border-border-app bg-card p-6 shadow-2xl">

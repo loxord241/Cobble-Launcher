@@ -359,7 +359,8 @@ pub fn running_pid(instance_dir: &Path) -> Option<u32> {
 /// Kill: завершить дерево процессов игры (спека §6.10) и снять lock.
 pub fn kill(instance_dir: &Path) -> Result<()> {
     let Some(pid) = running_pid(instance_dir) else {
-        return Err(LauncherError::InvalidInput("инстанс не запущен".into()));
+        let _ = std::fs::remove_file(long_path(&instance_dir.join(".lock")));
+        return Ok(());
     };
     #[cfg(windows)]
     {
@@ -368,10 +369,10 @@ pub fn kill(instance_dir: &Path) -> Result<()> {
         c.creation_flags(0x0800_0000);
         let out = c.output()?;
         if !out.status.success() {
-            return Err(LauncherError::Internal(format!(
-                "taskkill: {}",
+            tracing::warn!(
+                "taskkill PID {pid}: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
-            )));
+            );
         }
     }
     #[cfg(not(windows))]

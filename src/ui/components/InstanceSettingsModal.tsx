@@ -60,14 +60,22 @@ export default function InstanceSettingsModal({
     }
   };
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       role="dialog"
       aria-modal="true"
       aria-label={t("instances.settings.title", { name: instance.name })}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
       }}
     >
       <div className="max-h-[90vh] w-[520px] overflow-y-auto rounded-lg border border-border-app bg-card p-6 shadow-xl">

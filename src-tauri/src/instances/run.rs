@@ -602,8 +602,8 @@ pub async fn install_loader(
     Ok(updated)
 }
 
-/// Спавн игры из UI: супервизия живёт в вызывающем потоке до выхода игры —
-/// логи → события, `.lock` держится всё время работы, статистика обновляется.
+/// Спавн игры из UI: дочерний процесс спавнится сразу с записью PID в `.lock`,
+/// супервизия читает логи в фоне до выхода игры.
 pub fn launch_detached(
     paths: &Paths,
     instance_id: &str,
@@ -619,7 +619,7 @@ pub fn launch_detached(
         .current_dir(crate::util::fs::long_path(&prepared.game_dir))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|e| LauncherError::JavaNotFound(format!("не удалось запустить игру: {e}")))?;
     lock.set_child_pid(child.id());
@@ -635,11 +635,28 @@ pub fn launch_detached(
         exit_code: None,
     });
 
-    // stdout/stderr → лог-файл + события game_log_line.
-    let logs_dir = prepared.game_dir.join("logs");
-    std::fs::create_dir_all(crate::util::fs::long_path(&logs_dir))?;
+    let paths_clone = paths.clone();
+    let id_clone = instance_id.to_string();
+    let bus_clone = bus.clone();
+    let game_dir = prepared.game_dir;
+    std::thread::spawn(move || {
+        supervise_detached(&paths_clone, &id_clone, child, &game_dir, lock, &bus_clone);
+    });
+    Ok(())
+}
+
+fn supervise_detached(
+    paths: &Paths,
+    instance_id: &str,
+    mut child: std::process::Child,
+    game_dir: &std::path::Path,
+    lock: InstanceLock,
+    bus: &EventBus,
+) {
+    let logs_dir = game_dir.join("logs");
+    let _ = std::fs::create_dir_all(crate::util::fs::long_path(&logs_dir));
     let log_path = crate::util::fs::long_path(&logs_dir.join("latest.log"));
-    let mut log_file = std::fs::File::create(&log_path)?;
+    let mut log_file = std::fs::File::create(&log_path).ok();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let (tx, rx) = std::sync::mpsc::channel::<(String, crate::events::LogStream)>();
@@ -665,7 +682,9 @@ pub fn launch_detached(
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(500)) {
             Ok((line, stream)) => {
-                let _ = std::io::Write::write_all(&mut log_file, format!("{line}\n").as_bytes());
+                if let Some(f) = &mut log_file {
+                    let _ = std::io::Write::write_all(f, format!("{line}\n").as_bytes());
+                }
                 bus.emit(LauncherEvent::GameLogLine {
                     instance_id: instance_id.to_string(),
                     line,
@@ -680,7 +699,6 @@ pub fn launch_detached(
                         phase: LaunchPhase::Exited,
                         exit_code: code,
                     });
-                    // Статистика: время игры.
                     if let Ok(mut inst) = crate::instances::load(paths, instance_id) {
                         inst.last_played = Some(crate::instances::now_secs());
                         inst.launch_count += 1;
@@ -688,12 +706,9 @@ pub fn launch_detached(
                         let _ = crate::instances::save(paths, &inst);
                     }
                     drop(lock);
-                    return Ok(());
+                    return;
                 }
             }
-            // Пайпы закрылись (в т.ч. мгновенно после taskkill из instance_kill,
-            // раньше 500-мс тика с try_wait) — нельзя выходить молча: UI зависнет
-            // в «Запущено». Дочищаем процесс и отправляем Exited.
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
@@ -703,7 +718,6 @@ pub fn launch_detached(
         phase: LaunchPhase::Exited,
         exit_code,
     });
-    // Статистика: время игры (выход через kill тоже считается).
     if let Ok(mut inst) = crate::instances::load(paths, instance_id) {
         inst.last_played = Some(crate::instances::now_secs());
         inst.launch_count += 1;
@@ -711,7 +725,6 @@ pub fn launch_detached(
         let _ = crate::instances::save(paths, &inst);
     }
     drop(lock);
-    Ok(())
 }
 
 /// Fallback Java-минимумов по версии MC (спека §6.4).

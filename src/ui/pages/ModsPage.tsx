@@ -87,11 +87,12 @@ export default function ModsPage({ query }: { query: string }) {
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
+    const root = el.closest("main");
     const io = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) void loadMore();
       },
-      { rootMargin: "400px" },
+      { root, rootMargin: "1500px" },
     );
     io.observe(el);
     return () => io.disconnect();

@@ -80,6 +80,10 @@ async function main() {
   await page.screenshot({ path: `${OUT}/dark-6-onboarding.png` });
   ok("скриншот онбординга");
 
+  // Перезагружаем страницу, чтобы вернуть Shell для последующих тестов
+  await page.reload({ waitUntil: "networkidle" }).catch(() => {});
+  await page.waitForTimeout(500);
+
   console.log(failed === 0 ? "ALL-CHECKS-PASSED" : `CHECKS-FAILED: ${failed}`);
   await browser.close();
   process.exit(failed === 0 ? 0 : 1);

@@ -8,6 +8,8 @@ async function main() {
 
   // Ждём shell (приложение уже онбордингнуто).
   await page.waitForSelector("text=Инстансы", { timeout: 20000 });
+  await page.getByRole("navigation").getByRole("button", { name: /^Главная/ }).click().catch(() => {});
+  await page.waitForTimeout(500);
 
   // Кнопка Play в строке инстанса (не в hero — у hero просто «Играть»).
   const playBtn = page.locator('button[aria-label^="Играть —"]').first();

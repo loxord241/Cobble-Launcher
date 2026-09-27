@@ -3,6 +3,8 @@ import { create } from "zustand";
 import { api } from "../api/client";
 import type { Account, AccountKind } from "../api/types";
 
+import { useSettings } from "./settings";
+
 interface AccountsState {
   list: Account[];
   loaded: boolean;
@@ -24,6 +26,10 @@ export const useAccounts = create<AccountsState>((set, get) => ({
   setActive: async (id) => {
     await api.accountActiveSet(id);
     await get().load();
+    const cur = useSettings.getState().settings;
+    if (cur) {
+      useSettings.setState({ settings: { ...cur, accountsActiveId: id } });
+    }
   },
   addOffline: async (name: string) => {
     const acc = await api.accountAddOffline(name);
