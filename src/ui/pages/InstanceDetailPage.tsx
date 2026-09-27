@@ -37,7 +37,7 @@ import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
 import { fileBase } from "./ModsPage";
-import type { ContentEntry, UpdateCheck } from "../../api/types";
+import type { ContentEntry, ProjectMeta, UpdateCheck } from "../../api/types";
 
 type Tab = "overview" | "mods" | "logs";
 
@@ -100,6 +100,8 @@ export default function InstanceDetailPage({
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [installed, setInstalled] = useState<ContentEntry[] | null>(null);
+  /** Метаданные Modrinth по projectId: название/иконка строки (CF-стиль). */
+  const [meta, setMeta] = useState<Record<string, ProjectMeta>>({});
   const [updates, setUpdates] = useState<UpdateCheck[] | null>(null);
   const [contentBusy, setContentBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -131,6 +133,62 @@ export default function InstanceDetailPage({
   useEffect(() => {
     void loadInstalled();
   }, [loadInstalled]);
+
+  // CF-стиль таба «Моды»: названия и иконки — ОДНИМ батч-запросом по записям
+  // с projectId (чисто локальные моды сеть не дёргают). Открытие таба мету
+  // обновляет: она дешёвая и может устареть (переименование проекта).
+  const projectIdsKey = useMemo(
+    () =>
+      [
+        ...new Set((installed ?? []).map((e) => e.projectId).filter((id): id is string => !!id)),
+      ].join(","),
+    [installed],
+  );
+
+  // Моды из модпаков, установленных до появления projectId в манифесте:
+  // достаём связь файл→проект батч-проверкой обновлений (она ищет по sha1)
+  // и дозаполняем projectId в стейте страницы (манифест на диске не трогаем).
+  const backfillTried = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (tab !== "mods" || !installed) return;
+    if (backfillTried.current.has(instanceId)) return;
+    const missing = installed.filter((e) => !e.projectId && e.sha1);
+    if (missing.length === 0) return;
+    backfillTried.current.add(instanceId); // одна попытка: не looping по модам вне Modrinth
+    void (async () => {
+      try {
+        const filled = await api.contentBackfillProjects(instanceId);
+        if (filled > 0) {
+          // Манифест на диске обновлён ядром — перечитываем записи.
+          setInstalled(await api.contentInstalled(instanceId));
+        }
+      } catch {
+        // Нет сети/нет связи — строки остаются с именами файлов.
+      }
+    })();
+  }, [tab, installed, instanceId]);
+
+  useEffect(() => {
+    if (tab !== "mods" || projectIdsKey === "") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await api.modrinthProjects(projectIdsKey.split(","));
+        if (cancelled) return;
+        setMeta((prev) => {
+          const next = { ...prev };
+          for (const m of list) next[m.projectId] = m;
+          return next;
+        });
+      } catch {
+        // Мета недоступна (нет сети, проект скрыт) — строки остаются с именами
+        // файлов, как было до этой фичи; отдельной ошибки не показываем.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, projectIdsKey]);
 
   const activeAccount =
     accounts.find((a) => a.id === settings?.accountsActiveId) ?? accounts[0] ?? null;
@@ -563,47 +621,70 @@ export default function InstanceDetailPage({
                   <p className="px-2 py-3 text-[13px] text-text-muted">{t("instance.mods.empty")}</p>
                 ) : (
                   <ul className="flex flex-col gap-1">
-                    {installed.map((e) => (
-                      <li
-                        key={e.file}
-                        className={`grid min-h-10 grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded-md px-2 ${
-                          e.enabled ? "" : "opacity-55"
-                        }`}
-                      >
-                        <span className="truncate font-mono text-[13px]" title={e.file}>
-                          {fileBase(e.file)}
-                        </span>
-                        <span className="badge-soft">{t(`mods.kind.${e.kind}`)}</span>
-                        <button
-                          role="switch"
-                          aria-checked={e.enabled}
-                          aria-label={t(
-                            e.enabled ? "mods.installed.disable" : "mods.installed.enable",
-                            { file: fileBase(e.file) },
-                          )}
-                          disabled={contentBusy}
-                          onClick={() => void toggleEntry(e.file)}
-                          className={`h-6 w-10 rounded-full border border-border-strong transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                            e.enabled ? "bg-accent" : "bg-surface-2"
+                    {installed.map((e) => {
+                      const m = e.projectId ? meta[e.projectId] : undefined;
+                      const title = m?.title ?? fileBase(e.file);
+                      return (
+                        <li
+                          key={e.file}
+                          className={`grid min-h-14 grid-cols-[40px_1fr_auto_auto_auto] items-center gap-3 rounded-md border border-border-app px-3 py-2 transition-colors hover:border-accent/60 hover:bg-card-hover ${
+                            e.enabled ? "" : "opacity-55"
                           }`}
                         >
-                          <span
-                            aria-hidden
-                            className={`block size-4 rounded-full bg-on-accent transition-transform ${
-                              e.enabled ? "translate-x-5" : "translate-x-1"
+                          {m?.iconUrl ? (
+                            <img
+                              src={m.iconUrl}
+                              alt=""
+                              className="size-10 rounded-md border border-border-app object-cover"
+                            />
+                          ) : (
+                            <span
+                              aria-hidden
+                              className="grid size-10 place-items-center rounded-md bg-surface-2 text-sm font-semibold text-text-muted"
+                            >
+                              {fileBase(e.file).slice(0, 1).toUpperCase()}
+                            </span>
+                          )}
+                          <div className="min-w-0">
+                            <div className="truncate text-[13px] font-semibold leading-tight" title={title}>
+                              {title}
+                            </div>
+                            <div className="truncate font-mono text-[12px] text-text-muted" title={e.file}>
+                              {e.file}
+                            </div>
+                          </div>
+                          <span className="badge-soft">{t(`mods.kind.${e.kind}`)}</span>
+                          <button
+                            role="switch"
+                            aria-checked={e.enabled}
+                            aria-label={t(
+                              e.enabled ? "mods.installed.disable" : "mods.installed.enable",
+                              { file: fileBase(e.file) },
+                            )}
+                            disabled={contentBusy}
+                            onClick={() => void toggleEntry(e.file)}
+                            className={`h-6 w-10 rounded-full border border-border-strong transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                              e.enabled ? "bg-accent" : "bg-surface-2"
                             }`}
-                          />
-                        </button>
-                        <button
-                          aria-label={t("mods.installed.delete", { file: fileBase(e.file) })}
-                          disabled={contentBusy}
-                          onClick={() => void removeEntry(e.file)}
-                          className="icon-btn text-error"
-                        >
-                          <Trash2 size={15} aria-hidden />
-                        </button>
-                      </li>
-                    ))}
+                          >
+                            <span
+                              aria-hidden
+                              className={`block size-4 rounded-full bg-on-accent transition-transform ${
+                                e.enabled ? "translate-x-5" : "translate-x-1"
+                              }`}
+                            />
+                          </button>
+                          <button
+                            aria-label={t("mods.installed.delete", { file: fileBase(e.file) })}
+                            disabled={contentBusy}
+                            onClick={() => void removeEntry(e.file)}
+                            className="icon-btn text-error"
+                          >
+                            <Trash2 size={15} aria-hidden />
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </div>

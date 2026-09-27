@@ -269,7 +269,14 @@ pub async fn install_mrpack(
             kind,
             file: rel_str,
             source: ContentSource::Modrinth,
-            project_id: None,
+            // projectId зашит в ссылке CDN (cdn.modrinth.com/data/<id>/versions/…)
+            // — извлекаем, чтобы UI показывал иконки и названия модов модпака.
+            project_id: f.downloads.first().and_then(|u| {
+                let marker = "cdn.modrinth.com/data/";
+                let rest = u.split(marker).nth(1)?;
+                let pid = rest.split('/').next()?;
+                (!pid.is_empty()).then(|| pid.to_string())
+            }),
             version_id: Some(index.version_id.clone()),
             sha1: f.hashes.get("sha1").cloned(),
             url: f.downloads.first().cloned(),

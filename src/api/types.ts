@@ -159,6 +159,18 @@ export interface SearchResult {
   total_hits: number;
 }
 
+/**
+ * Метаданные проекта Modrinth (зеркало `api::ProjectMeta`): в отличие от
+ * SearchHit выше структура сериализуется в camelCase (D25) — ядро принимает
+ * snake_case Modrinth и отдаёт UI уже нормализованным.
+ */
+export interface ProjectMeta {
+  projectId: string;
+  title: string;
+  description: string;
+  iconUrl?: string;
+}
+
 export type ContentKind = "mod" | "resourcepack" | "shader";
 export type ContentSource = "modrinth" | "curseforge" | "local";
 

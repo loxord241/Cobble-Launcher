@@ -454,37 +454,53 @@ export default function ModsPage({
       ) : (
         <div className="flex flex-col gap-2">
           {visibleHits.map((h) => (
+            // Строка-карточка каталога (стиль CurseForge App): иконка 56px,
+            // заголовок + описание в 2 строки + метаданные, справа крупная
+            // кнопка установки. Клик по карточке ничего не делает — только
+            // кнопка, поэтому курсор default. Подъём/рамка — на наведении.
             <div
               key={h.project_id}
-              className="grid min-h-14 grid-cols-[36px_1fr_auto] items-center gap-3 rounded-lg border border-border-app bg-card px-3 py-2 transition-colors hover:border-border-strong hover:bg-card-hover"
+              className="grid min-h-[76px] cursor-default grid-cols-[56px_1fr_auto] items-center gap-3 rounded-lg border border-border-app bg-card px-3 py-2.5 transition-all duration-200 hover:border-accent/70 hover:bg-card-hover hover:shadow-lg hover:shadow-black/20 hover:-translate-y-px"
             >
               {h.icon_url ? (
                 <img
                   src={h.icon_url}
                   alt=""
-                  className="size-9 rounded-md border border-border-app object-cover"
+                  className="size-14 rounded-lg border border-border-app object-cover"
                 />
               ) : (
                 <span
                   aria-hidden
-                  className="grid size-9 place-items-center rounded-md bg-surface-2 text-sm font-semibold text-text-muted"
+                  className="grid size-14 place-items-center rounded-lg bg-surface-2 text-lg font-semibold text-text-muted"
                 >
                   {h.title.slice(0, 1)}
                 </span>
               )}
               <div className="min-w-0">
                 <div className="truncate text-[15px] font-semibold leading-tight">{h.title}</div>
-                <div className="font-mono text-[13px] text-text-muted">
-                  {t("mods.by", { author: h.author })} · {t("mods.downloads", { n: h.downloads.toLocaleString(currentLanguage()) })}
+                {h.description && (
+                  <div className="mt-0.5 line-clamp-2 text-[13px] leading-snug text-text-muted">
+                    {h.description}
+                  </div>
+                )}
+                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="font-mono text-[13px] text-text-muted">
+                    {t("mods.by", { author: h.author })} · {t("mods.downloads", { n: h.downloads.toLocaleString(currentLanguage()) })}
+                  </span>
+                  {h.categories.slice(0, 3).map((c) => (
+                    <span key={c} className="badge-soft accent">
+                      {c}
+                    </span>
+                  ))}
                 </div>
               </div>
               <button
                 onClick={() => void install(h.project_id)}
                 disabled={busy}
-                className="btn-ghost btn-sm"
+                className="btn-primary"
                 aria-label={`${tab === "modpack" ? t("mods.installPack") : t("mods.installInto")} — ${h.title}`}
               >
-                <Download size={14} aria-hidden />
+                <Download size={15} aria-hidden />
                 {tab === "modpack" ? t("mods.installPack") : t("mods.installInto")}
               </button>
             </div>

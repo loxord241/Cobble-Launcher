@@ -305,6 +305,48 @@ fn chrono_suffix() -> String {
         .to_string()
 }
 
+/// Самозалечивающийся манифест (legacy-модпаки): записи без `project_id`
+/// (установлены до появления поля) получают его батч-запросом sha1 → версия.
+/// Возвращает число дополненных записей. Найденные вне Modrinth хэши
+/// молча пропускаются (локальные моды остаются без проекта).
+pub async fn backfill_project_ids(
+    paths: &Paths,
+    client: &HttpClient,
+    inst: &Instance,
+) -> Result<usize> {
+    let mut manifest = crate::instances::load_content_manifest(paths, &inst.id);
+    let need: Vec<String> = manifest
+        .iter()
+        .filter(|e| {
+            e.source == ContentSource::Modrinth && e.project_id.is_none() && e.sha1.is_some()
+        })
+        .filter_map(|e| e.sha1.clone())
+        .collect();
+    if need.is_empty() {
+        return Ok(0);
+    }
+    // Без фильтров загрузчика/версии: задача — только опознать проект.
+    let by_hash = batch_latest_versions(client, &need, None, None)
+        .await
+        .unwrap_or_default();
+    let mut filled = 0usize;
+    for e in manifest.iter_mut() {
+        if e.project_id.is_some() || e.source != ContentSource::Modrinth {
+            continue;
+        }
+        if let Some(sha) = &e.sha1 {
+            if let Some(v) = by_hash.get(sha) {
+                e.project_id = Some(v.project_id.clone());
+                filled += 1;
+            }
+        }
+    }
+    if filled > 0 {
+        crate::instances::save_content_manifest(paths, &inst.id, &manifest)?;
+    }
+    Ok(filled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,3 +495,4 @@ mod tests {
         assert_eq!(updates[0].changelog.as_deref(), Some("починили"));
     }
 }
+

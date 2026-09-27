@@ -321,6 +321,19 @@ pub async fn modrinth_search(
     .await
 }
 
+/// Метаданные проектов Modrinth (название/описание/иконка) батчем — одним
+/// запросом на список, чтобы таб «Моды» не ходил в сеть по каждой строке.
+#[tauri::command]
+pub async fn modrinth_projects(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<Vec<crate::modrinth::api::ProjectMeta>> {
+    // IPC-граница: список приходит из рендера — валидируем (A1/A23-принцип).
+    crate::modrinth::api::validate_project_ids(&ids)?;
+    let http = state.http().await;
+    crate::modrinth::api::projects_meta(&http, &ids).await
+}
+
 #[tauri::command]
 pub async fn content_install(
     state: State<'_, AppState>,
@@ -439,6 +452,17 @@ pub async fn content_update_check(
     let inst = instances::load(&state.paths, &instance_id)?;
     let http = state.http().await;
     crate::modrinth::updates::check_updates(&state.paths, &http, &inst).await
+}
+
+/// Дозаполнить projectId в манифесте (legacy-модпаки) — батч по sha1.
+#[tauri::command]
+pub async fn content_backfill_projects(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<usize> {
+    let inst = instances::load(&state.paths, &instance_id)?;
+    let http = state.http().await;
+    crate::modrinth::updates::backfill_project_ids(&state.paths, &http, &inst).await
 }
 
 #[tauri::command]

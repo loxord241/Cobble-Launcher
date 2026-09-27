@@ -22,6 +22,7 @@ import type {
   Instance,
   JavaInstall,
   LoaderVersionEntry,
+  ProjectMeta,
   SearchResult,
   Settings,
   UpdateCheck,
@@ -70,6 +71,8 @@ export const api = {
       limit,
       offset,
     }),
+  // Метаданные проектов батчем (иконка/название для списка установленного).
+  modrinthProjects: (ids: string[]) => invoke<ProjectMeta[]>("modrinth_projects", { ids }),
   contentInstall: (instanceId: string, projectId: string, versionId?: string) =>
     invoke<ContentEntry[]>("content_install", { instanceId, projectId, versionId }),
   contentInstalled: (instanceId: string) =>
@@ -81,6 +84,8 @@ export const api = {
   contentUpdateCheck: (instanceId: string) =>
     invoke<UpdateCheck[]>("content_update_check", { instanceId }),
   contentUpdateAll: (instanceId: string) => invoke<number>("content_update_all", { instanceId }),
+  contentBackfillProjects: (instanceId: string) =>
+    invoke<number>("content_backfill_projects", { instanceId }),
   mrpackInstall: (path: string, name?: string) =>
     invoke<Instance>("mrpack_install", { path, name }),
   modpackInstall: (projectId: string, name?: string) =>

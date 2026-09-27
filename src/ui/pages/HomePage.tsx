@@ -36,6 +36,85 @@ type RowCallbacks = {
   onIconClear?: () => void;
 };
 
+/**
+ * Карточка каталога в стиле CurseForge: картинка сверху, ниже название,
+ * автор и загрузки. С `onInstall` карточка целиком — кнопка установки
+ * (aria-label «Установить — {title}», блокировка на время чужой установки);
+ * без него — витринная карточка (мод: ставить некуда без выбора целевого
+ * инстанса, `content_install` требует instanceId).
+ */
+function HitCard({
+  hit,
+  busy,
+  disabled,
+  onInstall,
+}: {
+  hit: SearchHit;
+  /** Идёт установка именно этого проекта. */
+  busy: boolean;
+  /** Идёт установка другого проекта — карточка недоступна (только с onInstall). */
+  disabled?: boolean;
+  onInstall?: () => void;
+}) {
+  const className = [
+    "flex flex-col overflow-hidden rounded-lg border border-border-app bg-card text-left",
+    "transition-all duration-200 hover:scale-[1.02] hover:border-accent/70 hover:shadow-lg hover:shadow-black/25",
+    onInstall ? "cursor-pointer disabled:cursor-not-allowed disabled:opacity-60" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const body = (
+    <>
+      <div className="relative h-28 w-full shrink-0 overflow-hidden bg-surface-2">
+        {hit.icon_url ? (
+          <img src={hit.icon_url} alt="" loading="lazy" className="size-full object-cover" />
+        ) : (
+          // Без иконки — градиентная заглушка с первой буквой названия.
+          <span
+            aria-hidden
+            className="grid size-full place-items-center bg-gradient-to-br from-accent/20 to-surface-2 text-2xl font-bold text-accent"
+          >
+            {hit.title.slice(0, 1).toUpperCase()}
+          </span>
+        )}
+        {busy && (
+          <span className="absolute inset-0 grid place-items-center bg-bg/70 text-[12px] font-semibold">
+            {t("home.installing")}
+          </span>
+        )}
+      </div>
+      <div className="flex min-w-0 flex-col gap-0.5 p-2">
+        <span className="truncate text-sm font-semibold leading-tight">{hit.title}</span>
+        <span className="truncate text-[12px] text-text-muted">
+          {t("mods.by", { author: hit.author })}
+        </span>
+        <span
+          className="flex items-center gap-1 text-[12px] text-text-muted"
+          title={t("mods.downloads", { n: hit.downloads.toLocaleString(currentLanguage()) })}
+        >
+          <Download size={12} aria-hidden />
+          {hit.downloads.toLocaleString(currentLanguage())}
+        </span>
+      </div>
+    </>
+  );
+
+  return onInstall ? (
+    <button
+      type="button"
+      onClick={onInstall}
+      disabled={disabled}
+      aria-label={`${t("home.installPack")} — ${hit.title}`}
+      className={className}
+    >
+      {body}
+    </button>
+  ) : (
+    <div className={className}>{body}</div>
+  );
+}
+
 export default function HomePage({
   query,
   onCreate,
@@ -64,6 +143,7 @@ export default function HomePage({
   const { list: accounts } = useAccounts();
   const { settings } = useSettings();
   const [packs, setPacks] = useState<SearchHit[] | null>(null);
+  const [mods, setMods] = useState<SearchHit[] | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
   const [packInfo, setPackInfo] = useState<string | null>(null);
   const [settingsInst, setSettingsInst] = useState<Instance | null>(null);
@@ -83,6 +163,14 @@ export default function HomePage({
       .modrinthSearch("", undefined, undefined, "modpack", 6, 0)
       .then((r) => setPacks(r.hits))
       .catch(() => setPacks(null));
+  }, []);
+
+  useEffect(() => {
+    // Популярные моды: ядро ищет с index=downloads (modrinth/api.rs), тип mod.
+    api
+      .modrinthSearch("", undefined, undefined, "mod", 6, 0)
+      .then((r) => setMods(r.hits))
+      .catch(() => setMods(null));
   }, []);
 
   const installPack = async (projectId: string) => {
@@ -328,46 +416,19 @@ export default function HomePage({
 
       {/* ПОПУЛЯРНЫЕ МОДПАКИ: только реальные данные с Modrinth */}
       {packs && packs.length > 0 && (
-        <section className="flex flex-col gap-2">
+        <section className="flex flex-col gap-3">
           <div className="flex items-baseline gap-2">
             <h2 className="text-lg font-semibold tracking-tight">{t("home.popular")}</h2>
           </div>
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-2">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
             {packs.map((p) => (
-              <div
+              <HitCard
                 key={p.project_id}
-                className="flex items-center gap-3 rounded-lg border border-border-app bg-card px-3 py-2 transition-colors hover:border-border-strong hover:bg-card-hover"
-              >
-                {p.icon_url ? (
-                  <img
-                    src={p.icon_url}
-                    alt=""
-                    className="size-11 shrink-0 rounded-md border border-border-app object-cover"
-                  />
-                ) : (
-                  <span
-                    aria-hidden
-                    className="grid size-11 shrink-0 place-items-center rounded-md bg-surface-2 text-sm font-semibold text-text-muted"
-                  >
-                    {p.title.slice(0, 1)}
-                  </span>
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-semibold leading-tight">{p.title}</div>
-                  <div className="font-mono text-[12px] text-text-muted">
-                    {t("mods.downloads", { n: p.downloads.toLocaleString(currentLanguage()) })}
-                  </div>
-                </div>
-                <button
-                  onClick={() => void installPack(p.project_id)}
-                  disabled={installing !== null}
-                  className="btn-ghost btn-sm shrink-0"
-                  aria-label={`${t("home.installPack")} — ${p.title}`}
-                >
-                  <Download size={14} aria-hidden />
-                  {installing === p.project_id ? t("home.installing") : t("home.installPack")}
-                </button>
-              </div>
+                hit={p}
+                busy={installing === p.project_id}
+                disabled={installing !== null}
+                onInstall={() => void installPack(p.project_id)}
+              />
             ))}
           </div>
           {packInfo && (
@@ -375,6 +436,21 @@ export default function HomePage({
               {packInfo}
             </p>
           )}
+        </section>
+      )}
+
+      {/* ПОПУЛЯРНЫЕ МОДЫ: та же карточка, но без установки — content_install
+          требует целевой инстанс, а выбора инстанса на Главной нет. */}
+      {mods && mods.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <div className="flex items-baseline gap-2">
+            <h2 className="text-lg font-semibold tracking-tight">{t("home.popularMods")}</h2>
+          </div>
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
+            {mods.map((m) => (
+              <HitCard key={m.project_id} hit={m} busy={false} />
+            ))}
+          </div>
         </section>
       )}
 
