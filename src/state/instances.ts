@@ -40,6 +40,59 @@ interface InstancesState {
 
 let isSubscribed = false;
 
+// D8: при запущенной игре game_log_line приходит десятками в секунду, а каждый
+// set() перерисовывает всех подписчиков стора. Копим строки в буфере и
+// сбрасываем пачкой (API стора не меняется — читатели видят те же logs).
+const LOG_FLUSH_MS = 200;
+const LOG_BUFFER_MAX = 500;
+const LOG_KEEP = 300;
+
+let logBuffer = new Map<string, string[]>();
+let logFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function queueLogLine(instanceId: string, line: string) {
+  const buf = logBuffer.get(instanceId);
+  if (buf) {
+    buf.push(line);
+    // Старые строки буфера отбрасываем: держим не больше LOG_BUFFER_MAX.
+    if (buf.length > LOG_BUFFER_MAX) buf.splice(0, buf.length - LOG_BUFFER_MAX);
+  } else {
+    logBuffer.set(instanceId, [line]);
+  }
+  if (logFlushTimer === null) {
+    logFlushTimer = setTimeout(flushLogs, LOG_FLUSH_MS);
+  }
+}
+
+/** Сброс буфера в стор: по таймеру и вручную (перед crash-анализом). */
+function flushLogs() {
+  if (logFlushTimer !== null) {
+    clearTimeout(logFlushTimer);
+    logFlushTimer = null;
+  }
+  if (logBuffer.size === 0) return;
+  const pending = logBuffer;
+  logBuffer = new Map();
+  useInstances.setState((s) => {
+    const logs: Record<string, string[]> = { ...s.logs };
+    for (const [id, lines] of pending) {
+      const merged = [...(logs[id] ?? []), ...lines];
+      logs[id] = merged.length > LOG_KEEP ? merged.slice(merged.length - LOG_KEEP) : merged;
+    }
+    return { logs };
+  });
+}
+
+/** Буфер инстанса больше не нужен (новый запуск очищает логи). */
+function dropBufferedLogs(instanceId: string) {
+  logBuffer.delete(instanceId);
+}
+
+// D18: прогресс загрузки принадлежит инстансу, чей launch_state перешёл в
+// downloading. В DlProgress (src/api/types.ts) нет instance_id, поэтому
+// опираемся на фазу запуска, а не на «первый попавшийся» статус.
+let downloadOwnerId: string | null = null;
+
 export const useInstances = create<InstancesState>((set, get) => ({
   list: [],
   loaded: false,
@@ -80,6 +133,10 @@ export const useInstances = create<InstancesState>((set, get) => ({
     await onCoreEvent((event) => {
       if (event.event === "launch_state") {
         const { instanceId, phase, exitCode } = event;
+        // D18: владелец прогресса — тот, кто реально начал скачивание.
+        if (phase === "downloading") downloadOwnerId = instanceId;
+        else if (downloadOwnerId === instanceId) downloadOwnerId = null;
+
         set((s) => ({
           status: {
             ...s.status,
@@ -88,6 +145,8 @@ export const useInstances = create<InstancesState>((set, get) => ({
         }));
 
         if (phase === "exited") {
+          // Дозаписать буферизованные строки: crash-анализ читает logs сразу.
+          flushLogs();
           // Обновить статистику launchCount/lastPlayed из ядра
           void get().load();
 
@@ -116,40 +175,34 @@ export const useInstances = create<InstancesState>((set, get) => ({
           }
         }
       } else if (event.event === "game_log_line") {
-        const { instanceId, line } = event;
-        set((s) => {
-          const current = s.logs[instanceId] ?? [];
-          const updated = current.length >= 300 ? [...current.slice(1), line] : [...current, line];
-          return {
-            logs: {
-              ...s.logs,
-              [instanceId]: updated,
-            },
-          };
-        });
+        queueLogLine(event.instanceId, event.line);
       } else if (event.event === "dl_progress") {
-        const active = Object.entries(get().status).find(
-          ([, st]) => st.phase === "downloading" || st.phase === "preparing",
-        );
-        if (active) {
-          const [id] = active;
-          set((s) => ({
-            status: {
-              ...s.status,
-              [id]: {
-                ...s.status[id],
-                phase: "downloading",
-                doneFiles: event.doneFiles,
-                totalFiles: event.totalFiles,
-              },
-            },
-          }));
+        const id = downloadOwnerId;
+        if (!id) return;
+        const current = get().status[id];
+        if (!current) {
+          // Инстанс пропал из статусов (остановлен/удалён) — писать некуда.
+          downloadOwnerId = null;
+          return;
         }
+        if (current.phase !== "downloading" && current.phase !== "preparing") return;
+        set((s) => ({
+          status: {
+            ...s.status,
+            [id]: {
+              ...s.status[id],
+              phase: "downloading",
+              doneFiles: event.doneFiles,
+              totalFiles: event.totalFiles,
+            },
+          },
+        }));
       }
     });
   },
   launch: async (id, player) => {
-    // Очистить логи перед новым запуском
+    // Очистить логи перед новым запуском (в т.ч. ещё не сброшенный буфер)
+    dropBufferedLogs(id);
     set((s) => ({
       status: { ...s.status, [id]: { phase: "preparing" } },
       logs: { ...s.logs, [id]: [] },

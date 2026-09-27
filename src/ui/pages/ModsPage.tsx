@@ -3,6 +3,7 @@
 // .mrpack, проверка/применение обновлений и управление установленным
 // (вкл/выкл, удаление). Паттерн строк «Сланца».
 import { useCallback, useEffect, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   ChevronDown,
   ChevronUp,
@@ -14,7 +15,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api } from "../../api/client";
-import { t } from "../../i18n";
+import { apiErrorText, t } from "../../i18n";
 import type { ContentEntry, Instance, SearchHit, UpdateCheck } from "../../api/types";
 
 const PAGE_SIZE = 20;
@@ -50,12 +51,32 @@ export default function ModsPage({ query }: { query: string }) {
   const [showInstalled, setShowInstalled] = useState(false);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    api.instanceList().then((list) => {
+  // D17: список инстансов мог устареть (инстанс создан/удалён вне страницы),
+  // поэтому перечитываем его при монтировании, при возврате фокуса в окно и при
+  // появлении вкладки; выбранный targetId сохраняем, если он ещё существует.
+  const refreshInstances = useCallback(async () => {
+    try {
+      const list = await api.instanceList();
       setInstances(list);
-      if (list[0]) setTargetId(list[0].id);
-    });
+      setTargetId((cur) => (list.some((i) => i.id === cur) ? cur : (list[0]?.id ?? "")));
+    } catch (e) {
+      setError(apiErrorText(e));
+    }
   }, []);
+
+  useEffect(() => {
+    void refreshInstances();
+    const onFocus = () => void refreshInstances();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refreshInstances();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refreshInstances]);
 
   const loadInstalled = useCallback(async () => {
     if (!targetId) return;
@@ -87,7 +108,7 @@ export default function ModsPage({ query }: { query: string }) {
       setTotal(r.total_hits);
       setSearched(true);
     } catch (e) {
-      setError((e as { message?: string })?.message ?? String(e));
+      setError(apiErrorText(e));
     } finally {
       setBusy(false);
     }
@@ -118,7 +139,7 @@ export default function ModsPage({ query }: { query: string }) {
       setHits((prev) => [...prev, ...r.hits.filter((h) => !known.has(h.project_id))]);
       setTotal(r.total_hits);
     } catch (e) {
-      setError((e as { message?: string })?.message ?? String(e));
+      setError(apiErrorText(e));
     } finally {
       setLoadingMore(false);
     }
@@ -166,23 +187,27 @@ export default function ModsPage({ query }: { query: string }) {
         );
       }
     } catch (e) {
-      setError((e as { message?: string })?.message ?? String(e));
+      setError(apiErrorText(e));
     } finally {
       setBusy(false);
     }
   };
 
+  // D5a: файл .mrpack выбираем нативным диалогом (путь вручную не вводим).
   const installMrpack = async () => {
-    const path = window.prompt(t("mods.mrpackPrompt"));
-    if (!path) return;
     setBusy(true);
     setError(null);
     try {
+      const path = await open({
+        multiple: false,
+        filters: [{ name: "Modrinth Modpack", extensions: ["mrpack"] }],
+      });
+      if (typeof path !== "string") return; // отмена диалога
       const inst = await api.mrpackInstall(path);
       setInstalledInfo(t("mods.packInstalled", { name: inst.name, version: inst.mcVersion }));
       setInstances(await api.instanceList());
     } catch (e) {
-      setError((e as { message?: string })?.message ?? String(e));
+      setError(apiErrorText(e));
     } finally {
       setBusy(false);
     }
@@ -194,7 +219,7 @@ export default function ModsPage({ query }: { query: string }) {
     try {
       setUpdates(await api.contentUpdateCheck(targetId));
     } catch (e) {
-      setError((e as { message?: string })?.message ?? String(e));
+      setError(apiErrorText(e));
     } finally {
       setBusy(false);
     }
@@ -207,7 +232,7 @@ export default function ModsPage({ query }: { query: string }) {
       setInstalledInfo(t("mods.updatedCount", { n }));
       setUpdates(null);
     } catch (e) {
-      setError((e as { message?: string })?.message ?? String(e));
+      setError(apiErrorText(e));
     } finally {
       setBusy(false);
     }
@@ -219,7 +244,7 @@ export default function ModsPage({ query }: { query: string }) {
       const e = await api.contentToggle(targetId, file);
       setInstalledInfo(t(e.enabled ? "mods.switchedOn" : "mods.switchedOff", { file }));
     } catch (e) {
-      setError((e as { message?: string })?.message ?? String(e));
+      setError(apiErrorText(e));
     }
   };
 
@@ -229,7 +254,7 @@ export default function ModsPage({ query }: { query: string }) {
       await api.contentRemove(targetId, file);
       setInstalledInfo(t("mods.removed", { file }));
     } catch (e) {
-      setError((e as { message?: string })?.message ?? String(e));
+      setError(apiErrorText(e));
     }
   };
 
@@ -284,8 +309,9 @@ export default function ModsPage({ query }: { query: string }) {
             setTargetId(e.target.value);
             setUpdates(null);
           }}
+          disabled={busy}
           aria-label={t("mods.targetInstance")}
-          className="h-11 min-w-40 max-w-[280px] rounded-lg border border-border-strong bg-card px-3 text-sm"
+          className="h-11 min-w-40 max-w-[280px] rounded-lg border border-border-strong bg-card px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40"
         >
           {instances.map((i) => (
             <option key={i.id} value={i.id}>
@@ -388,7 +414,7 @@ export default function ModsPage({ query }: { query: string }) {
           <div className="flex items-center justify-between">
             <span className="text-sm font-semibold">{t("mods.updatesFound", { n: updates.length })}</span>
             {updates.length > 0 && (
-              <button onClick={() => void applyUpdates()} className="btn-primary btn-sm">
+              <button onClick={() => void applyUpdates()} disabled={busy} className="btn-primary btn-sm">
                 <RefreshCw size={14} aria-hidden />
                 {t("mods.applyUpdates")}
               </button>

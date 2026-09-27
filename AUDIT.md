@@ -207,29 +207,29 @@
 | D2 | **P1** | `ram_guide` путает КБ и МБ (sysinfo 0.39 отдаёт байты): рекомендация всегда 6144 | `optimize.rs:85-87` | **УСТРАНЕНО 2026-09-27**: байты→МБ одним делением; заодно оживлено предупреждение (считается от четверти RAM, а не от зажатого значения); регресс-тест |
 | D3 | **P1** | `extract_zip_stripping` без лимитов записей/размера — zip-bomb через недоверенные .mrpack/CF | `util/zip.rs:118-158` | **УСТРАНЕНО 2026-09-27**: MAX_ENTRIES + 8 ГБ суммарно, как в filtered; тест stripping-пути |
 | D4 | **P1** | Refresh MSA-токена читает настройки из `default_root` — падает при кастомном каталоге данных | `auth/msa.rs:110-119` | **УСТРАНЕНО 2026-09-27**: `refresh_session(client, refresh, client_id)`, вызывающий читает настройки из фактического `paths` |
-| D5 | **P1** | Установка .mrpack/иконки через `window.prompt`, drag&drop отсутствует | `ModsPage.tsx:176`, `InstancesPage.tsx:54` | `tauri-plugin-dialog` + drop-зона |
+| D5 | **P1** | Установка .mrpack/иконки через `window.prompt`, drag&drop отсутствует | `ModsPage.tsx:176`, `InstancesPage.tsx:54` | `tauri-plugin-dialog` + drop-зона **УСТРАНЕНО 2026-09-27**: нативный диалог (plugin-dialog) + drag&drop .mrpack в Shell |
 | D6 | **P1** | Вечный спиннер при ошибке начальной загрузки (нет catch, нет повтора) | `App.tsx:16-28` | **УСТРАНЕНО 2026-09-27**: `useSettings.error`, экран с текстом ошибки и «Повторить» |
 | D7 | **P1** | Подтверждение удаления инстанса всегда `wipe: false`, вариант «навсегда» недостижим, текст мимо i18n | `InstancesPage.tsx:68-75` | **УСТРАНЕНО 2026-09-27**: диалог «В корзину (восстановимо) / Удалить навсегда / Отмена», i18n ru+en, проверено вживую через CDP |
-| D8 | **P1** | Ре-рендер всего дерева на каждую строку лога игры (стор без селекторов, `InstanceRow` без memo) | `state/instances.ts:118-129`, `HomePage.tsx:25-26` | `useShallow` + `memo` + батчинг логов |
-| D9 | **P2** | CSP `null` | `tauri.conf.json:24` | Базовая CSP + прогон приёмок |
-| D10 | **P2** | `instance_icon_set` читает произвольный файл по пути от рендера (эксфильтрация ≤300 КБ) | `content.rs:240-258` | Выбор через dialog API |
-| D11 | **P2** | Прогресс установки модпаков теряется (отдельный EventBus) | `modrinth/mrpack.rs:116` | Передавать шину из AppState |
-| D12 | **P2** | Инстанс модпака сохраняется до скачивания — «пустой рабочий» при сбое | `modrinth/mrpack.rs:142` | Сохранять после успеха / откат |
-| D13 | **P2** | Локализация ошибок мертва: `errorText`/`i18n/errors.json` не используются | `i18n/index.ts:27-31` | Проводить ошибки через `errorText` |
-| D14 | **P2** | Тяжёлый IO (import/duplicate/delete/zip) в async без `spawn_blocking` — фризы IPC | `import/mod.rs:124-268`, `instances/mod.rs:264-313` | Обернуть по образцу `instance_backup` |
-| D15 | **P2** | Утечка TcpListener при таймауте OAuth (accept-цикл живёт после cancel) | `commands/mod.rs:551-556` | CancellationToken/shutdown listener |
-| D16 | **P2** | `pid_alive` спавнит `tasklist` на каждый чек + гонка переиспользования PID | `instances/mod.rs:449-457` | `sysinfo::System::process` (уже в deps) |
-| D17 | **P2** | ModsPage — устаревший снапшот инстансов; смена targetId при busy ставит мод в чужой инстанс | `ModsPage.tsx:42-58,281-295` | Перезагрузка списка + disable select при busy |
-| D18 | **P2** | `dl_progress` приписывается первому попавшемуся запуску при двух параллельных | `state/instances.ts:130-147` | Привязка прогресса к instance_id события |
-| D19 | **P2** | Сохранение настроек инстанса из устаревшего снапшота (перезапись свежей статистики) | `InstanceSettingsModal.tsx:45-59` | Мержить только редактируемые поля |
-| D20 | **P2** | Настройки пишутся в ядро на каждый keystroke без debounce/ошибок | `SettingsPage.tsx:96-116` | Debounce + try/catch |
+| D8 | **P1** | Ре-рендер всего дерева на каждую строку лога игры (стор без селекторов, `InstanceRow` без memo) | `state/instances.ts:118-129`, `HomePage.tsx:25-26` | `useShallow` + `memo` + батчинг логов **УСТРАНЕНО 2026-09-27**: memo(InstanceRow), useShallow, батчинг логов 200мс/кап 500 |
+| D9 | **P2** | CSP `null` | `tauri.conf.json:24` | Базовая CSP + прогон приёмок **УСТРАНЕНО 2026-09-27**: CSP c connect-src ipc: и img-src cdn.modrinth.com |
+| D10 | **P2** | `instance_icon_set` читает произвольный файл по пути от рендера (эксфильтрация ≤300 КБ) | `content.rs:240-258` | Выбор через dialog API **УСТРАНЕНО 2026-09-27**: pickImagePath через нативный диалог |
+| D11 | **P2** | Прогресс установки модпаков теряется (отдельный EventBus) | `modrinth/mrpack.rs:116` | Передавать шину из AppState **УСТРАНЕНО 2026-09-27**: движок с шиной AppState, группа mrpack:*, engine_for/engine_done |
+| D12 | **P2** | Инстанс модпака сохраняется до скачивания — «пустой рабочий» при сбое | `modrinth/mrpack.rs:142` | Сохранять после успеха / откат **УСТРАНЕНО 2026-09-27**: сохранение после загрузки + rollback при сбое/отмене (тесты) |
+| D13 | **P2** | Локализация ошибок мертва: `errorText`/`i18n/errors.json` не используются | `i18n/index.ts:27-31` | Проводить ошибки через `errorText` **ЧАСТИЧНО 2026-09-27**: apiErrorText в ModsPage/AccountsModal, остальные экраны дальше |
+| D14 | **P2** | Тяжёлый IO (import/duplicate/delete/zip) в async без `spawn_blocking` — фризы IPC | `import/mod.rs:124-268`, `instances/mod.rs:264-313` | Обернуть по образцу `instance_backup` **ЧАСТИЧНО 2026-09-27**: import_archive в spawn_blocking; duplicate/delete/rename дальше |
+| D15 | **P2** | Утечка TcpListener при таймауте OAuth (accept-цикл живёт после cancel) | `commands/mod.rs:551-556` | CancellationToken/shutdown listener **УСТРАНЕНО 2026-09-27**: shutdown OAuth-listener по отмене |
+| D16 | **P2** | `pid_alive` спавнит `tasklist` на каждый чек + гонка переиспользования PID | `instances/mod.rs:449-457` | `sysinfo::System::process` (уже в deps) **УСТРАНЕНО 2026-09-27**: sysinfo вместо спавна tasklist |
+| D17 | **P2** | ModsPage — устаревший снапшот инстансов; смена targetId при busy ставит мод в чужой инстанс | `ModsPage.tsx:42-58,281-295` | Перезагрузка списка + disable select при busy **УСТРАНЕНО 2026-09-27**: перечитывание списка по focus/visibility, select disabled при busy |
+| D18 | **P2** | `dl_progress` приписывается первому попавшемуся запуску при двух параллельных | `state/instances.ts:130-147` | Привязка прогресса к instance_id события **ЧАСТИЧНО 2026-09-27**: детерминированный владелец dl_progress; полный фикс требует instance_id в контракте события |
+| D19 | **P2** | Сохранение настроек инстанса из устаревшего снапшота (перезапись свежей статистики) | `InstanceSettingsModal.tsx:45-59` | Мержить только редактируемые поля **УСТРАНЕНО 2026-09-27**: свежий инстанс + мерж только редактируемых полей |
+| D20 | **P2** | Настройки пишутся в ядро на каждый keystroke без debounce/ошибок | `SettingsPage.tsx:96-116` | Debounce + try/catch **УСТРАНЕНО 2026-09-27**: debounce 400мс + обработка ошибок сохранения |
 | D21 | **P2** | Модалки: нет focus trap/возврата фокуса; CreateInstanceDialog без Escape; тогглы без aria-label | `CreateInstanceDialog.tsx:75-165`, `SettingsPage.tsx:294-308` | Единый хук useModal (Escape+trap+restore) |
 | D22 | **P3** | Паника лог-райтера при недоступном файле лога; открытие файла на каждую строку | `lib.rs:47-54` | Открыть один раз / tracing-appender |
-| D23 | **P3** | Чтение манифестов из чужих zip без капа размера (OOM) | `import/mod.rs:141-147,193-199,238-245` | Кап 16 МБ / проверка `size()` |
-| D24 | **P3** | TOCTOU в `InstanceLock::acquire` (межпроцессная гонка) | `instances/mod.rs:406-424` | `create_new(true)` |
+| D23 | **P3** | Чтение манифестов из чужих zip без капа размера (OOM) | `import/mod.rs:141-147,193-199,238-245` | Кап 16 МБ / проверка `size()` **УСТРАНЕНО 2026-09-27**: кап 16 МБ на манифесты из чужих zip + тесты |
+| D24 | **P3** | TOCTOU в `InstanceLock::acquire` (межпроцессная гонка) | `instances/mod.rs:406-424` | `create_new(true)` **УСТРАНЕНО 2026-09-27**: create_new(true), снятие только мёртвых lock-файлов |
 | D25 | **P3** | .mrpack (500 МБ+) и JRE-zip целиком в память | `modrinth/mrpack.rs:261-281`, `java/adoptium.rs:78-86` | Стримить через движок в temp |
 | D26 | **P3** | Мёртвый код очереди загрузок: `persist_queue` пишется, `load_queue` не вызывается | `net/download.rs:405-488` | Подключить или убрать |
-| D27 | **P3** | Skip онбординга не сохраняет `onboardingDone` — мастер появляется снова | `Onboarding.tsx:110-114` | Сохранять флаг при skip (решение владельца) |
+| D27 | **P3** | Skip онбординга не сохраняет `onboardingDone` — мастер появляется снова | `Onboarding.tsx:110-114` | Сохранять флаг при skip (решение владельца) **УСТРАНЕНО 2026-09-27**: skip сохраняет onboardingDone |
 | D28 | **P3** | JVM-флаги не валидируются (`-XX:OnOutOfMemoryError=...`), `ram_mb` без верхней границы | `run.rs:261-262` | Blacklist флагов + clamp RAM |
 | D29 | **P3** | Лишние зависимости: tokio full, clap для всего, opener×2, react-virtual не используется | `Cargo.toml:22-47`, `package.json` | Точить фичи |
 

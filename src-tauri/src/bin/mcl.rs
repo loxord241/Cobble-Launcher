@@ -229,11 +229,28 @@ async fn run(cli: Cli) -> Result<()> {
         } => cmd_loader_install(&paths, &settings, &id, &loader, loader_version.as_deref()).await,
         Cmd::MrpackInstall { file, name } => {
             let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+            // У CLI шины нет — движок со своим EventBus (как в остальных командах mcl).
+            let engine = DownloadEngine::new(
+                client.clone(),
+                settings.download_parallelism as usize,
+                EventBus::default(),
+            );
+            let pack_path = Path::new(&file);
+            // Ключ группы — как у GUI: имя файла (id пака до парсинга неизвестен).
+            let group = format!(
+                "mrpack:{}",
+                pack_path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            );
             let inst = mc_launcher_v2_lib::modrinth::mrpack::install_mrpack(
                 &paths,
                 &settings,
+                engine,
                 client,
-                std::path::Path::new(&file),
+                &group,
+                pack_path,
                 name.as_deref(),
             )
             .await?;

@@ -1,11 +1,13 @@
 // Страница инстансов «Сланца»: строки + создание/удаление + фильтр поиска + управление.
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Plus, SearchX, Inbox, X } from "lucide-react";
+import { useShallow } from "zustand/react/shallow";
 import { useInstances } from "../../state/instances";
 import { useAccounts } from "../../state/accounts";
 import { api } from "../../api/client";
 import { useSettings } from "../../state/settings";
-import { t } from "../../i18n";
+import { apiErrorText, t } from "../../i18n";
+import { pickImagePath } from "../components/pickFile";
 import InstanceRow from "../components/InstanceRow";
 import CreateInstanceDialog from "../components/CreateInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
@@ -13,8 +15,39 @@ import RenameInstanceModal from "../components/RenameInstanceModal";
 import LogViewerModal from "../components/LogViewerModal";
 import type { Instance } from "../../api/types";
 
+/** Колбэки строки (без status): строятся один раз на инстанс, чтобы memo работал. */
+type RowCallbacks = {
+  onLaunch: () => void;
+  onStop: () => void;
+  onOptimize: () => void;
+  onFolder: () => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  onSettings: () => void;
+  onRename: () => void;
+  onLogs: () => void;
+  onBackup: () => void;
+  onExport: () => void;
+  onIconSet: () => void;
+  onIconClear?: () => void;
+};
+
 export default function InstancesPage({ query }: { query: string }) {
-  const { list, status, launch, stop, optimize, remove, duplicate, error, setError, load } = useInstances();
+  const { list, status, launch, stop, optimize, remove, duplicate, error, setError, load } =
+    useInstances(
+      useShallow((s) => ({
+        list: s.list,
+        status: s.status,
+        launch: s.launch,
+        stop: s.stop,
+        optimize: s.optimize,
+        remove: s.remove,
+        duplicate: s.duplicate,
+        error: s.error,
+        setError: s.setError,
+        load: s.load,
+      })),
+    );
   const { list: accounts } = useAccounts();
   const { settings } = useSettings();
   const [creating, setCreating] = useState(false);
@@ -31,44 +64,56 @@ export default function InstancesPage({ query }: { query: string }) {
   const q = query.trim().toLowerCase();
   const visible = q ? list.filter((i) => i.name.toLowerCase().includes(q)) : list;
 
-  const rowProps = (inst: Instance) => ({
-    status: status[inst.id],
-    onLaunch: () =>
-      void launch(inst.id, activeAccount?.name ?? "Player").catch((e) => setError(String(e))),
-    onStop: () => void stop(inst.id).catch((e) => setError(String(e))),
-    onOptimize: () => void optimize(inst.id).catch((e) => setError(String(e))),
-    onFolder: () => void api.instanceOpenDir(inst.id).catch((e) => setError(String(e))),
-    onDuplicate: () => void duplicate(inst.id).catch((e) => setError(String(e))),
-    onSettings: () => setSettingsInst(inst),
-    onRename: () => setRenameInst(inst),
-    onLogs: () => setLogsInst(inst),
-    onBackup: () =>
-      void api
-        .instanceBackup(inst.id)
-        .then((r) => setNotice(t("instances.backup.done", { path: r.path })))
-        .catch((e) => setError(String(e))),
-    onExport: () =>
-      void api
-        .instanceExport(inst.id)
-        .then((r) => setNotice(t("instances.export.done", { path: r.path })))
-        .catch((e) => setError(String(e))),
-    onIconSet: () => {
-      const path = window.prompt(t("instances.icon.prompt"));
-      if (!path) return;
-      void api
-        .instanceIconSet(inst.id, path)
-        .then(() => void load())
-        .catch((e) => setError(String(e)));
-    },
-    onIconClear: inst.icon
-      ? () =>
+  // D8: колбэки строк строятся один раз на список (замыкание на inst), а не
+  // заново на каждый рендер — иначе memo(InstanceRow) не срабатывает.
+  const rowCallbacks = useMemo(() => {
+    const byId = new Map<string, RowCallbacks>();
+    for (const inst of list) {
+      const cb: RowCallbacks = {
+        onLaunch: () =>
+          void launch(inst.id, activeAccount?.name ?? "Player").catch((e) => setError(String(e))),
+        onStop: () => void stop(inst.id).catch((e) => setError(String(e))),
+        onOptimize: () => void optimize(inst.id).catch((e) => setError(String(e))),
+        onFolder: () => void api.instanceOpenDir(inst.id).catch((e) => setError(String(e))),
+        onDuplicate: () => void duplicate(inst.id).catch((e) => setError(String(e))),
+        onSettings: () => setSettingsInst(inst),
+        onRename: () => setRenameInst(inst),
+        onLogs: () => setLogsInst(inst),
+        onBackup: () =>
+          void api
+            .instanceBackup(inst.id)
+            .then((r) => setNotice(t("instances.backup.done", { path: r.path })))
+            .catch((e) => setError(String(e))),
+        onExport: () =>
+          void api
+            .instanceExport(inst.id)
+            .then((r) => setNotice(t("instances.export.done", { path: r.path })))
+            .catch((e) => setError(String(e))),
+        onIconSet: () => {
+          void (async () => {
+            try {
+              const path = await pickImagePath();
+              if (!path) return; // отмена диалога
+              await api.instanceIconSet(inst.id, path);
+              await load();
+            } catch (e) {
+              setError(apiErrorText(e));
+            }
+          })();
+        },
+        onDelete: () => setDeleteInst(inst),
+      };
+      if (inst.icon) {
+        cb.onIconClear = () =>
           void api
             .instanceIconRemove(inst.id)
             .then(() => void load())
-            .catch((e) => setError(String(e)))
-      : undefined,
-    onDelete: () => setDeleteInst(inst),
-  });
+            .catch((e) => setError(String(e)));
+      }
+      byId.set(inst.id, cb);
+    }
+    return byId;
+  }, [list, activeAccount?.name, launch, stop, optimize, duplicate, setError, load]);
 
   return (
     <div className="mx-auto flex max-w-[980px] flex-col gap-4">
@@ -112,9 +157,17 @@ export default function InstancesPage({ query }: { query: string }) {
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {visible.map((inst) => (
-            <InstanceRow key={inst.id} inst={inst} {...rowProps(inst)} />
-          ))}
+          {visible.map((inst) => {
+            const callbacks = rowCallbacks.get(inst.id);
+            return callbacks ? (
+              <InstanceRow
+                key={inst.id}
+                inst={inst}
+                status={status[inst.id]}
+                {...callbacks}
+              />
+            ) : null;
+          })}
         </div>
       )}
 

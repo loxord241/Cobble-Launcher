@@ -1,8 +1,9 @@
 [package]
 name = "mc-launcher-v2"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Быстрый и честный лаунчер Minecraft для Windows"
+authors = ["loxord241"]
+license = "MIT"
 edition = "2021"
 # Два бинарника: GUI (main.rs) и CLI mcl — tauri dev собирает дефолтный.
 default-run = "mc-launcher-v2"
@@ -45,6 +46,7 @@ tracing-appender = "0.2.5"
 sysinfo = "0.39.6"
 base64 = "0.23.1"
 keyring = "4.2.0"
+tauri-plugin-dialog = "2.8.0"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

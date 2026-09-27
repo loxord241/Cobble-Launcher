@@ -1,6 +1,6 @@
 // Строка инстанса «Сланца»: плитка 44 + имя/статус + чип версии + Play/Stop 40
 // + кебаб с меню действий (все действия достижимы с клавиатуры). Спека фаза C.
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
   Play,
   Square,
@@ -21,7 +21,7 @@ import { t } from "../../i18n";
 import type { Instance } from "../../api/types";
 import type { LaunchStatus } from "../../state/instances";
 
-export default function InstanceRow({
+function InstanceRow({
   inst,
   status,
   onLaunch,
@@ -269,6 +269,10 @@ export default function InstanceRow({
     </div>
   );
 }
+
+// D8: строка перерисовывается только при смене своих пропсов (inst/status/
+// колбэки), а не на каждое событие стора.
+export default memo(InstanceRow);
 
 function MenuItem({
   icon: Icon,

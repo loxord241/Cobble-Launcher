@@ -8,6 +8,7 @@ pub mod store;
 use crate::errors::{LauncherError, Result};
 use crate::util::fs::{atomic_write, long_path};
 use serde::{Deserialize, Serialize};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -402,26 +403,57 @@ pub struct InstanceLock {
     expected_pid: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
+/// Создать `.lock` атомарно: `create_new` отдаёт AlreadyExists, если файл уже
+/// есть, — проверка «файла нет» и запись становятся одной операцией (D24).
+fn create_lock_file(long: &Path, pid: u32) -> std::io::Result<()> {
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(long)?;
+    f.write_all(pid.to_string().as_bytes())?;
+    f.sync_all()?;
+    Ok(())
+}
+
+/// PID из `.lock`, если он там корректно записан. Пустой или битый файл → None:
+/// такой lock нельзя ни снять (PID неизвестен — вдруг его пишет живой процесс
+/// прямо сейчас), ни объявить своим.
+fn lock_file_pid(long: &Path) -> Option<u32> {
+    std::fs::read_to_string(long).ok()?.trim().parse::<u32>().ok()
+}
+
+/// Сообщение «занято» — одно на все ветки acquire, чтобы UI/i18n видели
+/// тот же текст, что и до D24.
+fn lock_busy() -> LauncherError {
+    LauncherError::InvalidInput("инстанс уже запущен (.lock)".into())
+}
+
 impl InstanceLock {
     pub fn acquire(instance_dir: &Path) -> Result<Self> {
         let path = instance_dir.join(".lock");
         let long = long_path(&path);
-        if long.exists() {
-            // Протухший lock: если PID из файла мёртв — убираем.
-            if let Ok(pid) = std::fs::read_to_string(&long) {
-                let pid = pid.trim().parse::<u32>().unwrap_or(0);
-                if !pid_alive(pid) {
-                    let _ = std::fs::remove_file(&long);
-                }
-            }
-        }
-        if long.exists() {
-            return Err(LauncherError::InvalidInput(
-                "инстанс уже запущен (.lock)".into(),
-            ));
-        }
         let my_pid = std::process::id();
-        std::fs::write(&long, my_pid.to_string())?;
+        // Раньше было «проверил exists → записал» — межпроцессная гонка: два
+        // запуска проходили проверку и оба писали свой PID. Теперь владелец
+        // один: у кого create_new удался (D24).
+        if let Err(e) = create_lock_file(&long, my_pid) {
+            if e.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(e.into());
+            }
+            // Чужой .lock можно снять только протухший: в файле валидный PID,
+            // а процесса с ним уже нет. Иначе — «занято», файл не трогаем.
+            let Some(stale_pid) = lock_file_pid(&long).filter(|pid| !pid_alive(*pid)) else {
+                return Err(lock_busy());
+            };
+            tracing::warn!("протухший .lock (PID {stale_pid} мёртв), снимаю: {long:?}");
+            let _ = std::fs::remove_file(&long);
+            // Гонка может повториться (lock перехватил третий процесс) —
+            // тогда он и владелец.
+            create_lock_file(&long, my_pid).map_err(|e| match e.kind() {
+                std::io::ErrorKind::AlreadyExists => lock_busy(),
+                _ => e.into(),
+            })?;
+        }
         Ok(Self {
             path,
             expected_pid: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(my_pid)),
@@ -446,23 +478,21 @@ impl Drop for InstanceLock {
     }
 }
 
-#[cfg(windows)]
+/// Жив ли процесс с таким PID. Раньше здесь на каждый чек спавнился `tasklist`
+/// (создание процесса и консоли на каждый инстанс в списке) — теперь один
+/// снапшот списка процессов через sysinfo, без новых процессов (D16).
+/// Семантика та же: «жив по PID»; несуществующий PID (в т.ч. отсутствующий в
+/// снапшоте) — мёртв.
 fn pid_alive(pid: u32) -> bool {
-    std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-        .creation_flags(0x0800_0000)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-        .unwrap_or(false)
+    let pid = sysinfo::Pid::from_u32(pid);
+    let mut sys = sysinfo::System::new();
+    // Обновляем только запрошенный PID: остальные процессы не открываются.
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+    sys.process(pid).is_some()
 }
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-
-#[cfg(not(windows))]
-fn pid_alive(_pid: u32) -> bool {
-    false
-}
 
 #[cfg(test)]
 mod tests {
@@ -585,6 +615,41 @@ mod tests {
         let loaded: Instance = serde_json::from_str(old_json).unwrap();
         assert_eq!(loaded.mc_version, "1.19.2", "читает snake_case через alias");
         assert_eq!(loaded.ram_mb, 4096);
+    }
+
+    /// D16: живость PID по снапшоту sysinfo (без спавна `tasklist`).
+    #[test]
+    fn pid_alive_sees_own_process_and_dead_pid() {
+        assert!(pid_alive(std::process::id()), "свой процесс жив");
+        assert!(!pid_alive(u32::MAX), "несуществующий PID мёртв");
+    }
+
+    /// D24: `.lock` создаётся атомарно (create_new), поэтому чужой файл не
+    /// перетирается. Пустой файл — это чужой lock в окне между созданием и
+    /// записью PID: считаем «занято» и НЕ удаляем (иначе два процесса решили
+    /// бы, что владеют инстансом). Снять можно только протухший lock.
+    #[test]
+    fn lock_create_new_keeps_foreign_file() {
+        let (_d, paths) = test_paths();
+        let inst = Instance::new("x", "1.20.1");
+        save(&paths, &inst).unwrap();
+        let dir = instance_dir(&paths, &inst.id);
+
+        std::fs::write(dir.join(".lock"), "").unwrap();
+        let Err(err) = InstanceLock::acquire(&dir) else {
+            panic!("пустой чужой .lock должен считаться занятостью");
+        };
+        assert_eq!(err.code(), "invalid_input");
+        assert!(dir.join(".lock").exists(), "чужой lock не удаляем");
+
+        // Протухший lock (PID мёртв) снимаем и создаём свой: иначе после
+        // падения игры инстанс остался бы «занятым» навсегда.
+        std::fs::write(dir.join(".lock"), u32::MAX.to_string()).unwrap();
+        let lock = InstanceLock::acquire(&dir).unwrap();
+        let text = std::fs::read_to_string(dir.join(".lock")).unwrap();
+        assert_eq!(text.trim(), std::process::id().to_string());
+        drop(lock);
+        assert!(!dir.join(".lock").exists(), "свой lock снимаем на выходе");
     }
 
     #[test]

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { X, Trash2, Globe, Shield, User, Plus, ExternalLink } from "lucide-react";
 import { useAccounts, accountKindLabelKey } from "../../state/accounts";
 import { useSettings } from "../../state/settings";
-import { t } from "../../i18n";
+import { apiErrorText, t } from "../../i18n";
 
 type Tab = "msa" | "ely" | "offline";
 
@@ -36,7 +36,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
       setOfflineNick("");
       setStatusMsg(t("accounts.offlineAdded", { name: nick }));
     } catch (err) {
-      setError(String((err as { message?: string })?.message ?? err));
+      setError(apiErrorText(err));
     } finally {
       setBusy(false);
     }
@@ -51,7 +51,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
       await setActive(acc.id);
       setStatusMsg(t("accounts.msaSuccess", { name: acc.name }));
     } catch (err) {
-      setError(String((err as { message?: string })?.message ?? err));
+      setError(apiErrorText(err));
       setStatusMsg(null);
     } finally {
       setBusy(false);
@@ -70,7 +70,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
       setElyPass("");
       setStatusMsg(t("accounts.elySuccess", { name: acc.name }));
     } catch (err) {
-      setError(String((err as { message?: string })?.message ?? err));
+      setError(apiErrorText(err));
     } finally {
       setBusy(false);
     }
@@ -81,7 +81,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
       try {
         await remove(id);
       } catch (err) {
-        setError(String(err));
+        setError(apiErrorText(err));
       }
     }
   };

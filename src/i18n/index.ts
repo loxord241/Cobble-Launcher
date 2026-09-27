@@ -29,3 +29,25 @@ export function errorText(e: ErrorPayload): string {
   const base = localized ? `${localized}` : e.message;
   return e.hint ? `${base}. ${e.hint}` : base;
 }
+
+/**
+ * Ошибка из промиса/IPC в текст для UI (D13). Payload ядра `{code, message, hint?}`
+ * проходит через errorText; голые Error/строки показываем как есть; вместо
+ * `[object Object]` — честная «внутренняя ошибка» из errors.json.
+ */
+export function apiErrorText(e: unknown): string {
+  if (typeof e === "string" && e) return e;
+  const payload = e as { code?: unknown; message?: unknown; hint?: unknown } | null | undefined;
+  const message =
+    typeof payload?.message === "string" && payload.message ? payload.message : undefined;
+  if (typeof payload?.code === "string" && payload.code) {
+    return errorText({
+      code: payload.code,
+      message: message ?? payload.code,
+      hint: typeof payload?.hint === "string" && payload.hint ? payload.hint : undefined,
+    });
+  }
+  if (message) return message;
+  if (e instanceof Error && e.message) return e.message;
+  return errorText({ code: "internal", message: String(e) });
+}

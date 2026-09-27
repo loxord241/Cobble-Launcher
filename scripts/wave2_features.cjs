@@ -22,18 +22,40 @@ async function main() {
   const iconPath = "C:/Users/Admin/AppData/Local/Temp/mcl-test-icon.png";
   fs.writeFileSync(iconPath, PNG_1PX);
 
-  // 1. Иконка: смена через кебаб-меню (prompt-диалог), <img> в строке.
+  // 1. Иконка: установка через IPC (нативный диалог автоматизировать нельзя),
+  //    отображение в строке и снятие — через живой UI.
   await page.getByRole("navigation").getByRole("button", { name: /^Инстансы/ }).click();
   await page.waitForTimeout(600);
   const row = page.locator(".group.grid").first();
-  await row.getByRole("button", { name: /Действия/ }).click();
-  await page.waitForTimeout(300);
-  page.once("dialog", (d) => d.accept(iconPath));
-  await page.getByRole("menuitem", { name: "Сменить иконку…" }).click();
-  await page.waitForTimeout(800);
-  (await row.locator("img[src^='data:image/png;base64,']").count()) > 0
-    ? ok("иконка установлена и видна в строке (data-URL)")
-    : fail("иконка не появилась в строке");
+  const instId = await page.evaluate(async () => {
+    const ids = await window.__TAURI__.core.invoke("instance_list");
+    return ids[0].id;
+  }).catch(() => null);
+  if (!instId) {
+    fail("window.__TAURI__ недоступен — нужен withGlobalTauri в tauri.conf (временный флаг приёмки)");
+    console.log("ALL WAVE2 CHECKS PASSED".replace("PASSED", "SKIPPED-ICON"));
+  }
+  if (instId) {
+    const err = await page.evaluate(async ({ id, p }) => {
+      try {
+        await window.__TAURI__.core.invoke("instance_icon_set", { id, path: p });
+        return null;
+      } catch (e) {
+        return String(e);
+      }
+    }, { id: instId, p: iconPath });
+    if (err) fail(`instance_icon_set упал: ${err}`);
+    // Стор UI узнаёт об иконке только после перечитывания списка —
+    // перезагружаем страницу и возвращаемся на Инстансы.
+    await page.reload({ waitUntil: "networkidle" }).catch(() => {});
+    await page.waitForTimeout(800);
+    await page.getByRole("navigation").getByRole("button", { name: /^Инстансы/ }).click();
+    await page.waitForTimeout(600);
+    const row2 = page.locator(".group.grid").first();
+    (await row2.locator("img[src^='data:image/png;base64,']").count()) > 0
+      ? ok("иконка установлена (IPC) и видна в строке (data-URL)")
+      : fail("иконка не появилась в строке");
+  }
 
   // 2. Убрать иконку: буква вернулась.
   await row.getByRole("button", { name: /Действия/ }).click();

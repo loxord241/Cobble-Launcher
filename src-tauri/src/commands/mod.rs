@@ -441,15 +441,32 @@ pub async fn mrpack_install(
     path: String,
     name: Option<String>,
 ) -> Result<Instance> {
+    // Ключ реестра движков = группа задач установки: иначе «Стоп» не нашёл бы,
+    // что отменять (D1). У .mrpack до парсинга манифеста нет id — берём имя файла.
+    let pack_path = std::path::Path::new(&path);
+    let group = format!(
+        "mrpack:{}",
+        pack_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    );
+    let engine = state.engine_for(&group).await;
     let http = state.http().await;
-    crate::modrinth::mrpack::install_mrpack(
+    let settings = state.settings.read().await.clone();
+    let out = crate::modrinth::mrpack::install_mrpack(
         &state.paths,
-        &state.settings.read().await.clone(),
+        &settings,
+        engine,
         http,
-        std::path::Path::new(&path),
+        &group,
+        pack_path,
         name.as_deref(),
     )
-    .await
+    .await;
+    // Группу снимаем в любом исходе (успех/ошибка) — как в content_install.
+    state.engine_done(&group);
+    out
 }
 
 /// Установка модпака Modrinth по project_id: последняя версия → .mrpack →
@@ -460,15 +477,22 @@ pub async fn modpack_install(
     project_id: String,
     name: Option<String>,
 ) -> Result<Instance> {
+    let group = format!("mrpack:{project_id}");
+    let engine = state.engine_for(&group).await;
     let http = state.http().await;
-    crate::modrinth::mrpack::install_modpack_project(
+    let settings = state.settings.read().await.clone();
+    let out = crate::modrinth::mrpack::install_modpack_project(
         &state.paths,
-        &state.settings.read().await.clone(),
+        &settings,
+        engine,
         http,
+        &group,
         &project_id,
         name.as_deref(),
     )
-    .await
+    .await;
+    state.engine_done(&group);
+    out
 }
 
 // ---------- оптимизация и процессы (спека §6.9, §6.10) ----------

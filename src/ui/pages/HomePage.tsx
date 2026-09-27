@@ -4,6 +4,7 @@
 // секция модпаков не рисуется без сети/данных.
 import { useEffect, useMemo, useState } from "react";
 import { Download, Inbox, Plus, SearchX, Sparkles, FolderOpen } from "lucide-react";
+import { useShallow } from "zustand/react/shallow";
 import { useInstances } from "../../state/instances";
 import { useAccounts } from "../../state/accounts";
 import { useSettings } from "../../state/settings";
@@ -15,6 +16,19 @@ import RenameInstanceModal from "../components/RenameInstanceModal";
 import LogViewerModal from "../components/LogViewerModal";
 import type { Instance, SearchHit } from "../../api/types";
 
+/** Колбэки строки (без status): строятся один раз на инстанс, чтобы memo работал. */
+type RowCallbacks = {
+  onLaunch: () => void;
+  onStop: () => void;
+  onOptimize: () => void;
+  onFolder: () => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  onSettings: () => void;
+  onRename: () => void;
+  onLogs: () => void;
+};
+
 export default function HomePage({
   query,
   onCreate,
@@ -22,8 +36,21 @@ export default function HomePage({
   query: string;
   onCreate: () => void;
 }) {
+  // D8: узкие селекторы — страница не перерисовывается на каждую строку лога.
   const { list, status, launch, stop, optimize, remove, duplicate, setError, load } =
-    useInstances();
+    useInstances(
+      useShallow((s) => ({
+        list: s.list,
+        status: s.status,
+        launch: s.launch,
+        stop: s.stop,
+        optimize: s.optimize,
+        remove: s.remove,
+        duplicate: s.duplicate,
+        setError: s.setError,
+        load: s.load,
+      })),
+    );
   const { list: accounts } = useAccounts();
   const { settings } = useSettings();
   const [packs, setPacks] = useState<SearchHit[] | null>(null);
@@ -75,22 +102,30 @@ export default function HomePage({
   const heroStatus = hero ? status[hero.id] : undefined;
   const heroBusy = heroStatus && heroStatus.phase !== "exited";
 
-  const rowProps = (inst: Instance) => ({
-    status: status[inst.id],
-    onLaunch: () => void launch(inst.id, activeAccount?.name ?? "Player").catch((e) => setError(String(e))),
-    onStop: () => void stop(inst.id).catch((e) => setError(String(e))),
-    onOptimize: () => void optimize(inst.id).catch((e) => setError(String(e))),
-    onFolder: () => void api.instanceOpenDir(inst.id).catch((e) => setError(String(e))),
-    onDuplicate: () => void duplicate(inst.id).catch((e) => setError(String(e))),
-    onSettings: () => setSettingsInst(inst),
-    onRename: () => setRenameInst(inst),
-    onLogs: () => setLogsInst(inst),
-    onDelete: () => {
-      if (window.confirm(t("instances.confirmDelete", { name: inst.name }))) {
-        void remove(inst.id, false).catch((e) => setError(String(e)));
-      }
-    },
-  });
+  // D8: колбэки строк строятся один раз на список (замыкание на inst), а не
+  // заново на каждый рендер — иначе memo(InstanceRow) не срабатывает.
+  const rowCallbacks = useMemo(() => {
+    const byId = new Map<string, RowCallbacks>();
+    for (const inst of list) {
+      byId.set(inst.id, {
+        onLaunch: () =>
+          void launch(inst.id, activeAccount?.name ?? "Player").catch((e) => setError(String(e))),
+        onStop: () => void stop(inst.id).catch((e) => setError(String(e))),
+        onOptimize: () => void optimize(inst.id).catch((e) => setError(String(e))),
+        onFolder: () => void api.instanceOpenDir(inst.id).catch((e) => setError(String(e))),
+        onDuplicate: () => void duplicate(inst.id).catch((e) => setError(String(e))),
+        onSettings: () => setSettingsInst(inst),
+        onRename: () => setRenameInst(inst),
+        onLogs: () => setLogsInst(inst),
+        onDelete: () => {
+          if (window.confirm(t("instances.confirmDelete", { name: inst.name }))) {
+            void remove(inst.id, false).catch((e) => setError(String(e)));
+          }
+        },
+      });
+    }
+    return byId;
+  }, [list, activeAccount?.name, launch, stop, optimize, duplicate, remove, setError]);
 
   return (
     <div className="mx-auto flex max-w-[980px] flex-col gap-5">
@@ -197,9 +232,17 @@ export default function HomePage({
             </div>
           </div>
         ) : (
-          visible.map((inst) => (
-            <InstanceRow key={inst.id} inst={inst} {...rowProps(inst)} />
-          ))
+          visible.map((inst) => {
+            const callbacks = rowCallbacks.get(inst.id);
+            return callbacks ? (
+              <InstanceRow
+                key={inst.id}
+                inst={inst}
+                status={status[inst.id]}
+                {...callbacks}
+              />
+            ) : null;
+          })
         )}
       </section>
 

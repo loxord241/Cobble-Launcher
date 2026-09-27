@@ -54,6 +54,20 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
     }
   };
 
+  /** D27: «Пропустить» тоже сохраняет onboardingDone — мастер не вернётся. */
+  const skip = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await update({ onboardingDone: true });
+      onDone();
+    } catch (e) {
+      setError((e as { message?: string })?.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   void settings;
 
   return (
@@ -101,13 +115,16 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                 </option>
               ))}
             </select>
-            {error && <p className="mt-3 text-sm text-error" role="alert">{error}</p>}
           </div>
         )}
 
+        {/* Ошибка видна на всех шагах: «Пропустить» тоже пишет в ядро (D27). */}
+        {error && <p className="mt-3 text-sm text-error" role="alert">{error}</p>}
+
         <div className="mt-6 flex items-center gap-3">
           <button
-            onClick={onDone}
+            onClick={() => void skip()}
+            disabled={busy}
             className="text-sm text-text-muted hover:text-text"
           >
             {t("onboarding.skip")}

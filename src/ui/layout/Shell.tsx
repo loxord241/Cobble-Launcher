@@ -2,7 +2,9 @@
 // (variant-01-slate.html). Компоненты — только презентация; данные из сторов/IPC.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getVersion } from "@tauri-apps/api/app";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   House,
   FolderOpen,
@@ -17,7 +19,8 @@ import {
   Check,
   UserPlus,
 } from "lucide-react";
-import { t } from "../../i18n";
+import { apiErrorText, t } from "../../i18n";
+import { api } from "../../api/client";
 import { useInstances } from "../../state/instances";
 import { useSettings } from "../../state/settings";
 import { useAccounts, accountKindLabelKey } from "../../state/accounts";
@@ -39,16 +42,77 @@ const NAV: { id: Page; icon: typeof House; label: string }[] = [
 
 const win = () => getCurrentWindow();
 
+/** Сколько живёт баннер результата drop-установки .mrpack (D5b). */
+const NOTICE_MS = 6000;
+
 export default function Shell({ onLogout }: { onLogout: () => void }) {
   const [page, setPage] = useState<Page>("home");
   const [query, setQuery] = useState("");
   const [version, setVersion] = useState("0.1.0");
   const [accountOpen, setAccountOpen] = useState(false);
   const [accountsModalOpen, setAccountsModalOpen] = useState(false);
+  const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const noticeTimer = useRef<number | null>(null);
+  const dropBusy = useRef(false);
   const { load, subscribeEvents, list, crashReport, clearCrashReport } = useInstances();
   const { settings, load: loadSettings } = useSettings();
   const { list: accounts, load: loadAccounts, setActive } = useAccounts();
+
+  const showNotice = useCallback((kind: "ok" | "error", text: string) => {
+    setNotice({ kind, text });
+    if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(null), NOTICE_MS);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
+    },
+    [],
+  );
+
+  // D5b: .mrpack, брошенный на окно, ставится тем же ядерным вызовом, что и из
+  // каталога. Файловые drop'ы нативно принимает Tauri (dragDropEnabled=true),
+  // поэтому пути берём из onDragDropEvent — HTML5-события их не содержат.
+  const installDroppedMrpack = useCallback(
+    async (path: string) => {
+      if (dropBusy.current) return;
+      dropBusy.current = true;
+      try {
+        const inst = await api.mrpackInstall(path);
+        showNotice("ok", t("shell.drop.installed", { name: inst.name, version: inst.mcVersion }));
+        void load(); // новый инстанс — обновляем счётчик в навигации и страницы
+      } catch (e) {
+        showNotice("error", t("shell.drop.error", { message: apiErrorText(e) }));
+      } finally {
+        dropBusy.current = false;
+      }
+    },
+    [load, showNotice],
+  );
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let disposed = false;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type !== "drop") return;
+        // Не наш drop (нет .mrpack) — не перехватываем: файл просто игнорируется.
+        const path = event.payload.paths.find((p) => p.toLowerCase().endsWith(".mrpack"));
+        if (!path) return;
+        void installDroppedMrpack(path);
+      })
+      .then((un) => {
+        if (disposed) un();
+        else unlisten = un;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [installDroppedMrpack]);
 
   useEffect(() => {
     void loadSettings().then(() => void load());
@@ -88,7 +152,13 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   );
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-bg text-text">
+    <div
+      className="flex h-screen flex-col overflow-hidden bg-bg text-text"
+      // Гасим дефолт webview на файловый drop (иначе он открыл бы файл); сама
+      // установка .mrpack идёт через onDragDropEvent выше.
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => e.preventDefault()}
+    >
       <header
         data-tauri-drag-region
         className="flex h-[52px] flex-none items-center gap-4 border-b border-border-app pl-4 pr-3"
@@ -221,6 +291,20 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
           </button>
         </div>
       </header>
+
+      {/* Результат drop-установки .mrpack: тот же инлайн-баннер, что в страницах. */}
+      {notice && (
+        <div
+          role={notice.kind === "error" ? "alert" : "status"}
+          className={`mx-3 mt-3 rounded-lg border p-3 text-sm ${
+            notice.kind === "error"
+              ? "border-error/40 bg-error/10 text-error"
+              : "border-success/40 bg-success/10 text-success"
+          }`}
+        >
+          {notice.text}
+        </div>
+      )}
 
       <div className="grid min-h-0 flex-1 grid-cols-[216px_1fr]">
         <nav

@@ -42,8 +42,12 @@ export default function InstanceSettingsModal({
     setBusy(true);
     setError(null);
     try {
+      // D19: снапшот instance мог устареть (ядро дописало playSeconds/
+      // launchCount за время, пока модалка открыта) — перечитываем актуальный
+      // инстанс и накладываем только редактируемые поля.
+      const fresh = await api.instanceSettingsGet(instance.id);
       const updated: Instance = {
-        ...instance,
+        ...fresh,
         ramMb,
         javaPath: javaPath.trim() || undefined,
         jvmFlags: jvmFlags

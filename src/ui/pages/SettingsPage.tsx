@@ -1,12 +1,19 @@
 // Настройки «Сланца»: панели с капс-заголовками; разделы Темы (карточки),
 // Общие (RAM/параллелизм/снапшоты), Java (сканирование и установка Adoptium), Сеть и Данные.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, RefreshCw, Check, Coffee } from "lucide-react";
 import { useSettings } from "../../state/settings";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
 import ThemeCards from "../components/ThemeCards";
-import type { JavaInstall, RamGuide } from "../../api/types";
+import type { JavaInstall, RamGuide, Settings } from "../../api/types";
+
+/** D20: пауза перед записью в ядро — поля не пишутся на каждый keystroke. */
+const SAVE_DEBOUNCE_MS = 400;
+
+function messageOf(e: unknown): string {
+  return String((e as { message?: string })?.message ?? e);
+}
 
 export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset: () => void }) {
   const { settings, update } = useSettings();
@@ -17,6 +24,49 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
   const [javaMsg, setJavaMsg] = useState<string | null>(null);
   const [proxyInput, setProxyInput] = useState("");
   const [azureInput, setAzureInput] = useState("");
+  // D20: числовые поля держим локально, в ядро уходит отложенная пачка.
+  const [ramInput, setRamInput] = useState(settings?.defaultRamMb ?? 2048);
+  const [parInput, setParInput] = useState(settings?.downloadParallelism ?? 16);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPatch = useRef<Partial<Settings>>({});
+
+  const commit = useCallback(
+    (patch: Partial<Settings>) => {
+      void update(patch)
+        .then(() => setSaveError(null))
+        .catch((e) => setSaveError(messageOf(e)));
+    },
+    [update],
+  );
+
+  /** Отложенная запись: копим патч и пишем его одной пачкой через ~400 мс. */
+  const commitDebounced = useCallback(
+    (patch: Partial<Settings>) => {
+      pendingPatch.current = { ...pendingPatch.current, ...patch };
+      if (saveTimer.current !== null) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        saveTimer.current = null;
+        const pending = pendingPatch.current;
+        pendingPatch.current = {};
+        commit(pending);
+      }, SAVE_DEBOUNCE_MS);
+    },
+    [commit],
+  );
+
+  // Уход со страницы не теряет последние правки.
+  useEffect(
+    () => () => {
+      if (saveTimer.current === null) return;
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      const pending = pendingPatch.current;
+      pendingPatch.current = {};
+      if (Object.keys(pending).length > 0) void update(pending).catch(() => undefined);
+    },
+    [update],
+  );
 
   useEffect(() => {
     api.dataDir().then(setDataDir).catch(() => setDataDir("?"));
@@ -28,6 +78,8 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
     if (settings) {
       setProxyInput(settings.proxyUrl ?? "");
       setAzureInput(settings.azureClientId ?? "");
+      setRamInput(settings.defaultRamMb);
+      setParInput(settings.downloadParallelism);
     }
   }, [settings]);
 
@@ -51,12 +103,12 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
 
   const saveProxy = () => {
     const val = proxyInput.trim() || undefined;
-    void update({ proxyUrl: val });
+    commit({ proxyUrl: val });
   };
 
   const saveAzure = () => {
     const val = azureInput.trim() || undefined;
-    void update({ azureClientId: val });
+    commit({ azureClientId: val });
   };
 
   if (!settings) return null;
@@ -66,6 +118,16 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
       <div className="mt-1 flex items-baseline gap-2">
         <h2 className="text-lg font-semibold tracking-tight">{t("nav.settings")}</h2>
       </div>
+
+      {/* D20: ошибка сохранения любой секции — видна рядом с заголовком */}
+      {saveError && (
+        <p
+          role="alert"
+          className="rounded-lg border border-error/40 bg-error/10 p-3 text-sm text-error"
+        >
+          {saveError}
+        </p>
+      )}
 
       {/* Темы: карточки как в CurseForge, применяются мгновенно */}
       <section>
@@ -98,8 +160,12 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               min={1024}
               max={32768}
               step={512}
-              value={settings.defaultRamMb}
-              onChange={(e) => void update({ defaultRamMb: Number(e.target.value) || 2048 })}
+              value={ramInput}
+              onChange={(e) => {
+                const value = Number(e.target.value) || 2048;
+                setRamInput(value);
+                commitDebounced({ defaultRamMb: value });
+              }}
               className="h-10 w-44 rounded-lg border border-border-strong bg-bg px-3 text-text"
             />
           </Field>
@@ -109,8 +175,12 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               type="number"
               min={1}
               max={64}
-              value={settings.downloadParallelism}
-              onChange={(e) => void update({ downloadParallelism: Number(e.target.value) || 16 })}
+              value={parInput}
+              onChange={(e) => {
+                const value = Number(e.target.value) || 16;
+                setParInput(value);
+                commitDebounced({ downloadParallelism: value });
+              }}
               className="h-10 w-44 rounded-lg border border-border-strong bg-bg px-3 text-text"
             />
           </Field>
@@ -123,7 +193,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               </div>
               <select
                 value={String(settings.uiScale ?? 100)}
-                onChange={(e) => void update({ uiScale: Number(e.target.value) })}
+                onChange={(e) => commit({ uiScale: Number(e.target.value) })}
                 aria-label={t("settings.uiScale")}
                 className="h-10 rounded-lg border border-border-strong bg-card px-3 text-sm"
               >
@@ -134,11 +204,11 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
                 ))}
               </select>
             </div>
-            <Toggle checked={settings.showSnapshots} onChange={(v) => void update({ showSnapshots: v })} />
+            <Toggle checked={settings.showSnapshots} onChange={(v) => commit({ showSnapshots: v })} />
           </Field>
 
           <Field label={t("settings.oldVersions")}>
-            <Toggle checked={settings.showOldVersions} onChange={(v) => void update({ showOldVersions: v })} />
+            <Toggle checked={settings.showOldVersions} onChange={(v) => commit({ showOldVersions: v })} />
           </Field>
         </div>
       </section>
