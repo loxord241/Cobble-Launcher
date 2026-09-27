@@ -14,8 +14,8 @@
     "windows": [
       {
         "title": "Cobble Launcher",
-        "width": 800,
-        "height": 600,
+        "width": 1240,
+        "height": 820,
         "minWidth": 720,
         "minHeight": 480,
         "decorations": false

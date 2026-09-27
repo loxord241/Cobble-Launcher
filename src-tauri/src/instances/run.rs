@@ -18,6 +18,7 @@ use crate::net::download::{DownloadEngine, DownloadTask};
 use crate::net::http::HttpClient;
 use crate::paths::Paths;
 use std::collections::BTreeMap;
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -517,6 +518,10 @@ pub fn launch_blocking(
         .current_dir(spawn_dir(&prepared.game_dir))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // Консольное окно java.exe пугает пользователя («вирус»); окно самой
+    // игры это не затрагивает — Minecraft рисует своё окно через JNI.
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let mut child = command
         .spawn()
         .map_err(|e| LauncherError::JavaNotFound(format!("не удалось запустить игру: {e}")))?;
@@ -725,6 +730,10 @@ pub fn launch_detached(
         .current_dir(spawn_dir(&prepared.game_dir))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // Консольное окно java.exe пугает пользователя («вирус»); окно самой
+    // игры это не затрагивает — Minecraft рисует своё окно через JNI.
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let child = command
         .spawn()
         .map_err(|e| LauncherError::JavaNotFound(format!("не удалось запустить игру: {e}")))?;
