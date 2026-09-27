@@ -23,6 +23,7 @@ pub enum LogStream {
 
 /// Агрегированный прогресс загрузки (троттлинг ≤ 10 событий/с — спека §4.4).
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DlProgress {
     pub done_files: u64,
     pub total_files: u64,
@@ -34,6 +35,7 @@ pub struct DlProgress {
 
 /// Состояние очереди: сколько задач в каких статусах + упавшие с причинами.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DlQueueState {
     pub pending: u64,
     pub downloading: u64,
@@ -46,7 +48,7 @@ pub struct DlQueueState {
 
 /// Все события ядра. `tag = "event"` — единая точка диспетчеризации в UI.
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
+#[serde(tag = "event", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum LauncherEvent {
     DlProgress(DlProgress),
     DlQueueState(DlQueueState),
@@ -92,5 +94,41 @@ impl EventBus {
 impl Default for EventBus {
     fn default() -> Self {
         Self::new(1024)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn events_serialize_to_contract_camel_case() {
+        let ev = LauncherEvent::LaunchState {
+            instance_id: "inst-1".into(),
+            phase: LaunchPhase::Running,
+            exit_code: Some(0),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"event\":\"launch_state\""));
+        assert!(json.contains("\"instanceId\":\"inst-1\""));
+        assert!(json.contains("\"phase\":\"running\""));
+        assert!(json.contains("\"exitCode\":0"));
+
+        let dl = LauncherEvent::DlProgress(DlProgress {
+            done_files: 5,
+            total_files: 10,
+            done_bytes: 1024,
+            total_bytes: 2048,
+            bytes_per_sec: 500.0,
+            eta_secs: Some(2),
+        });
+        let dl_json = serde_json::to_string(&dl).unwrap();
+        assert!(dl_json.contains("\"event\":\"dl_progress\""));
+        assert!(dl_json.contains("\"doneFiles\":5"));
+        assert!(dl_json.contains("\"totalFiles\":10"));
+        assert!(dl_json.contains("\"doneBytes\":1024"));
+        assert!(dl_json.contains("\"totalBytes\":2048"));
+        assert!(dl_json.contains("\"bytesPerSec\":500.0"));
+        assert!(dl_json.contains("\"etaSecs\":2"));
     }
 }
