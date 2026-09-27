@@ -16,6 +16,7 @@ import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
 import LogViewerModal from "../components/LogViewerModal";
 import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
+import { rowClickOpens } from "./InstanceDetailPage";
 import type { Instance, SearchHit } from "../../api/types";
 
 /** Колбэки строки (без status): строятся один раз на инстанс, чтобы memo работал. */
@@ -38,9 +39,12 @@ type RowCallbacks = {
 export default function HomePage({
   query,
   onCreate,
+  onOpenInstance,
 }: {
   query: string;
   onCreate: () => void;
+  /** Открыть страницу инстанса (клик по строке/карточке — не по её кнопкам). */
+  onOpenInstance: (id: string) => void;
 }) {
   // D8: узкие селекторы — страница не перерисовывается на каждую строку лога.
   const { list, status, launch, stop, optimize, remove, duplicate, setError, load } =
@@ -178,31 +182,49 @@ export default function HomePage({
           aria-label={t("play")}
           className="flex flex-wrap items-center gap-4 rounded-lg border border-border-app bg-card p-5"
         >
-          <span
-            aria-hidden
-            className="grid size-14 place-items-center rounded-lg bg-accent-soft text-2xl font-bold text-accent"
+          {/* Иконка + имя героя — та же «дверь» на страницу инстанса, что и строка. */}
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label={t("instance.open", { name: hero.name })}
+            onClick={(e) => {
+              if (rowClickOpens(e.target)) onOpenInstance(hero.id);
+            }}
+            onKeyDown={(e) => {
+              if (e.target !== e.currentTarget) return; // Enter на кнопках карточки
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onOpenInstance(hero.id);
+              }
+            }}
+            className="flex min-w-0 cursor-pointer items-center gap-4"
           >
-            {hero.name.slice(0, 1).toUpperCase()}
-          </span>
-          <div className="min-w-0">
-            <h1 className="truncate text-2xl font-bold leading-tight tracking-tight">
-              {hero.name}
-            </h1>
-            <div className="font-mono text-[13px] text-text-muted">
-              {hero.loader
-                ? `${hero.loader} ${hero.loaderVersion ?? ""}`
-                : t("instances.loader.none")}
-              {" · "}
-              {hero.lastPlayed
-                ? t("home.hero.lastPlayed", {
-                    when: new Date(hero.lastPlayed * 1000).toLocaleString(currentLanguage(), {
-                      day: "numeric",
-                      month: "short",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    }),
-                  })
-                : t("home.hero.neverPlayed")}
+            <span
+              aria-hidden
+              className="grid size-14 place-items-center rounded-lg bg-accent-soft text-2xl font-bold text-accent"
+            >
+              {hero.name.slice(0, 1).toUpperCase()}
+            </span>
+            <div className="min-w-0">
+              <h1 className="truncate text-2xl font-bold leading-tight tracking-tight">
+                {hero.name}
+              </h1>
+              <div className="font-mono text-[13px] text-text-muted">
+                {hero.loader
+                  ? `${hero.loader} ${hero.loaderVersion ?? ""}`
+                  : t("instances.loader.none")}
+                {" · "}
+                {hero.lastPlayed
+                  ? t("home.hero.lastPlayed", {
+                      when: new Date(hero.lastPlayed * 1000).toLocaleString(currentLanguage(), {
+                        day: "numeric",
+                        month: "short",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }),
+                    })
+                  : t("home.hero.neverPlayed")}
+              </div>
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
@@ -278,12 +300,27 @@ export default function HomePage({
           visible.map((inst) => {
             const callbacks = rowCallbacks.get(inst.id);
             return callbacks ? (
-              <InstanceRow
+              // Клик по телу строки открывает страницу инстанса; кнопки внутри
+              // строки (Play/Stop, кебаб и его меню) остаются рабочими.
+              <div
                 key={inst.id}
-                inst={inst}
-                status={status[inst.id]}
-                {...callbacks}
-              />
+                role="button"
+                tabIndex={0}
+                aria-label={t("instance.open", { name: inst.name })}
+                onClick={(e) => {
+                  if (rowClickOpens(e.target)) onOpenInstance(inst.id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return; // Enter на кнопках строки
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onOpenInstance(inst.id);
+                  }
+                }}
+                className="cursor-pointer rounded-lg"
+              >
+                <InstanceRow inst={inst} status={status[inst.id]} {...callbacks} />
+              </div>
             ) : null;
           })
         )}

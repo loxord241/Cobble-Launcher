@@ -185,6 +185,7 @@ pub fn run() -> tauri::Result<()> {
             commands::data_dir,
             commands::logs_tail,
             commands::dir_open,
+            commands::update_check,
         ])
         .setup(|app| {
             use tauri::Manager as _;

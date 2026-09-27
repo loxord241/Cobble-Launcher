@@ -29,19 +29,27 @@ const TABS: { id: Tab; defaultQuery: string }[] = [
   { id: "modpack", defaultQuery: "modpacks" },
 ];
 
-function fileBase(file: string): string {
+/** Логический путь файла контента → имя на диске (без .disabled). Экспорт — для страницы инстанса. */
+export function fileBase(file: string): string {
   const base = file.slice(file.lastIndexOf("/") + 1);
   return base.endsWith(".disabled") ? base.slice(0, -".disabled".length) : base;
 }
 
-export default function ModsPage({ query }: { query: string }) {
+export default function ModsPage({
+  query,
+  initialInstanceId,
+}: {
+  query: string;
+  /** Целевой инстанс при переходе со страницы инстанса («+ Найти моды»). */
+  initialInstanceId?: string;
+}) {
   const [tab, setTab] = useState<Tab>("mod");
   const [localQuery, setLocalQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [total, setTotal] = useState(0);
   const [searched, setSearched] = useState(false);
   const [instances, setInstances] = useState<Instance[]>([]);
-  const [targetId, setTargetId] = useState("");
+  const [targetId, setTargetId] = useState(initialInstanceId ?? "");
   const [busy, setBusy] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,11 +66,17 @@ export default function ModsPage({ query }: { query: string }) {
     try {
       const list = await api.instanceList();
       setInstances(list);
-      setTargetId((cur) => (list.some((i) => i.id === cur) ? cur : (list[0]?.id ?? "")));
+      setTargetId((cur) =>
+        list.some((i) => i.id === cur)
+          ? cur
+          : list.some((i) => i.id === initialInstanceId)
+            ? (initialInstanceId as string)
+            : (list[0]?.id ?? ""),
+      );
     } catch (e) {
       setError(apiErrorText(e));
     }
-  }, []);
+  }, [initialInstanceId]);
 
   useEffect(() => {
     void refreshInstances();

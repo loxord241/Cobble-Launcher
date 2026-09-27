@@ -993,6 +993,134 @@ pub async fn dir_open(state: State<'_, AppState>) -> Result<OkMsg> {
 #[allow(unused_imports)]
 use opener as _opener_reexport;
 
+// ---------- проверка обновлений лаунчера ----------
+
+/// Последний релиз репозитория владельца. Репозиторий станет публичным; пока
+/// закрыт — 404 это нормальный исход проверки, а не сбой лаунчера.
+const RELEASES_API: &str = "https://api.github.com/repos/loxord241/Cobble-Launcher/releases/latest";
+/// Запасная цель кнопки «открыть»: если GitHub не отдал `html_url` релиза.
+const RELEASES_PAGE: &str = "https://github.com/loxord241/Cobble-Launcher/releases";
+/// Проверка обновлений интерактивна (ждёт человек) — не дольше 10 с.
+const UPDATE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Ответ `releases/latest` — берём только тег и ссылку на страницу релиза.
+#[derive(serde::Deserialize)]
+struct GhRelease {
+    #[serde(default)]
+    tag_name: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+}
+
+/// Итог проверки обновлений для карточки в настройках. Авто-обновления нет
+/// (нет ключей подписи): ядро только сравнивает версии и даёт ссылку.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    /// Текущая версия лаунчера (`CARGO_PKG_VERSION`).
+    pub current: String,
+    /// Тег последнего релиза (`v0.2.0`); `None` — версию узнать не удалось.
+    pub latest: Option<String>,
+    /// Страница релиза на github.com.
+    pub url: Option<String>,
+    pub update_available: bool,
+    /// Проверка состоялась (в том числе «не удалось» — это не ошибка команды).
+    pub checked: bool,
+    /// Код причины из `errors.json`, если версию узнать не удалось: UI переводит
+    /// его своим языком (русский текст в ядре не подошёл бы en/uk).
+    pub note: Option<String>,
+}
+
+/// Одна попытка достать последний релиз. Ошибка — код причины для UI:
+/// `not_found` (404: репозиторий закрыт или релизов ещё нет), `http` (другой
+/// статус), `json` (ответ не разобрался), `network` (транспорт).
+async fn fetch_latest_release(
+    http: &HttpClient,
+) -> std::result::Result<(String, String), &'static str> {
+    let resp = http
+        .raw()
+        .get(RELEASES_API)
+        .send()
+        .await
+        .map_err(|_| "network")?;
+    if !resp.status().is_success() {
+        return Err(if resp.status().as_u16() == 404 {
+            "not_found"
+        } else {
+            "http"
+        });
+    }
+    let release: GhRelease = resp.json().await.map_err(|_| "json")?;
+    let tag = release
+        .tag_name
+        .filter(|t| !t.trim().is_empty())
+        .ok_or("json")?;
+    // В opener ссылку из ответа пускаем только как github.com-https.
+    let url = release
+        .html_url
+        .filter(|u| u.starts_with("https://github.com/"))
+        .unwrap_or_else(|| RELEASES_PAGE.to_string());
+    Ok((tag, url))
+}
+
+/// semver-lite: `v0.2.0` → `[0, 2, 0]`. Хвост после цифр в части (`0.2.0-rc1`)
+/// отбрасывается, мусор → `None` — обновление не обещаем и не паникуем.
+fn parse_version(version: &str) -> Option<Vec<u64>> {
+    let trimmed = version.trim().trim_start_matches(['v', 'V']);
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .split('.')
+        .map(|part| {
+            let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse::<u64>().ok()
+        })
+        .collect()
+}
+
+/// `latest` строго новее `current`? Непонятный формат → `false`: честнее
+/// промолчать, чем предложить обновление на мусорный тег.
+fn is_newer(latest: &str, current: &str) -> bool {
+    let (Some(latest), Some(current)) = (parse_version(latest), parse_version(current)) else {
+        return false;
+    };
+    for i in 0..latest.len().max(current.len()) {
+        let a = latest.get(i).copied().unwrap_or(0);
+        let b = current.get(i).copied().unwrap_or(0);
+        if a != b {
+            return a > b;
+        }
+    }
+    false
+}
+
+/// Проверить обновления лаунчера (GitHub releases/latest). Недоступность сети,
+/// закрытый репозиторий или неразобранный ответ — не ошибка команды: UI получает
+/// `checked: true` и `note` с кодом причины.
+#[tauri::command]
+pub async fn update_check(state: State<'_, AppState>) -> Result<UpdateInfo> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let http = state.http().await;
+    let (latest, url, note) =
+        match tokio::time::timeout(UPDATE_CHECK_TIMEOUT, fetch_latest_release(&http)).await {
+            Ok(Ok((tag, url))) => (Some(tag), Some(url), None),
+            Ok(Err(code)) => (None, None, Some(code.to_string())),
+            Err(_) => (None, None, Some("timeout".to_string())),
+        };
+    let update_available = latest
+        .as_deref()
+        .is_some_and(|latest| is_newer(latest, &current));
+    Ok(UpdateInfo {
+        current,
+        latest,
+        url,
+        update_available,
+        checked: true,
+        note,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1019,5 +1147,74 @@ mod tests {
             !json.contains("release_time") && !json.contains("version_type"),
             "snake_case ушёл из контракта: {json}"
         );
+    }
+
+    /// Сравнение версий: `v0.2.0` новее `0.1.0`, равные — не обновление.
+    #[test]
+    fn version_compare_semver_lite() {
+        assert!(is_newer("v0.2.0", "0.1.0"), "ведущая v не мешает сравнению");
+        assert!(is_newer("0.1.1", "0.1.0"));
+        assert!(is_newer("1.0.0", "0.9.9"));
+        assert!(!is_newer("0.1.0", "0.1.0"), "та же версия — не обновление");
+        assert!(!is_newer("v0.1.0", "0.1.0"), "ведущая v не делает версию новой");
+        assert!(!is_newer("0.1", "0.1.0"), "0.1 и 0.1.0 — одна версия");
+        assert!(!is_newer("0.2.0", "1.0.0"), "старый тег — не обновление");
+    }
+
+    /// Мусор в теге: ни паники, ни ложного «есть обновление».
+    #[test]
+    fn version_parser_survives_garbage() {
+        assert_eq!(parse_version("v0.2.0"), Some(vec![0, 2, 0]));
+        assert_eq!(parse_version(" V1.20.1 "), Some(vec![1, 20, 1]), "пробелы и V");
+        assert_eq!(
+            parse_version("0.2.0-rc1"),
+            Some(vec![0, 2, 0]),
+            "хвост после цифр игнорируется"
+        );
+        for junk in ["", "   ", "v", "мусор", "1.2.x", "1..3", "1.99999999999999999999"] {
+            assert!(parse_version(junk).is_none(), "мусор → None: {junk:?}");
+            assert!(!is_newer(junk, "0.1.0"), "мусор не новее: {junk:?}");
+            assert!(!is_newer("0.1.0", junk), "мусор не старее: {junk:?}");
+        }
+    }
+
+    /// Фронт (`src/api/types.ts`) читает `updateAvailable`/`checked` — контракт
+    /// camelCase (D25); `note` без причины уезжает как `null`.
+    #[test]
+    fn update_info_serializes_camel_case() {
+        let info = UpdateInfo {
+            current: "0.1.0".into(),
+            latest: Some("v0.2.0".into()),
+            url: Some(RELEASES_PAGE.into()),
+            update_available: true,
+            checked: true,
+            note: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"updateAvailable\":true"), "{json}");
+        assert!(json.contains("\"current\":\"0.1.0\""), "{json}");
+        assert!(
+            !json.contains("update_available") && !json.contains("tag_name"),
+            "snake_case ушёл из контракта: {json}"
+        );
+        assert!(json.contains("\"note\":null"), "None приезжает как null: {json}");
+    }
+
+    /// Реальная сеть — #[ignore], гонять на приёмке (спека §9). Пока репозиторий
+    /// закрыт, 404 (`not_found`) — тоже корректный исход проверки.
+    #[tokio::test]
+    #[ignore]
+    async fn real_github_release_fetch() {
+        let http = HttpClient::new(None).unwrap();
+        match fetch_latest_release(&http).await {
+            Ok((tag, url)) => {
+                assert!(parse_version(&tag).is_some(), "тег релиза: {tag}");
+                assert!(url.starts_with("https://github.com/"), "ссылка: {url}");
+            }
+            Err(code) => assert!(
+                matches!(code, "not_found" | "http" | "network"),
+                "неожиданная причина: {code}"
+            ),
+        }
     }
 }

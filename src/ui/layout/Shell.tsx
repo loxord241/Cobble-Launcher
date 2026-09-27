@@ -29,6 +29,7 @@ import HomePage from "../pages/HomePage";
 import InstancesPage from "../pages/InstancesPage";
 import ModsPage from "../pages/ModsPage";
 import SettingsPage from "../pages/SettingsPage";
+import InstanceDetailPage from "../pages/InstanceDetailPage";
 import AccountsModal from "../components/AccountsModal";
 import CrashReportModal from "../components/CrashReportModal";
 
@@ -48,6 +49,11 @@ const NOTICE_MS = 6000;
 
 export default function Shell({ onLogout }: { onLogout: () => void }) {
   const [page, setPage] = useState<Page>("home");
+  // Открытый инстанс: пока задан — вместо страницы рендерится его страница
+  // в стиле CurseForge (запрос владельца). Навигация слева закрывает её.
+  const [openInstanceId, setOpenInstanceId] = useState<string | null>(null);
+  // Целевой инстанс для страницы Модов (переход «+ Найти моды» с страницы инстанса).
+  const [modsTargetId, setModsTargetId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [version, setVersion] = useState("0.1.0");
   const [accountOpen, setAccountOpen] = useState(false);
@@ -151,6 +157,13 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
       setQuery("");
       e.currentTarget.blur();
     }
+  };
+
+  /** Выбор страницы в навигации: открытая страница инстанса при этом закрывается. */
+  const goToPage = (id: Page) => {
+    setPage(id);
+    setOpenInstanceId(null);
+    setModsTargetId(null);
   };
 
   const active =
@@ -327,7 +340,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
           {NAV.map(({ id, icon: Icon, label }) => (
             <button
               key={id}
-              onClick={() => setPage(id)}
+              onClick={() => goToPage(id)}
               aria-current={page === id ? "page" : undefined}
               className={`relative flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium ${
                 page === id
@@ -356,12 +369,34 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
         </nav>
 
         <main className="min-h-0 overflow-y-auto p-6">
-          {page === "home" && (
-            <HomePage query={query} onCreate={() => setPage("instances")} />
+          {openInstanceId ? (
+            <InstanceDetailPage
+              instanceId={openInstanceId}
+              onBack={() => setOpenInstanceId(null)}
+              onOpenMods={(id) => {
+                setModsTargetId(id);
+                setOpenInstanceId(null);
+                setPage("mods");
+              }}
+            />
+          ) : (
+            <>
+              {page === "home" && (
+                <HomePage
+                  query={query}
+                  onCreate={() => setPage("instances")}
+                  onOpenInstance={setOpenInstanceId}
+                />
+              )}
+              {page === "instances" && (
+                <InstancesPage query={query} onOpenInstance={setOpenInstanceId} />
+              )}
+              {page === "mods" && (
+                <ModsPage query={query} initialInstanceId={modsTargetId ?? undefined} />
+              )}
+              {page === "settings" && <SettingsPage onOnboardingReset={onLogout} />}
+            </>
           )}
-          {page === "instances" && <InstancesPage query={query} />}
-          {page === "mods" && <ModsPage query={query} />}
-          {page === "settings" && <SettingsPage onOnboardingReset={onLogout} />}
         </main>
       </div>
 

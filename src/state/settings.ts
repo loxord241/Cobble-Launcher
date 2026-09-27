@@ -15,6 +15,10 @@ interface SettingsState {
 }
 
 function applySideEffects(s: Settings) {
+  // Кастомизация (шрифт + акцент) — поверх палитры темы, поэтому применяется
+  // до проверок темы/языка: невалидная тема не должна отменять кастом.
+  applyUiFont(s.uiFont);
+  applyUiAccent(s.uiAccent);
   // Тема: выбор со страницы «Темы» живёт в localStorage (5 тем); settings.theme
   // (dark|light в ядре) применяется, только если localStorage ещё не выбран.
   if (!isThemeId(s.theme)) return;
@@ -35,6 +39,72 @@ function applySideEffects(s: Settings) {
 export function applyUiScale(percent?: number) {
   const clamped = Math.min(150, Math.max(80, Math.round(percent ?? 100)));
   document.documentElement.style.fontSize = `${clamped}%`;
+}
+
+/**
+ * Кастомизация §8. Стеки шрифтов uiFont; "" — не переопределять (шрифт темы,
+ * tokens.css: --font-ui). system — системный стек «Сланца» явно.
+ */
+const FONT_STACKS: Record<string, string> = {
+  system: '"Segoe UI", system-ui, sans-serif',
+  serif: 'Georgia, "Times New Roman", serif',
+  mono: '"JetBrains Mono", Consolas, monospace',
+  round: '"Nunito", "Segoe UI Rounded", "Segoe UI", sans-serif',
+};
+
+/** Переменные акцента, которые объявляет тема (tokens.css) — их и перекрываем. */
+const ACCENT_VARS = ["--accent", "--accent-hover", "--accent-soft", "--on-accent"];
+
+/** Зеркало валидации ядра (settings.rs::validate): только #RRGGBB — значение идёт в CSS. */
+export function isHexColor(value?: string): boolean {
+  return /^#[0-9a-fA-F]{6}$/.test(value ?? "");
+}
+
+/** Шрифт интерфейса: инлайн-переменная на <html> перекрывает --font-ui темы. */
+export function applyUiFont(font?: string) {
+  const style = document.documentElement.style;
+  const stack = FONT_STACKS[font ?? ""];
+  // "" и неизвестное значение — снимаем переопределение, шрифт снова из темы.
+  if (stack === undefined) style.removeProperty("--font-ui");
+  else style.setProperty("--font-ui", stack);
+}
+
+/**
+ * Акцент поверх палитры темы: --accent + производные. Инлайн-стиль на <html>
+ * сильнее правил :root[data-theme], поэтому тема не ломается — палитра просто
+ * перекрывается, а сброс ("" / мусор) возвращает её целиком.
+ */
+export function applyUiAccent(accent?: string) {
+  const style = document.documentElement.style;
+  if (!isHexColor(accent)) {
+    for (const name of ACCENT_VARS) style.removeProperty(name);
+    return;
+  }
+  const hex = accent as string;
+  const [r, g, b] = channels(hex);
+  style.setProperty("--accent", hex);
+  // Наведение — тот же цвет на 10% темнее.
+  style.setProperty("--accent-hover", toHex(r * 0.9, g * 0.9, b * 0.9));
+  // Мягкая подложка — тот же цвет с альфой 0x33 (~20%).
+  style.setProperty("--accent-soft", `${hex}33`);
+  // Контраст текста на акценте: тёмный на светлом, белый на тёмном.
+  style.setProperty("--on-accent", luminance(r, g, b) > 150 ? "#101418" : "#FFFFFF");
+}
+
+function channels(hex: string): [number, number, number] {
+  const at = (i: number) => parseInt(hex.slice(i, i + 2), 16);
+  return [at(1), at(3), at(5)];
+}
+
+function toHex(r: number, g: number, b: number): string {
+  const part = (v: number) =>
+    Math.min(255, Math.max(0, Math.round(v))).toString(16).padStart(2, "0");
+  return `#${part(r)}${part(g)}${part(b)}`;
+}
+
+/** Яркость (YIQ): порог 150 — как в спеке кастомизации. */
+function luminance(r: number, g: number, b: number): number {
+  return 0.299 * r + 0.587 * g + 0.114 * b;
 }
 
 export const useSettings = create<SettingsState>((set, get) => ({

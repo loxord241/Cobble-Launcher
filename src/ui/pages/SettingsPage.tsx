@@ -2,14 +2,27 @@
 // Общие (RAM/параллелизм/снапшоты), Java (сканирование и установка Adoptium), Сеть и Данные.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, RefreshCw, Check, Coffee } from "lucide-react";
-import { useSettings } from "../../state/settings";
+import { isHexColor, useSettings } from "../../state/settings";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
 import ThemeCards from "../components/ThemeCards";
 import type { JavaInstall, RamGuide, Settings } from "../../api/types";
+import UpdatesSection from "../components/UpdatesSection";
 
 /** D20: пауза перед записью в ядро — поля не пишутся на каждый keystroke. */
 const SAVE_DEBOUNCE_MS = 400;
+
+/** Пресеты акцентного цвета (первый — сланцевый синий по умолчанию). */
+const ACCENT_PRESETS = ["#7FB2F0", "#6FBF8F", "#E8A25C", "#E06C6C", "#A78BE0"];
+
+/** Имя системы тем — подпись пункта «вернуть как в теме» (бренд, не переводится). */
+const SLATE_LABEL = "Сланец";
+
+/** Акцент текущей палитры (tokens.css) — что показать в пикере, пока кастом не задан. */
+function themeAccent(): string {
+  const value = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+  return isHexColor(value) ? value : ACCENT_PRESETS[0];
+}
 
 function messageOf(e: unknown): string {
   return String((e as { message?: string })?.message ?? e);
@@ -136,6 +149,68 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
         </h3>
         <p className="mb-3 max-w-2xl text-sm text-text-muted">{t("themes.hint")}</p>
         <ThemeCards />
+      </section>
+
+      {/* Кастомизация: шрифт и акцент поверх палитры выбранной темы */}
+      <section>
+        <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
+          {t("settings.customizationSection")}
+        </h3>
+        <div className="max-w-2xl rounded-lg border border-border-app bg-card p-4">
+          <Field label={t("settings.font")}>
+            <div className="flex flex-col items-end gap-1">
+              <select
+                value={settings.uiFont ?? ""}
+                onChange={(e) => commit({ uiFont: e.target.value })}
+                aria-label={t("settings.font")}
+                className="h-10 rounded-lg border border-border-strong bg-card px-3 text-sm"
+              >
+                {/* "" — кастом не задан, шрифт из темы («Сланец» — имя системы) */}
+                <option value="">{SLATE_LABEL}</option>
+                <option value="system">{t("settings.font.system")}</option>
+                <option value="serif">{t("settings.font.serif")}</option>
+                <option value="mono">{t("settings.font.mono")}</option>
+                <option value="round">{t("settings.font.round")}</option>
+              </select>
+              <span className="text-[13px] text-text-muted">{t("settings.font.hint")}</span>
+            </div>
+          </Field>
+
+          <Field label={t("settings.accent")}>
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex items-center gap-2">
+                {ACCENT_PRESETS.map((hex) => {
+                  const active = (settings.uiAccent ?? "").toLowerCase() === hex.toLowerCase();
+                  return (
+                    <button
+                      key={hex}
+                      type="button"
+                      onClick={() => commit({ uiAccent: hex })}
+                      aria-label={hex}
+                      aria-pressed={active}
+                      title={hex}
+                      className={`size-6 rounded-full border ${active ? "border-text" : "border-border-strong"}`}
+                      style={{ background: hex }}
+                    />
+                  );
+                })}
+                {/* Свой цвет: drag в пикере — через debounce, чтобы не писать ядро на каждый пиксель */}
+                <input
+                  type="color"
+                  value={isHexColor(settings.uiAccent) ? settings.uiAccent : themeAccent()}
+                  onChange={(e) => commitDebounced({ uiAccent: e.target.value })}
+                  aria-label={t("settings.accent.custom")}
+                  title={t("settings.accent.custom")}
+                  className="h-7 w-9 cursor-pointer rounded-md border border-border-strong bg-card"
+                />
+                <button onClick={() => commit({ uiAccent: "" })} className="btn-ghost btn-sm">
+                  {SLATE_LABEL}
+                </button>
+              </div>
+              <span className="text-[13px] text-text-muted">{t("settings.accent.hint")}</span>
+            </div>
+          </Field>
+        </div>
       </section>
 
       {/* Общие: реальные настройки из ядра */}
@@ -371,6 +446,8 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
           </Field>
         </div>
       </section>
+
+      <UpdatesSection />
     </div>
   );
 }

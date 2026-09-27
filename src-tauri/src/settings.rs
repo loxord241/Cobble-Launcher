@@ -1,11 +1,19 @@
 //! Настройки: JSON, атомарная запись, миграции по `schemaVersion` (спека §7).
 
-use crate::errors::Result;
+use crate::errors::{LauncherError, Result};
 use crate::util::fs::atomic_write;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// `ui_accent` — только `#RRGGBB`: значение уходит в CSS-переменную, мусор
+/// (в т.ч. из правленного вручную settings.json) дальше не пропускаем.
+fn is_hex_color(value: &str) -> bool {
+    regex::Regex::new(r"^#[0-9a-fA-F]{6}$")
+        .map(|re| re.is_match(value))
+        .unwrap_or(false)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -46,6 +54,10 @@ pub struct Settings {
     pub extra_java_paths: Vec<String>,
     /// Масштаб интерфейса в процентах (80–150), как zoom в больших лаунчерах.
     pub ui_scale: u32,
+    /// Шрифт интерфейса: "" — из темы; иначе system|serif|mono|round (кастомизация).
+    pub ui_font: String,
+    /// Акцентный цвет поверх палитры темы: "" — из темы; иначе `#RRGGBB`.
+    pub ui_accent: String,
 }
 
 impl Default for Settings {
@@ -68,6 +80,8 @@ impl Default for Settings {
             onboarding_done: false,
             extra_java_paths: Vec::new(),
             ui_scale: 100,
+            ui_font: String::new(),
+            ui_accent: String::new(),
         }
     }
 }
@@ -85,14 +99,33 @@ impl Settings {
         Ok(settings)
     }
 
-    /// Атомарно сохранить.
+    /// Атомарно сохранить. Значения, попадающие в CSS, проверяются до записи:
+    /// невалидный `ui_accent` не должен ни уехать в файл, ни дойти до UI.
     pub fn save(&self, path: &Path) -> Result<()> {
+        self.validate()?;
         let data = serde_json::to_vec_pretty(self)?;
         atomic_write(path, &data)
     }
 
+    /// Проверка настроек кастомизации. `ui_accent`: "" — «из темы», иначе `#RRGGBB`.
+    pub fn validate(&self) -> Result<()> {
+        if !self.ui_accent.is_empty() && !is_hex_color(&self.ui_accent) {
+            return Err(LauncherError::InvalidInput(format!(
+                "ui_accent: ожидается цвет вида #RRGGBB, получено {}",
+                self.ui_accent
+            )));
+        }
+        Ok(())
+    }
+
     /// Миграции схемы: 0/N → текущая. Пока схема одна — приведение версии.
     fn migrate(&mut self) {
+        // Санитизация: невалидный акцент в правленом вручную файле отбрасываем
+        // в значение по умолчанию, иначе он блокировал бы любое сохранение (validate).
+        if !self.ui_accent.is_empty() && !is_hex_color(&self.ui_accent) {
+            tracing::warn!("ui_accent в settings.json невалиден — сброшен в значение темы");
+            self.ui_accent.clear();
+        }
         if self.schema_version < SCHEMA_VERSION {
             // Будущие миграции: match self.schema_version { 0 => {...}, ... }
             self.schema_version = SCHEMA_VERSION;
@@ -130,5 +163,75 @@ mod tests {
         assert_eq!(s.theme, Theme::Light);
         assert_eq!(s.schema_version, SCHEMA_VERSION);
         assert_eq!(s.download_parallelism, 16);
+    }
+
+    #[test]
+    fn customization_fields_default_to_theme() {
+        let s = Settings::default();
+        assert_eq!(s.ui_font, "");
+        assert_eq!(s.ui_accent, "");
+        assert!(s.validate().is_ok());
+        // Файл без новых полей читается: кастомизация = «из темы».
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(&p, br#"{"theme": "dark"}"#).unwrap();
+        let s2 = Settings::load(&p).unwrap();
+        assert_eq!(s2.ui_font, "");
+        assert_eq!(s2.ui_accent, "");
+    }
+
+    #[test]
+    fn accent_validation_accepts_hex_and_empty() {
+        let mut s = Settings::default();
+        for ok in ["", "#7FB2F0", "#7fb2f0", "#000000", "#ffffff"] {
+            s.ui_accent = ok.into();
+            assert!(s.validate().is_ok(), "{ok:?} должен проходить");
+        }
+    }
+
+    #[test]
+    fn accent_validation_rejects_non_hex() {
+        let mut s = Settings::default();
+        for bad in [
+            "7FB2F0",
+            "#7FB2F",
+            "#7FB2F0F",
+            "#7FB2FG",
+            "red",
+            "#7fb2f0; background: red",
+            " #7FB2F0",
+            "#7FB2F0 ",
+            "var(--accent)",
+        ] {
+            s.ui_accent = bad.into();
+            assert!(
+                matches!(s.validate(), Err(LauncherError::InvalidInput(_))),
+                "{bad:?} должен быть отклонён"
+            );
+        }
+    }
+
+    #[test]
+    fn save_rejects_invalid_accent_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        let s = Settings {
+            ui_accent: "url(javascript:alert(1))".into(),
+            ..Default::default()
+        };
+        assert!(matches!(s.save(&p), Err(LauncherError::InvalidInput(_))));
+        assert!(!p.exists(), "файл не должен появиться");
+    }
+
+    #[test]
+    fn load_sanitizes_invalid_accent_from_hand_edited_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(&p, br##"{"uiAccent": "#zzz", "uiFont": "mono"}"##).unwrap();
+        let s = Settings::load(&p).unwrap();
+        assert_eq!(s.ui_accent, "", "мусор из файла сброшен в «из темы»");
+        assert_eq!(s.ui_font, "mono", "валидный шрифт из файла сохранён");
+        // Санитизация разблокирует сохранение (иначе не переключить аккаунт).
+        s.save(&p).unwrap();
     }
 }

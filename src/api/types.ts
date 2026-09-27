@@ -54,6 +54,10 @@ export interface Settings {
   extraJavaPaths: string[];
   /** Масштаб интерфейса в процентах (80–150). */
   uiScale: number;
+  /** Шрифт интерфейса: "" — из темы; иначе system|serif|mono|round. */
+  uiFont: string;
+  /** Акцентный цвет поверх палитры темы: "" — из темы; иначе #RRGGBB. */
+  uiAccent: string;
 }
 
 export interface VersionEntry {
@@ -195,4 +199,22 @@ export interface Diagnosis {
   ruleId: string;
   title: string;
   advice: string;
+}
+
+// ---------- Обновления лаунчера (GitHub releases) ----------
+
+/** Результат `update_check` (зеркало `commands::UpdateInfo`, camelCase). */
+export interface UpdateInfo {
+  /** Текущая версия лаунчера. */
+  current: string;
+  /** Тег последнего релиза (`v0.2.0`); null — версию узнать не удалось. */
+  latest?: string;
+  /** Страница релиза на github.com. */
+  url?: string;
+  /** Тег новее текущей версии. */
+  updateAvailable: boolean;
+  /** Проверка состоялась — «не удалось» тоже `checked`, это не ошибка команды. */
+  checked: boolean;
+  /** Код причины из errors.json, если версию узнать не удалось (UI переводит). */
+  note?: string;
 }

@@ -14,6 +14,7 @@ import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
 import LogViewerModal from "../components/LogViewerModal";
+import { rowClickOpens } from "./InstanceDetailPage";
 import type { Instance } from "../../api/types";
 
 /** Колбэки строки (без status): строятся один раз на инстанс, чтобы memo работал. */
@@ -33,7 +34,14 @@ type RowCallbacks = {
   onIconClear?: () => void;
 };
 
-export default function InstancesPage({ query }: { query: string }) {
+export default function InstancesPage({
+  query,
+  onOpenInstance,
+}: {
+  query: string;
+  /** Открыть страницу инстанса (клик по строке — не по кнопкам Play/Stop/кебаб). */
+  onOpenInstance: (id: string) => void;
+}) {
   const { list, status, launch, stop, optimize, remove, duplicate, error, setError, load } =
     useInstances(
       useShallow((s) => ({
@@ -161,12 +169,27 @@ export default function InstancesPage({ query }: { query: string }) {
           {visible.map((inst) => {
             const callbacks = rowCallbacks.get(inst.id);
             return callbacks ? (
-              <InstanceRow
+              // Клик по телу строки открывает страницу инстанса; кнопки внутри
+              // строки (Play/Stop, кебаб и его меню) остаются рабочими.
+              <div
                 key={inst.id}
-                inst={inst}
-                status={status[inst.id]}
-                {...callbacks}
-              />
+                role="button"
+                tabIndex={0}
+                aria-label={t("instance.open", { name: inst.name })}
+                onClick={(e) => {
+                  if (rowClickOpens(e.target)) onOpenInstance(inst.id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return; // Enter на кнопках строки
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onOpenInstance(inst.id);
+                  }
+                }}
+                className="cursor-pointer rounded-lg"
+              >
+                <InstanceRow inst={inst} status={status[inst.id]} {...callbacks} />
+              </div>
             ) : null;
           })}
         </div>

@@ -25,6 +25,7 @@ import type {
   SearchResult,
   Settings,
   UpdateCheck,
+  UpdateInfo,
   VersionEntry,
 } from "./types";
 
@@ -105,6 +106,9 @@ export const api = {
   dataDir: () => invoke<string>("data_dir"),
   logsTail: (lines: number) => invoke<string>("logs_tail", { lines }),
   dirOpen: () => invoke<{ ok: boolean }>("dir_open"),
+
+  // Проверка обновлений лаунчера (GitHub releases; авто-установки нет)
+  updateCheck: () => invoke<UpdateInfo>("update_check"),
 
   crashAnalyze: (logText: string) => invoke<Diagnosis[]>("crash_analyze", { logText }),
 
