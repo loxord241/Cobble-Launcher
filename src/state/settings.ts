@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import { api } from "../api/client";
 import { setLanguage } from "../i18n";
+import { setTheme, isThemeId } from "../theme/theme";
 import type { Settings } from "../api/types";
 
 interface SettingsState {
@@ -12,7 +13,16 @@ interface SettingsState {
 }
 
 function applySideEffects(s: Settings) {
-  document.documentElement.classList.toggle("theme-light", s.theme === "light");
+  // Тема: выбор со страницы «Темы» живёт в localStorage (5 тем); settings.theme
+  // (dark|light в ядре) применяется, только если localStorage ещё не выбран.
+  if (!isThemeId(s.theme)) return;
+  if (s.theme === "dark" || s.theme === "light") {
+    try {
+      if (localStorage.getItem("theme") === null) setTheme(s.theme);
+    } catch {
+      setTheme(s.theme);
+    }
+  }
   setLanguage(s.language);
 }
 

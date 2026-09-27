@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  Account,
   ContentEntry,
   RamGuide,
   CoreEvent,
@@ -64,6 +65,10 @@ export const api = {
   dataDir: () => invoke<string>("data_dir"),
   logsTail: (lines: number) => invoke<string>("logs_tail", { lines }),
   dirOpen: () => invoke<{ ok: boolean }>("dir_open"),
+
+  // Аккаунты (M8): чип профиля в титлбаре.
+  accountList: () => invoke<Account[]>("account_list"),
+  accountActiveSet: (id: string) => invoke<{ ok: boolean }>("account_active_set", { id }),
 };
 
 /** Подписка на события ядра (dl_progress, launch_state, game_log_line). */

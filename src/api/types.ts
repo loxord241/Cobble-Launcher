@@ -1,4 +1,15 @@
 // Типы — зеркало Rust-структур (docs/UI-CONTRACT.md). Рассинхрон = ошибка ревью.
+
+// Профиль аккаунта (зеркало crate::auth::Account, camelCase).
+export type AccountKind = "offline" | "msa" | "ely";
+export interface Account {
+  id: string;
+  kind: AccountKind;
+  name: string;
+  uuid: string;
+  refreshRef?: string;
+}
+
 export interface Instance {
   schemaVersion: number;
   id: string;
