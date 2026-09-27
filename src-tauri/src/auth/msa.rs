@@ -353,7 +353,6 @@ Connection: close
             let _ = stream.shutdown(std::net::Shutdown::Both);
             if let Some(code) = code {
                 let decoded = pct_decode(&code);
-                println!("auth-code получен: len={} head={:?}", decoded.len(), decoded.get(..10));
                 if !decoded.is_empty() {
                     return Ok(decoded);
                 }
