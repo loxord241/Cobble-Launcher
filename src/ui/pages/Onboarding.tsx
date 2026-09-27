@@ -107,7 +107,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             {step > 1 && (
               <button
                 onClick={() => setStep(step - 1)}
-                className="rounded-md border border-border-app px-4 py-2 text-sm hover:bg-bg"
+                className="btn-ghost btn-sm"
               >
                 ←
               </button>
@@ -115,7 +115,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             {step < 3 ? (
               <button
                 onClick={() => setStep(step + 1)}
-                className="rounded-md bg-accent px-5 py-2 font-semibold text-accent-contrast hover:bg-accent-hover"
+                className="btn-primary"
               >
                 {t("onboarding.next")}
               </button>
@@ -123,7 +123,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
               <button
                 onClick={() => void finish()}
                 disabled={busy || !version}
-                className="rounded-md bg-accent px-5 py-2 font-semibold text-accent-contrast hover:bg-accent-hover disabled:opacity-40"
+                className="btn-primary"
               >
                 {t("onboarding.finish")}
               </button>

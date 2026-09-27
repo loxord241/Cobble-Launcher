@@ -82,7 +82,7 @@ export default function CreateInstanceDialog({
       <div className="w-[440px] rounded-lg border border-border-app bg-card p-5">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">{t("instances.create")}</h2>
-          <button onClick={onClose} aria-label="close" className="text-text-muted hover:text-text">
+          <button onClick={onClose} aria-label={t("common.close")} className="text-text-muted hover:text-text">
             <X size={18} aria-hidden />
           </button>
         </div>
@@ -94,7 +94,7 @@ export default function CreateInstanceDialog({
           id="ci-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Новый инстанс"
+          placeholder={t("instances.newInstance")}
           className="mt-1 w-full rounded-md border border-border-app bg-bg px-3 py-2 text-text outline-none focus:border-accent"
         />
 
@@ -133,7 +133,7 @@ export default function CreateInstanceDialog({
         {loader !== "none" && (
           <>
             <label className="mt-3 block text-sm text-text-muted" htmlFor="ci-lv">
-              {loader} version
+              {t("instances.loaderVersion", { loader })}
             </label>
             <select
               id="ci-lv"
@@ -155,7 +155,7 @@ export default function CreateInstanceDialog({
         <button
           onClick={() => void submit()}
           disabled={busy || !version}
-          className="mt-5 w-full rounded-md bg-accent py-2 font-semibold text-accent-contrast transition-colors hover:bg-accent-hover disabled:opacity-40"
+          className="btn-primary mt-5 w-full"
         >
           {t("instances.create")}
         </button>

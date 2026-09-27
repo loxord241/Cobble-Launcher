@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Shell from "./ui/layout/Shell";
 import Onboarding from "./ui/pages/Onboarding";
 import { useSettings } from "./state/settings";
+import { t } from "./i18n";
 import { useInstances } from "./state/instances";
 
 export default function App() {
@@ -47,7 +48,7 @@ export default function App() {
         >
           <button
             onClick={() => setError(null)}
-            aria-label="close"
+            aria-label={t("common.close")}
             className="float-right ml-2 text-text-muted"
           >
             ✕

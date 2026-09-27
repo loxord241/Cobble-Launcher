@@ -1,13 +1,13 @@
 // Браузер контента Modrinth (спека §8): поиск, установка в инстанс,
-// установка .mrpack, проверка/применение обновлений.
+// установка .mrpack, проверка/применение обновлений. Паттерн строк «Сланца».
 import { useEffect, useState } from "react";
-import { Download, RefreshCw, Search } from "lucide-react";
+import { Download, RefreshCw, Search, SearchX, PackageSearch } from "lucide-react";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
 import type { Instance, SearchResult, UpdateCheck } from "../../api/types";
 
-export default function ModsPage() {
-  const [query, setQuery] = useState("");
+export default function ModsPage({ query }: { query: string }) {
+  const [localQuery, setLocalQuery] = useState("");
   const [result, setResult] = useState<SearchResult | null>(null);
   const [instances, setInstances] = useState<Instance[]>([]);
   const [targetId, setTargetId] = useState("");
@@ -28,7 +28,7 @@ export default function ModsPage() {
     setError(null);
     try {
       const target = instances.find((i) => i.id === targetId);
-      setResult(await api.modrinthSearch(query || "mods", target?.mcVersion, target?.loader));
+      setResult(await api.modrinthSearch(localQuery || "mods", target?.mcVersion, target?.loader));
     } catch (e) {
       setError((e as { message?: string })?.message ?? String(e));
     } finally {
@@ -43,9 +43,10 @@ export default function ModsPage() {
     try {
       const entries = await api.contentInstall(targetId, projectId);
       setInstalledInfo(
-        `Установлено в «${instances.find((i) => i.id === targetId)?.name ?? "?"}»: ${entries
-          .map((e) => e.file)
-          .join(", ")}`,
+        t("mods.installedInto", {
+          name: instances.find((i) => i.id === targetId)?.name ?? "?",
+          files: entries.map((e) => e.file).join(", "),
+        }),
       );
     } catch (e) {
       setError((e as { message?: string })?.message ?? String(e));
@@ -55,13 +56,13 @@ export default function ModsPage() {
   };
 
   const installMrpack = async () => {
-    const path = window.prompt("Путь к .mrpack файлу:");
+    const path = window.prompt(t("mods.mrpackPrompt"));
     if (!path) return;
     setBusy(true);
     setError(null);
     try {
       const inst = await api.mrpackInstall(path);
-      setInstalledInfo(`Модпак установлен: ${inst.name} [${inst.mcVersion}]`);
+      setInstalledInfo(t("mods.packInstalled", { name: inst.name, version: inst.mcVersion }));
       setInstances(await api.instanceList());
     } catch (e) {
       setError((e as { message?: string })?.message ?? String(e));
@@ -86,7 +87,7 @@ export default function ModsPage() {
     setBusy(true);
     try {
       const n = await api.contentUpdateAll(targetId);
-      setInstalledInfo(`Обновлено модов: ${n}`);
+      setInstalledInfo(t("mods.updatedCount", { n }));
       setUpdates(null);
     } catch (e) {
       setError((e as { message?: string })?.message ?? String(e));
@@ -95,19 +96,28 @@ export default function ModsPage() {
     }
   };
 
-  return (
-    <div>
-      <h1 className="text-xl font-semibold">{t("nav.mods")}</h1>
+  // Глобальный поиск из титлбара фильтрует результаты по подстроке.
+  const q = query.trim().toLowerCase();
+  const hits = (result?.hits ?? []).filter(
+    (h) => !q || h.title.toLowerCase().includes(q) || h.author.toLowerCase().includes(q),
+  );
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <div className="flex min-w-72 flex-1 items-center gap-2 rounded-md border border-border-app bg-card px-3">
-          <Search size={16} aria-hidden className="text-text-muted" />
+  return (
+    <div className="mx-auto flex max-w-[980px] flex-col gap-4">
+      <div className="mt-1 flex items-baseline gap-2">
+        <h2 className="text-lg font-semibold tracking-tight">{t("nav.mods")}</h2>
+        {result && <span className="chip-mono">{hits.length}</span>}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex h-11 min-w-72 flex-1 max-w-[460px] items-center gap-2 rounded-lg border border-border-strong bg-card px-3 text-text-muted">
+          <Search size={16} aria-hidden />
           <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            value={localQuery}
+            onChange={(e) => setLocalQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void doSearch()}
             placeholder={t("mods.searchPlaceholder")}
-            className="w-full bg-transparent py-2 outline-none"
+            className="w-full bg-transparent font-mono text-sm text-text outline-none placeholder:text-text-muted placeholder:font-ui"
             aria-label={t("mods.searchPlaceholder")}
           />
         </div>
@@ -118,7 +128,7 @@ export default function ModsPage() {
             setUpdates(null);
           }}
           aria-label={t("mods.targetInstance")}
-          className="rounded-md border border-border-app bg-card px-3 py-2"
+          className="h-11 rounded-lg border border-border-strong bg-card px-3 text-sm"
         >
           {instances.map((i) => (
             <option key={i.id} value={i.id}>
@@ -126,25 +136,17 @@ export default function ModsPage() {
             </option>
           ))}
         </select>
-        <button
-          onClick={() => void doSearch()}
-          disabled={busy}
-          className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-contrast hover:bg-accent-hover disabled:opacity-40"
-        >
+        <button onClick={() => void doSearch()} disabled={busy} className="btn-primary btn-sm">
           <Search size={15} aria-hidden />
           {t("mods.search")}
         </button>
-        <button
-          onClick={() => void installMrpack()}
-          disabled={busy}
-          className="rounded-md border border-border-app px-3 py-2 text-sm hover:bg-card"
-        >
+        <button onClick={() => void installMrpack()} disabled={busy} className="btn-ghost btn-sm">
           {t("mods.installMrpack")}
         </button>
         <button
           onClick={() => void checkUpdates()}
           disabled={busy || !targetId}
-          className="flex items-center gap-2 rounded-md border border-border-app px-3 py-2 text-sm hover:bg-card disabled:opacity-40"
+          className="btn-ghost btn-sm"
         >
           <RefreshCw size={14} aria-hidden />
           {t("mods.checkUpdates")}
@@ -152,27 +154,22 @@ export default function ModsPage() {
       </div>
 
       {error && (
-        <p className="mt-3 rounded-md border border-error/40 bg-error/10 p-3 text-sm text-error" role="alert">
+        <p className="rounded-lg border border-error/40 bg-error/10 p-3 text-sm text-error" role="alert">
           {error}
         </p>
       )}
       {installedInfo && (
-        <p className="mt-3 rounded-md border border-success/40 bg-success/10 p-3 text-sm text-success">
+        <p className="rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-success">
           {installedInfo}
         </p>
       )}
 
       {updates !== null && (
-        <div className="mt-3 rounded-md border border-border-app bg-card p-3">
+        <div className="rounded-lg border border-border-app bg-card p-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-semibold">
-              {t("mods.updatesFound", { n: updates.length })}
-            </span>
+            <span className="text-sm font-semibold">{t("mods.updatesFound", { n: updates.length })}</span>
             {updates.length > 0 && (
-              <button
-                onClick={() => void applyUpdates()}
-                className="flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-contrast hover:bg-accent-hover"
-              >
+              <button onClick={() => void applyUpdates()} className="btn-primary btn-sm">
                 <RefreshCw size={14} aria-hidden />
                 {t("mods.applyUpdates")}
               </button>
@@ -188,36 +185,60 @@ export default function ModsPage() {
         </div>
       )}
 
-      <div className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
-        {(result?.hits ?? []).map((h) => (
-          <div key={h.project_id} className="rounded-lg border border-border-app bg-card p-4">
-            <div className="flex items-start gap-3">
+      {result && hits.length === 0 ? (
+        // Пустое состояние: Modrinth ответил, но по фильтру ничего нет.
+        <div className="mt-10 flex flex-col items-center gap-3 rounded-lg border border-border-app bg-card px-4 py-10 text-center">
+          <SearchX size={32} aria-hidden className="text-text-muted" />
+          <div className="text-[15px] font-semibold">{t("mods.empty.title")}</div>
+          <div className="max-w-sm text-[13px] text-text-muted">{t("mods.empty.desc")}</div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {hits.map((h) => (
+            <div
+              key={h.project_id}
+              className="grid min-h-14 grid-cols-[36px_1fr_auto] items-center gap-3 rounded-lg border border-border-app bg-card px-3 py-2 transition-colors hover:border-border-strong hover:bg-card-hover"
+            >
               {h.icon_url ? (
-                <img src={h.icon_url} alt="" className="h-12 w-12 rounded-md object-cover" />
+                <img
+                  src={h.icon_url}
+                  alt=""
+                  className="size-9 rounded-md border border-border-app object-cover"
+                />
               ) : (
-                <div className="flex h-12 w-12 items-center justify-center rounded-md bg-bg text-lg font-bold text-accent">
+                <span
+                  aria-hidden
+                  className="grid size-9 place-items-center rounded-md bg-surface-2 text-sm font-semibold text-text-muted"
+                >
                   {h.title.slice(0, 1)}
-                </div>
+                </span>
               )}
               <div className="min-w-0">
-                <h3 className="truncate font-semibold">{h.title}</h3>
-                <p className="text-xs text-text-muted">
-                  {h.author} · {h.downloads.toLocaleString("ru")} ⬇
-                </p>
+                <div className="truncate text-[15px] font-semibold leading-tight">{h.title}</div>
+                <div className="font-mono text-[13px] text-text-muted">
+                  {t("mods.by", { author: h.author })} · {t("mods.downloads", { n: h.downloads.toLocaleString("ru") })}
+                </div>
               </div>
+              <button
+                onClick={() => void install(h.project_id)}
+                disabled={busy || !targetId}
+                className="btn-ghost btn-sm"
+                aria-label={`${t("mods.installInto")} — ${h.title}`}
+              >
+                <Download size={14} aria-hidden />
+                {t("mods.installInto")}
+              </button>
             </div>
-            <p className="mt-2 line-clamp-2 min-h-8 text-sm text-text-muted">{h.description}</p>
-            <button
-              onClick={() => void install(h.project_id)}
-              disabled={busy || !targetId}
-              className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-accent py-2 text-sm font-semibold text-accent-contrast hover:bg-accent-hover disabled:opacity-40"
-            >
-              <Download size={14} aria-hidden />
-              {t("mods.installInto")}
-            </button>
-          </div>
-        ))}
-      </div>
+          ))}
+          {!result && (
+            // Поиск ещё не выполняли — подсказка вместо пустого списка.
+            <div className="mt-10 flex flex-col items-center gap-3 rounded-lg border border-dashed border-border-strong px-4 py-10 text-center">
+              <PackageSearch size={32} aria-hidden className="text-text-muted" />
+              <div className="max-w-sm text-[13px] text-text-muted">{t("mods.searchPlaceholder")}</div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
