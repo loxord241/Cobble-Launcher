@@ -10,7 +10,10 @@ import { useSettings } from "../../state/settings";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
 import InstanceRow from "../components/InstanceRow";
-import type { SearchHit } from "../../api/types";
+import InstanceSettingsModal from "../components/InstanceSettingsModal";
+import RenameInstanceModal from "../components/RenameInstanceModal";
+import LogViewerModal from "../components/LogViewerModal";
+import type { Instance, SearchHit } from "../../api/types";
 
 export default function HomePage({
   query,
@@ -26,6 +29,9 @@ export default function HomePage({
   const [packs, setPacks] = useState<SearchHit[] | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
   const [packInfo, setPackInfo] = useState<string | null>(null);
+  const [settingsInst, setSettingsInst] = useState<Instance | null>(null);
+  const [renameInst, setRenameInst] = useState<Instance | null>(null);
+  const [logsInst, setLogsInst] = useState<Instance | null>(null);
 
   // Активный профиль — тот же выбор, что в чипе титлбара.
   const activeAccount =
@@ -69,13 +75,16 @@ export default function HomePage({
   const heroStatus = hero ? status[hero.id] : undefined;
   const heroBusy = heroStatus && heroStatus.phase !== "exited";
 
-  const rowProps = (inst: (typeof list)[number]) => ({
+  const rowProps = (inst: Instance) => ({
     status: status[inst.id],
     onLaunch: () => void launch(inst.id, activeAccount?.name ?? "Player").catch((e) => setError(String(e))),
     onStop: () => void stop(inst.id).catch((e) => setError(String(e))),
     onOptimize: () => void optimize(inst.id).catch((e) => setError(String(e))),
     onFolder: () => void api.instanceOpenDir(inst.id).catch((e) => setError(String(e))),
     onDuplicate: () => void duplicate(inst.id).catch((e) => setError(String(e))),
+    onSettings: () => setSettingsInst(inst),
+    onRename: () => setRenameInst(inst),
+    onLogs: () => setLogsInst(inst),
     onDelete: () => {
       if (window.confirm(t("instances.confirmDelete", { name: inst.name }))) {
         void remove(inst.id, false).catch((e) => setError(String(e)));
@@ -244,6 +253,28 @@ export default function HomePage({
             </p>
           )}
         </section>
+      )}
+
+      {settingsInst && (
+        <InstanceSettingsModal
+          instance={settingsInst}
+          onClose={() => setSettingsInst(null)}
+          onSaved={() => void load()}
+        />
+      )}
+
+      {renameInst && (
+        <RenameInstanceModal
+          instance={renameInst}
+          onClose={() => setRenameInst(null)}
+        />
+      )}
+
+      {logsInst && (
+        <LogViewerModal
+          instance={logsInst}
+          onClose={() => setLogsInst(null)}
+        />
       )}
     </div>
   );

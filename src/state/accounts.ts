@@ -1,12 +1,17 @@
-// Стейт аккаунтов (M8): чип профиля в титлбаре + смена активного.
+// Стейт аккаунтов (M8): чип профиля в титлбаре + управление профилями.
 import { create } from "zustand";
 import { api } from "../api/client";
 import type { Account, AccountKind } from "../api/types";
+
 interface AccountsState {
   list: Account[];
   loaded: boolean;
   load: () => Promise<void>;
   setActive: (id: string) => Promise<void>;
+  addOffline: (name: string) => Promise<Account>;
+  addMsaBrowser: () => Promise<Account>;
+  addEly: (username: string, password: string) => Promise<Account>;
+  remove: (id: string) => Promise<void>;
 }
 
 export const useAccounts = create<AccountsState>((set, get) => ({
@@ -18,6 +23,25 @@ export const useAccounts = create<AccountsState>((set, get) => ({
   },
   setActive: async (id) => {
     await api.accountActiveSet(id);
+    await get().load();
+  },
+  addOffline: async (name: string) => {
+    const acc = await api.accountAddOffline(name);
+    await get().load();
+    return acc;
+  },
+  addMsaBrowser: async () => {
+    const acc = await api.accountAddMsaBrowser();
+    await get().load();
+    return acc;
+  },
+  addEly: async (username: string, password: string) => {
+    const acc = await api.accountAddEly(username, password);
+    await get().load();
+    return acc;
+  },
+  remove: async (id: string) => {
+    await api.accountRemove(id);
     await get().load();
   },
 }));

@@ -15,6 +15,7 @@ import {
   X,
   ChevronDown,
   Check,
+  UserPlus,
 } from "lucide-react";
 import { t } from "../../i18n";
 import { useInstances } from "../../state/instances";
@@ -24,6 +25,8 @@ import HomePage from "../pages/HomePage";
 import InstancesPage from "../pages/InstancesPage";
 import ModsPage from "../pages/ModsPage";
 import SettingsPage from "../pages/SettingsPage";
+import AccountsModal from "../components/AccountsModal";
+import CrashReportModal from "../components/CrashReportModal";
 
 type Page = "home" | "instances" | "mods" | "settings";
 
@@ -41,8 +44,9 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   const [query, setQuery] = useState("");
   const [version, setVersion] = useState("0.1.0");
   const [accountOpen, setAccountOpen] = useState(false);
+  const [accountsModalOpen, setAccountsModalOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
-  const { load, subscribeEvents, list } = useInstances();
+  const { load, subscribeEvents, list, crashReport, clearCrashReport } = useInstances();
   const { settings, load: loadSettings } = useSettings();
   const { list: accounts, load: loadAccounts, setActive } = useAccounts();
 
@@ -166,17 +170,30 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
                       </span>
                     </button>
                   ))}
+                  <div className="my-1 border-t border-border-app" />
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setAccountOpen(false);
+                      setAccountsModalOpen(true);
+                    }}
+                    className="flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-sm text-accent hover:bg-surface-2"
+                  >
+                    <UserPlus size={15} aria-hidden />
+                    <span className="font-semibold">{t("shell.account.manage")}</span>
+                  </button>
                 </div>
               </>
             )}
           </div>
         ) : (
           <button
-            onClick={onLogout}
+            onClick={() => setAccountsModalOpen(true)}
             aria-label={t("shell.account.profile")}
             className="flex h-10 items-center gap-2 rounded-lg px-2 text-sm font-semibold text-text-muted hover:bg-surface-2 hover:text-text"
           >
-            {t("shell.account.profile")}
+            <UserPlus size={16} aria-hidden />
+            {t("shell.account.addProfile")}
           </button>
         )}
 
@@ -248,6 +265,14 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
           {page === "settings" && <SettingsPage onOnboardingReset={onLogout} />}
         </main>
       </div>
+
+      {accountsModalOpen && (
+        <AccountsModal onClose={() => setAccountsModalOpen(false)} />
+      )}
+
+      {crashReport && (
+        <CrashReportModal report={crashReport} onClose={clearCrashReport} />
+      )}
     </div>
   );
 }

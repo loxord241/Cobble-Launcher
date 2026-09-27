@@ -9,6 +9,9 @@ import {
   Copy,
   Trash2,
   MoreVertical,
+  Settings,
+  Pencil,
+  FileText,
 } from "lucide-react";
 import { t } from "../../i18n";
 import type { Instance } from "../../api/types";
@@ -23,6 +26,9 @@ export default function InstanceRow({
   onFolder,
   onDuplicate,
   onDelete,
+  onSettings,
+  onRename,
+  onLogs,
 }: {
   inst: Instance;
   status?: LaunchStatus;
@@ -32,6 +38,9 @@ export default function InstanceRow({
   onFolder: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onSettings?: () => void;
+  onRename?: () => void;
+  onLogs?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const firstItemRef = useRef<HTMLButtonElement>(null);
@@ -119,10 +128,41 @@ export default function InstanceRow({
                 onKeyDown={(e) => {
                   if (e.key === "Escape") closeMenu(true);
                 }}
-                className="absolute right-0 top-11 z-50 min-w-44 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
+                className="absolute right-0 top-11 z-50 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
               >
+                {onSettings && (
+                  <MenuItem
+                    ref={firstItemRef}
+                    icon={Settings}
+                    label={t("instances.settings.menu")}
+                    onClick={() => {
+                      closeMenu();
+                      onSettings();
+                    }}
+                  />
+                )}
+                {onRename && (
+                  <MenuItem
+                    icon={Pencil}
+                    label={t("instances.rename.menu")}
+                    disabled={busy}
+                    onClick={() => {
+                      closeMenu();
+                      onRename();
+                    }}
+                  />
+                )}
+                {onLogs && (
+                  <MenuItem
+                    icon={FileText}
+                    label={t("instances.logs.menu")}
+                    onClick={() => {
+                      closeMenu();
+                      onLogs();
+                    }}
+                  />
+                )}
                 <MenuItem
-                  ref={firstItemRef}
                   icon={Sparkles}
                   label={t("instances.optimize")}
                   onClick={() => {
@@ -141,6 +181,7 @@ export default function InstanceRow({
                 <MenuItem
                   icon={Copy}
                   label={t("instances.duplicate")}
+                  disabled={busy}
                   onClick={() => {
                     closeMenu();
                     onDuplicate();
@@ -150,6 +191,7 @@ export default function InstanceRow({
                   icon={Trash2}
                   danger
                   label={t("instances.delete")}
+                  disabled={busy}
                   onClick={() => {
                     closeMenu();
                     onDelete();
@@ -169,21 +211,28 @@ function MenuItem({
   label,
   onClick,
   danger,
+  disabled,
   ref,
 }: {
   icon: typeof FolderOpen;
   label: string;
   onClick: () => void;
   danger?: boolean;
+  disabled?: boolean;
   ref?: React.Ref<HTMLButtonElement>;
 }) {
   return (
     <button
       ref={ref}
       role="menuitem"
+      disabled={disabled}
       onClick={onClick}
-      className={`flex h-10 w-full items-center gap-2 rounded-md px-3 text-left text-sm ${
-        danger ? "text-error hover:bg-error/10" : "text-text hover:bg-surface-2"
+      className={`flex h-10 w-full items-center gap-2 rounded-md px-3 text-left text-sm transition-colors ${
+        disabled
+          ? "cursor-not-allowed text-text-muted/40"
+          : danger
+            ? "text-error hover:bg-error/10"
+            : "text-text hover:bg-surface-2"
       }`}
     >
       <Icon size={16} aria-hidden />

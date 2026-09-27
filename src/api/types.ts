@@ -104,7 +104,17 @@ export interface GameLogLineEvent {
   stream: "stdout" | "stderr";
 }
 
-export type CoreEvent = DlProgressEvent | LaunchStateEvent | GameLogLineEvent;
+export interface AccountRefreshFailedEvent {
+  event: "account_refresh_failed";
+  accountId: string;
+  reason: string;
+}
+
+export type CoreEvent =
+  | DlProgressEvent
+  | LaunchStateEvent
+  | GameLogLineEvent
+  | AccountRefreshFailedEvent;
 
 // ---------- Modrinth (M5; зеркалит snake_case Rust-структур) ----------
 

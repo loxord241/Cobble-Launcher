@@ -1,30 +1,49 @@
-// Страница инстансов «Сланца»: строки + создание/удаление + фильтр поиска.
+// Страница инстансов «Сланца»: строки + создание/удаление + фильтр поиска + управление.
 import { useState } from "react";
 import { Plus, SearchX, Inbox } from "lucide-react";
 import { useInstances } from "../../state/instances";
+import { useAccounts } from "../../state/accounts";
 import { api } from "../../api/client";
 import { useSettings } from "../../state/settings";
 import { t } from "../../i18n";
 import InstanceRow from "../components/InstanceRow";
 import CreateInstanceDialog from "../components/CreateInstanceDialog";
+import InstanceSettingsModal from "../components/InstanceSettingsModal";
+import RenameInstanceModal from "../components/RenameInstanceModal";
+import LogViewerModal from "../components/LogViewerModal";
+import type { Instance } from "../../api/types";
 
 export default function InstancesPage({ query }: { query: string }) {
-  const { list, status, launch, stop, optimize, remove, duplicate, error, setError } = useInstances();
+  const { list, status, launch, stop, optimize, remove, duplicate, error, setError, load } = useInstances();
+  const { list: accounts } = useAccounts();
   const { settings } = useSettings();
   const [creating, setCreating] = useState(false);
+  const [settingsInst, setSettingsInst] = useState<Instance | null>(null);
+  const [renameInst, setRenameInst] = useState<Instance | null>(null);
+  const [logsInst, setLogsInst] = useState<Instance | null>(null);
+
+  const activeAccount =
+    accounts.find((a) => a.id === settings?.accountsActiveId) ?? accounts[0] ?? null;
 
   const q = query.trim().toLowerCase();
   const visible = q ? list.filter((i) => i.name.toLowerCase().includes(q)) : list;
 
-  const rowProps = (inst: (typeof list)[number]) => ({
+  const rowProps = (inst: Instance) => ({
     status: status[inst.id],
-    onLaunch: () => void launch(inst.id, "Player").catch((e) => setError(String(e))),
+    onLaunch: () =>
+      void launch(inst.id, activeAccount?.name ?? "Player").catch((e) => setError(String(e))),
     onStop: () => void stop(inst.id).catch((e) => setError(String(e))),
     onOptimize: () => void optimize(inst.id).catch((e) => setError(String(e))),
     onFolder: () => void api.instanceOpenDir(inst.id).catch((e) => setError(String(e))),
     onDuplicate: () => void duplicate(inst.id).catch((e) => setError(String(e))),
+    onSettings: () => setSettingsInst(inst),
+    onRename: () => setRenameInst(inst),
+    onLogs: () => setLogsInst(inst),
     onDelete: () => {
-      if (window.confirm(t("instances.confirmDelete", { name: inst.name }))) {
+      const wipe = window.confirm(
+        `${t("instances.confirmDelete", { name: inst.name })}\n\nНажмите OK для удаления в корзину (или Отмена для отмены).`,
+      );
+      if (wipe) {
         void remove(inst.id, false).catch((e) => setError(String(e)));
       }
     },
@@ -79,6 +98,28 @@ export default function InstancesPage({ query }: { query: string }) {
           showOld={settings?.showOldVersions ?? false}
           onClose={() => setCreating(false)}
           onCreated={() => setCreating(false)}
+        />
+      )}
+
+      {settingsInst && (
+        <InstanceSettingsModal
+          instance={settingsInst}
+          onClose={() => setSettingsInst(null)}
+          onSaved={() => void load()}
+        />
+      )}
+
+      {renameInst && (
+        <RenameInstanceModal
+          instance={renameInst}
+          onClose={() => setRenameInst(null)}
+        />
+      )}
+
+      {logsInst && (
+        <LogViewerModal
+          instance={logsInst}
+          onClose={() => setLogsInst(null)}
         />
       )}
     </div>

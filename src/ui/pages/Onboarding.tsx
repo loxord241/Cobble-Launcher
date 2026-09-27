@@ -32,10 +32,20 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
     setBusy(true);
     setError(null);
     try {
+      const cleanNick = nick.trim();
+      if (cleanNick) {
+        try {
+          const acc = await api.accountAddOffline(cleanNick);
+          await update({ accountsActiveId: acc.id, onboardingDone: true });
+        } catch {
+          await update({ onboardingDone: true });
+        }
+      } else {
+        await update({ onboardingDone: true });
+      }
       if (version) {
         await create(version, `${version}`);
       }
-      await update({ onboardingDone: true });
       onDone();
     } catch (e) {
       setError((e as { message?: string })?.message ?? String(e));
@@ -45,7 +55,6 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   };
 
   void settings;
-  void nick; // ник применяется при запуске (M8: аккаунты)
 
   return (
     <div className="flex h-screen items-center justify-center bg-bg text-text">
