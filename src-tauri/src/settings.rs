@@ -53,7 +53,7 @@ impl Default for Settings {
         Self {
             schema_version: SCHEMA_VERSION,
             theme: Theme::Dark,
-            language: "ru".into(),
+            language: "en".into(),
             download_parallelism: 16,
             default_ram_mb: 2048,
             default_jvm_flags: Vec::new(),

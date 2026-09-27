@@ -1,20 +1,24 @@
 // Мини-i18n без зависимостей: t("key") + {placeholders}. Спека §8.
+// Языки: en (по умолчанию), ru, uk. Fallback-цепочка: current → en → ключ.
 import ru from "./ru.json";
 import en from "./en.json";
+import uk from "./uk.json";
 import errors from "./errors.json";
 import type { ErrorPayload } from "../api/types";
 
 type Dict = Record<string, string>;
+type ErrorEntry = Record<"ru" | "en" | "uk", string>;
 
-const dicts: Record<string, Dict> = { ru: ru as Dict, en: en as Dict };
-let current = "ru";
+const dicts: Record<string, Dict> = { ru: ru as Dict, en: en as Dict, uk: uk as Dict };
+const errorDict = errors as unknown as Record<string, ErrorEntry>;
+let current = "en";
 
 export function setLanguage(lang: string) {
   if (dicts[lang]) current = lang;
 }
 
 export function t(key: string, params?: Record<string, string | number>): string {
-  let text = dicts[current][key] ?? dicts.ru[key] ?? key;
+  let text = dicts[current][key] ?? dicts.en[key] ?? key;
   if (params) {
     for (const [k, v] of Object.entries(params)) {
       text = text.replace(`{${k}}`, String(v));
@@ -23,10 +27,11 @@ export function t(key: string, params?: Record<string, string | number>): string
   return text;
 }
 
-/** Ошибка ядра → локализованный текст: код в errors.json, message — fallback. */
+/** Ошибка ядра → локализованный текст по текущему языку; message — fallback. */
 export function errorText(e: ErrorPayload): string {
-  const localized = (errors as Dict)[e.code];
-  const base = localized ? `${localized}` : e.message;
+  const entry = errorDict[e.code];
+  const localized = entry ? (entry[current as keyof ErrorEntry] ?? entry.en ?? entry.ru) : undefined;
+  const base = localized ?? e.message;
   return e.hint ? `${base}. ${e.hint}` : base;
 }
 

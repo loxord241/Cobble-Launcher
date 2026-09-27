@@ -222,5 +222,7 @@
   "instances.delete.title": "Delete instance",
   "instances.delete.desc": "\"{name}\" — including all worlds, mods and settings. Stop the instance first if it is running.",
   "instances.delete.trash": "Move to trash (recoverable)",
-  "instances.delete.forever": "Delete forever, including data"
+  "instances.delete.forever": "Delete forever, including data",
+  "settings.language": "Language",
+  "onboarding.language": "Interface language"
 }

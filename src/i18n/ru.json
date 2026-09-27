@@ -222,5 +222,7 @@
   "instances.delete.title": "Удалить инстанс",
   "instances.delete.desc": "«{name}» — со всеми мирами, модами и настройками. Запущенный инстанс сначала нужно остановить.",
   "instances.delete.trash": "Удалить в корзину (можно восстановить)",
-  "instances.delete.forever": "Удалить навсегда, вместе с данными"
+  "instances.delete.forever": "Удалить навсегда, вместе с данными",
+  "settings.language": "Язык",
+  "onboarding.language": "Язык интерфейса"
 }

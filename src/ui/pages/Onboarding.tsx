@@ -78,7 +78,20 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
 
         {step === 1 && (
           <div className="mt-5">
-            <h2 className="font-semibold">{t("onboarding.dir")}</h2>
+            <label className="block text-sm font-medium" htmlFor="ob-lang">
+              {t("onboarding.language")}
+            </label>
+            <select
+              id="ob-lang"
+              value={settings?.language ?? "en"}
+              onChange={(e) => void update({ language: e.target.value }).catch(() => undefined)}
+              className="mt-1 w-full rounded-md border border-border-app bg-bg px-3 py-2"
+            >
+              <option value="en">English</option>
+              <option value="ru">Русский</option>
+              <option value="uk">Українська</option>
+            </select>
+            <h2 className="mt-4 font-semibold">{t("onboarding.dir")}</h2>
             <p className="mt-2 text-sm text-text-muted">{t("onboarding.dir.hint")}</p>
             <code className="mt-3 block truncate rounded-md bg-bg px-3 py-2 text-sm">{dataDir}</code>
           </div>

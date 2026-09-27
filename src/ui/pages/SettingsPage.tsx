@@ -188,6 +188,21 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
           <Field label={t("settings.snapshots")}>
             <div className="flex items-center justify-between gap-4">
               <div>
+                <div className="text-sm font-medium">{t("settings.language")}</div>
+              </div>
+              <select
+                value={settings.language}
+                onChange={(e) => commit({ language: e.target.value })}
+                aria-label={t("settings.language")}
+                className="h-10 rounded-lg border border-border-strong bg-card px-3 text-sm"
+              >
+                <option value="en">English</option>
+                <option value="ru">Русский</option>
+                <option value="uk">Українська</option>
+              </select>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div>
                 <div className="text-sm font-medium">{t("settings.uiScale")}</div>
                 <div className="text-[13px] text-text-muted">{t("settings.uiScale.hint")}</div>
               </div>
