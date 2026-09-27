@@ -119,6 +119,7 @@ pub fn run() -> tauri::Result<()> {
             commands::content_update_check,
             commands::content_update_all,
             commands::mrpack_install,
+            commands::modpack_install,
             commands::instance_optimize,
             commands::ram_guide,
             commands::instance_kill,

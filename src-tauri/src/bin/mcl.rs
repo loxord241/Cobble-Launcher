@@ -138,6 +138,8 @@ enum Cmd {
     },
     /// Начать MSA device-code вход (код + URL для браузера)
     AuthMsaStart,
+    /// Вход через браузер (auth-code + localhost redirect) — рекомендуется
+    AuthMsaWeb,
     /// Дописать MSA-вход после авторизации в браузере
     AuthMsaPoll {
         #[arg(long)]
@@ -282,7 +284,8 @@ async fn run(cli: Cli) -> Result<()> {
             let start = mc_launcher_v2_lib::auth::msa::device_code_start(&client, &client_id).await?;
             println!("1) Откройте: {}", start.verification_url);
             println!("2) Введите код: {}", start.user_code);
-            println!("3) Затем: mcl auth-msa-poll --device {}", start.device_code);
+            println!("device_code: {}", start.device_code);
+            println!("3) Затем: mcl auth-msa-poll --device-code <значение_device_code>");
             Ok(())
         }
         Cmd::AuthMsaPoll { device_code } => {
@@ -310,6 +313,32 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
             println!("Авторизация ещё не завершена — повторите poll");
+            Ok(())
+        }
+        Cmd::AuthMsaWeb => {
+            let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+            let client_id = settings.azure_client_id.clone().ok_or_else(|| {
+                LauncherError::InvalidInput("нет azureClientId в settings.json".into())
+            })?;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")
+                .map_err(|e| LauncherError::network(format!("bind: {e}")))?;
+            let port = listener.local_addr()?.port();
+            let url = mc_launcher_v2_lib::auth::msa::authorize_url(&client_id, port);
+            println!("Открываю браузер для входа (localhost:{port})...");
+            let _ = std::process::Command::new("explorer").arg(&url).spawn();
+            let code = mc_launcher_v2_lib::auth::msa::wait_auth_code(listener).await?;
+            let session = mc_launcher_v2_lib::auth::msa::finish_web_login(&client, &client_id, &code, port).await?;
+            let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
+            mc_launcher_v2_lib::auth::keyring_set(&ref_name, &session.refresh_token)?;
+            let acc = mc_launcher_v2_lib::auth::Account {
+                id: uuid::Uuid::new_v4().to_string(),
+                kind: mc_launcher_v2_lib::auth::AccountKind::Msa,
+                name: session.player_name.clone(),
+                uuid: session.uuid.clone(),
+                refresh_ref: Some(ref_name),
+            };
+            println!("Вход выполнен: {} ({})", session.player_name, session.uuid);
+            mc_launcher_v2_lib::auth::add(&paths, acc)?;
             Ok(())
         }
         Cmd::AuthList => {

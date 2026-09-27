@@ -689,10 +689,25 @@ pub fn launch_detached(
                     return Ok(());
                 }
             }
+            // Пайпы закрылись (в т.ч. мгновенно после taskkill из instance_kill,
+            // раньше 500-мс тика с try_wait) — нельзя выходить молча: UI зависнет
+            // в «Запущено». Дочищаем процесс и отправляем Exited.
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    let _ = child.wait();
+    let exit_code = child.wait().ok().and_then(|s| s.code());
+    bus.emit(LauncherEvent::LaunchState {
+        instance_id: instance_id.to_string(),
+        phase: LaunchPhase::Exited,
+        exit_code,
+    });
+    // Статистика: время игры (выход через kill тоже считается).
+    if let Ok(mut inst) = crate::instances::load(paths, instance_id) {
+        inst.last_played = Some(crate::instances::now_secs());
+        inst.launch_count += 1;
+        inst.play_seconds += started.elapsed().as_secs();
+        let _ = crate::instances::save(paths, &inst);
+    }
     drop(lock);
     Ok(())
 }

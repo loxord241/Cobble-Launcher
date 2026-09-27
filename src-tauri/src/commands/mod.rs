@@ -268,6 +268,24 @@ pub async fn mrpack_install(
     .await
 }
 
+/// Установка модпака Modrinth по project_id: последняя версия → .mrpack →
+/// тот же установщик (Главная → «Популярные модпаки»).
+#[tauri::command]
+pub async fn modpack_install(
+    state: State<'_, AppState>,
+    project_id: String,
+    name: Option<String>,
+) -> Result<Instance> {
+    crate::modrinth::mrpack::install_modpack_project(
+        &state.paths,
+        &state.settings.read().await.clone(),
+        state.http.clone(),
+        &project_id,
+        name.as_deref(),
+    )
+    .await
+}
+
 // ---------- оптимизация и процессы (спека §6.9, §6.10) ----------
 
 #[tauri::command]

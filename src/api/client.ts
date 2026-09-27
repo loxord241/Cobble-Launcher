@@ -66,8 +66,22 @@ export const api = {
   loaderInstall: (id: string, loader: string, loaderVersion?: string) =>
     invoke<Instance>("loader_install", { id, loader, loaderVersion }).then(camelize),
 
-  modrinthSearch: (query: string, mcVersion?: string, loader?: string, projectType?: string) =>
-    invoke<SearchResult>("modrinth_search", { query, mcVersion, loader, projectType }),
+  modrinthSearch: (
+    query: string,
+    mcVersion?: string,
+    loader?: string,
+    projectType?: string,
+    limit?: number,
+    offset?: number,
+  ) =>
+    invoke<SearchResult>("modrinth_search", {
+      query,
+      mcVersion,
+      loader,
+      projectType,
+      limit,
+      offset,
+    }),
   contentInstall: (instanceId: string, projectId: string, versionId?: string) =>
     invoke<ContentEntry[]>("content_install", { instanceId, projectId, versionId }),
   contentInstalled: (instanceId: string) =>
@@ -77,6 +91,8 @@ export const api = {
   contentUpdateAll: (instanceId: string) => invoke<number>("content_update_all", { instanceId }),
   mrpackInstall: (path: string, name?: string) =>
     invoke<Instance>("mrpack_install", { path, name }).then(camelize),
+  modpackInstall: (projectId: string, name?: string) =>
+    invoke<Instance>("modpack_install", { projectId, name }).then(camelize),
 
   instanceOptimize: (instanceId: string) =>
     invoke<string[]>("instance_optimize", { instanceId }),

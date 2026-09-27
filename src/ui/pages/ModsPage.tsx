@@ -1,20 +1,26 @@
-// Браузер контента Modrinth (спека §8): поиск, установка в инстанс,
-// установка .mrpack, проверка/применение обновлений. Паттерн строк «Сланца».
-import { useEffect, useState } from "react";
+// Браузер контента Modrinth (спека §8): поиск, бесконечный скролл, установка
+// в инстанс, установка .mrpack, проверка/применение обновлений. Паттерн строк «Сланца».
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, RefreshCw, Search, SearchX, PackageSearch } from "lucide-react";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
-import type { Instance, SearchResult, UpdateCheck } from "../../api/types";
+import type { Instance, SearchHit, UpdateCheck } from "../../api/types";
+
+const PAGE_SIZE = 20;
 
 export default function ModsPage({ query }: { query: string }) {
   const [localQuery, setLocalQuery] = useState("");
-  const [result, setResult] = useState<SearchResult | null>(null);
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  const [total, setTotal] = useState(0);
+  const [searched, setSearched] = useState(false);
   const [instances, setInstances] = useState<Instance[]>([]);
   const [targetId, setTargetId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [installedInfo, setInstalledInfo] = useState<string | null>(null);
   const [updates, setUpdates] = useState<UpdateCheck[] | null>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     api.instanceList().then((list) => {
@@ -28,13 +34,68 @@ export default function ModsPage({ query }: { query: string }) {
     setError(null);
     try {
       const target = instances.find((i) => i.id === targetId);
-      setResult(await api.modrinthSearch(localQuery || "mods", target?.mcVersion, target?.loader));
+      const r = await api.modrinthSearch(
+        localQuery || "mods",
+        target?.mcVersion,
+        target?.loader,
+        undefined,
+        PAGE_SIZE,
+        0,
+      );
+      setHits(r.hits);
+      setTotal(r.total_hits);
+      setSearched(true);
     } catch (e) {
       setError((e as { message?: string })?.message ?? String(e));
     } finally {
       setBusy(false);
     }
   };
+
+  // Дозагрузка следующей страницы (offset = сколько уже загрузили).
+  const loadMore = useCallback(async () => {
+    if (loadingMore || busy || !searched || hits.length >= total) return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const target = instances.find((i) => i.id === targetId);
+      const r = await api.modrinthSearch(
+        localQuery || "mods",
+        target?.mcVersion,
+        target?.loader,
+        undefined,
+        PAGE_SIZE,
+        hits.length,
+      );
+      const known = new Set(hits.map((h) => h.project_id));
+      setHits((prev) => [...prev, ...r.hits.filter((h) => !known.has(h.project_id))]);
+      setTotal(r.total_hits);
+    } catch (e) {
+      setError((e as { message?: string })?.message ?? String(e));
+    } finally {
+      setLoadingMore(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingMore, busy, searched, hits, total, instances, targetId, localQuery]);
+
+  // Автопоиск при первом открытии каталога + бесконечный скролл по sentinel.
+  useEffect(() => {
+    if (!searched) void doSearch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) void loadMore();
+      },
+      { rootMargin: "400px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [loadMore]);
 
   const install = async (projectId: string) => {
     setBusy(true);
@@ -98,7 +159,7 @@ export default function ModsPage({ query }: { query: string }) {
 
   // Глобальный поиск из титлбара фильтрует результаты по подстроке.
   const q = query.trim().toLowerCase();
-  const hits = (result?.hits ?? []).filter(
+  const visibleHits = hits.filter(
     (h) => !q || h.title.toLowerCase().includes(q) || h.author.toLowerCase().includes(q),
   );
 
@@ -106,7 +167,7 @@ export default function ModsPage({ query }: { query: string }) {
     <div className="mx-auto flex max-w-[980px] flex-col gap-4">
       <div className="mt-1 flex items-baseline gap-2">
         <h2 className="text-lg font-semibold tracking-tight">{t("nav.mods")}</h2>
-        {result && <span className="chip-mono">{hits.length}</span>}
+        {searched && <span className="chip-mono">{t("mods.shown", { loaded: hits.length, total })}</span>}
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -185,7 +246,7 @@ export default function ModsPage({ query }: { query: string }) {
         </div>
       )}
 
-      {result && hits.length === 0 ? (
+      {searched && visibleHits.length === 0 ? (
         // Пустое состояние: Modrinth ответил, но по фильтру ничего нет.
         <div className="mt-10 flex flex-col items-center gap-3 rounded-lg border border-border-app bg-card px-4 py-10 text-center">
           <SearchX size={32} aria-hidden className="text-text-muted" />
@@ -194,7 +255,7 @@ export default function ModsPage({ query }: { query: string }) {
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {hits.map((h) => (
+          {visibleHits.map((h) => (
             <div
               key={h.project_id}
               className="grid min-h-14 grid-cols-[36px_1fr_auto] items-center gap-3 rounded-lg border border-border-app bg-card px-3 py-2 transition-colors hover:border-border-strong hover:bg-card-hover"
@@ -230,11 +291,23 @@ export default function ModsPage({ query }: { query: string }) {
               </button>
             </div>
           ))}
-          {!result && (
+          {!searched && (
             // Поиск ещё не выполняли — подсказка вместо пустого списка.
             <div className="mt-10 flex flex-col items-center gap-3 rounded-lg border border-dashed border-border-strong px-4 py-10 text-center">
               <PackageSearch size={32} aria-hidden className="text-text-muted" />
               <div className="max-w-sm text-[13px] text-text-muted">{t("mods.searchPlaceholder")}</div>
+            </div>
+          )}
+          {/* Бесконечный скролл: sentinel догружает страницы, кнопка — для клавиатуры. */}
+          {hits.length < total && (
+            <div ref={sentinelRef} className="flex justify-center py-2">
+              <button
+                onClick={() => void loadMore()}
+                disabled={loadingMore}
+                className="btn-ghost btn-sm"
+              >
+                {loadingMore ? t("mods.loadingMore") : t("mods.loadMore")}
+              </button>
             </div>
           )}
         </div>

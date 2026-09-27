@@ -116,5 +116,13 @@
   "error.zip_slip": "Malicious archive blocked",
   "error.timeout": "Timeout",
   "error.cancelled": "Cancelled",
-  "error.internal": "Internal error"
+  "error.internal": "Internal error",
+  "mods.loadMore": "Load more",
+  "mods.loadingMore": "Loading…",
+  "mods.shown": "Showing {loaded} of {total}",
+  "home.hero.lastPlayed": "Last played: {when}",
+  "home.hero.neverPlayed": "Never launched",
+  "home.popular": "Popular modpacks",
+  "home.installPack": "Install",
+  "home.installing": "Installing…"
 }

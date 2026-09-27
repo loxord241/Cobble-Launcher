@@ -211,23 +211,77 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
     }
     let xsts: XblResp = resp.json().await?;
     let xsts_token = xsts.token;
+    let uhs = xsts.claims["xui"][0]["uhs"].as_str().map(String::from)
+        .unwrap_or(uhs);
+    // 2c. Кто вошёл: второй XSTS с RP http://xboxlive.com — в его claims есть gtg.
+    match client
+        .raw()
+        .post(XSTS_URL)
+        .json(&serde_json::json!({
+            "Properties": {"SandboxId": "RETAIL", "UserTokens": [xbl.token]},
+            "RelyingParty": "http://xboxlive.com",
+            "TokenType": "JWT"
+        }))
+        .send()
+        .await
+    {
+        Ok(r) => match r.json::<serde_json::Value>().await {
+            Ok(v) => println!(
+                "Вошли как (Xbox): {} (xid {})",
+                v["DisplayClaims"]["xui"][0]["gtg"],
+                v["DisplayClaims"]["xui"][0]["xid"]
+            ),
+            Err(e) => println!("xboxlive-RP: parse fail: {e}"),
+        },
+        Err(e) => println!("xboxlive-RP: request fail: {e}"),
+    }
+
+    // 2b. Геймертег вошедшего аккаунта (best effort) — чтобы было видно, КТО вошёл.
+    let gamertag: Option<String> = (|| async {
+        let r = client
+            .raw()
+            .get("https://profile.xboxlive.com/users/me/profile/settings?settings=Gamertag")
+            .bearer_auth(&xsts_token)
+            .header("x-xbl-contract-version", "2")
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .ok()?;
+        r.json::<serde_json::Value>().await.ok().and_then(|v| {
+            v["profileUsers"][0]["settings"]
+                .as_array()?
+                .iter()
+                .find(|s| s["id"] == "Gamertag")
+                .and_then(|s| s["value"].as_str())
+                .map(String::from)
+        })
+    })()
+    .await;
+    if let Some(gt) = &gamertag {
+        println!("Вошли как (Xbox): {gt}");
+    }
 
     // 3. loginWithXbox
     #[derive(Deserialize)]
     struct McLogin {
         access_token: String,
     }
-    let mc: McLogin = client
+    let resp = client
         .raw()
         .post(MC_LOGIN_URL)
         .json(&serde_json::json!({
             "identityToken": format!("XBL3.0 x={uhs};{xsts_token}")
         }))
         .send()
-        .await?
-        .error_for_status()?
-        .json()
         .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(LauncherError::network(format!(
+            "loginWithXbox: HTTP {status}, тело ответа: {body} (частая причина — у аккаунта нет Minecraft: Java Edition)"
+        )));
+    }
+    let mc: McLogin = resp.json().await?;
     crate::util::redact::register_secret(&mc.access_token);
 
     // 4. Профиль (uuid, ник; 404 = лицензии нет — честная ошибка).
@@ -257,4 +311,111 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
         player_name: profile.name,
         uuid: profile.id,
     })
+}
+
+/// URL браузерного входа: auth-code + localhost redirect (device-code не даёт
+/// согласия XboxLive для саморегистрированных приложений — спека §6.8).
+pub fn authorize_url(client_id: &str, port: u16) -> String {
+    format!(
+        "{AUTH_BASE}/authorize?client_id={client_id}&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A{port}&scope=XboxLive.signin%20offline_access"
+    )
+}
+
+/// Принять redirect браузера на локальном порту и извлечь ?code=.
+pub async fn wait_auth_code(
+    listener: std::net::TcpListener,
+) -> Result<String> {
+    tokio::task::spawn_blocking(move || {
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(e) => return Err(LauncherError::network(format!("accept: {e}"))),
+            };
+            let mut buf = vec![0u8; 8192];
+            let n = match std::io::Read::read(&mut stream, &mut buf) {
+                Ok(0) => continue,
+                Ok(n) => n,
+                Err(e) => return Err(LauncherError::network(format!("read: {e}"))),
+            };
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let line = req.lines().next().unwrap_or("");
+            let code = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|path| path.split("code=").nth(1))
+                .map(|rest| rest.split('&').next().unwrap_or(rest).to_string());
+            let page = b"HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+Connection: close
+
+<html><body style='font-family:sans-serif'><h2>OK</h2><p>close this tab</p></body></html>";
+            let _ = std::io::Write::write_all(&mut stream, page);
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            if let Some(code) = code {
+                let decoded = pct_decode(&code);
+                println!("auth-code получен: len={} head={:?}", decoded.len(), decoded.get(..10));
+                if !decoded.is_empty() {
+                    return Ok(decoded);
+                }
+            }
+        }
+        Err(LauncherError::network("listener закрыт без code"))
+    })
+    .await
+    .map_err(|e| LauncherError::network(format!("join: {e}")))?
+}
+
+/// Минимальный percent-decode для параметров запроса.
+fn pct_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or(""), 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// Обменять auth-code на токены и достроить сессию.
+pub async fn finish_web_login(
+    client: &HttpClient,
+    client_id: &str,
+    code: &str,
+    port: u16,
+) -> Result<Session> {
+    let redirect = format!("http://localhost:{port}");
+    let resp = client
+        .raw()
+        .post(format!("{AUTH_BASE}/token"))
+        .form(&[
+            ("client_id", client_id),
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", redirect.as_str()),
+            ("scope", SCOPE),
+        ])
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(LauncherError::network(format!(
+            "MSA code exchange: HTTP {status}, {body}"
+        )));
+    }
+    let token: TokenResponse = resp.json().await?;
+    let refresh = token.refresh_token.clone().ok_or_else(|| {
+        LauncherError::InvalidInput("MSA не вернул refresh_token (нужен offline_access)".into())
+    })?;
+    crate::util::redact::register_secret(&token.access_token);
+    crate::util::redact::register_secret(&refresh);
+    xbox_chain(client, &token.access_token, refresh).await
 }

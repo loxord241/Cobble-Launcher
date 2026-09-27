@@ -230,3 +230,57 @@ fn apply_overrides(mrpack_path: &Path, paths: &Paths, instance_id: &str) -> Resu
     tracing::info!("overrides применены: {} файлов", extracted.len());
     Ok(())
 }
+
+/// Установка модпака Modrinth по project_id: берём последнюю версию,
+/// качаем primary-файл во временный .mrpack (sha1 проверяем — правило
+/// «хэш на каждый байт») и переиспользуем install_mrpack.
+pub async fn install_modpack_project(
+    paths: &Paths,
+    settings: &crate::settings::Settings,
+    client: Arc<HttpClient>,
+    project_id: &str,
+    name_override: Option<&str>,
+) -> Result<Instance> {
+    let versions = crate::modrinth::api::project_versions(&client, project_id).await?;
+    let version = versions.first().ok_or_else(|| {
+        LauncherError::InvalidInput(format!("у модпака {project_id} нет версий"))
+    })?;
+    let file = version
+        .files
+        .iter()
+        .find(|f| f.primary)
+        .or_else(|| version.files.first())
+        .ok_or_else(|| {
+            LauncherError::InvalidInput(format!(
+                "у версии {} нет файлов",
+                version.version_number
+            ))
+        })?;
+
+    let resp = client
+        .raw()
+        .get(&file.url)
+        .send()
+        .await?
+        .error_for_status()?;
+    let bytes = resp.bytes().await?;
+    if let Some(sha) = file.hashes.get("sha1") {
+        let actual = crate::util::fs::sha1_bytes(&bytes);
+        if !actual.eq_ignore_ascii_case(sha) {
+            return Err(LauncherError::InvalidInput(format!(
+                "sha1 не сошёлся для {}: ждали {sha}, получили {actual}",
+                file.filename
+            )));
+        }
+    }
+
+    let tmp_dir = std::env::temp_dir().join("mc-launcher-v2");
+    std::fs::create_dir_all(crate::util::fs::long_path(&tmp_dir))?;
+    let tmp_path = crate::util::fs::long_path(&tmp_dir.join(&file.filename));
+    std::fs::write(&tmp_path, &bytes)?;
+
+    let result =
+        install_mrpack(paths, settings, client, &tmp_path, name_override).await;
+    let _ = std::fs::remove_file(&tmp_path);
+    result
+}

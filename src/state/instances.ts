@@ -110,6 +110,14 @@ export const useInstances = create<InstancesState>((set, get) => ({
   },
   stop: async (id: string) => {
     await api.instanceKill(id);
+    // Страховка: если событие Exited потеряно, снимаем «Запущено» сразу.
+    set((s) => {
+      const status = { ...s.status };
+      delete status[id];
+      return { status };
+    });
+    // Статистика (launchCount/lastPlayed) уже обновлена ядром — перечитываем.
+    void get().load();
   },
   setError: (msg) => set({ error: msg }),
 }));
