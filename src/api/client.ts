@@ -1,6 +1,32 @@
 // ЕДИНСТВЕННОЕ место, знающее имена Tauri-команд (спека §4.3).
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
+/**
+ * Ядро сериализует Instance в snake_case (mc_version), а контракт
+ * (docs/UI-CONTRACT.md) и типы требуют camelCase. Rust-ядро не трогаем,
+ * поэтому ключи приводятся на этой границе. Рекурсивно — вложенных
+ * структур у Instance нет, но преобразование безопасно и для них.
+ */
+function snakeToCamel(k: string): string {
+  return k.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+function camelToSnake(k: string): string {
+  return k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+}
+function mapKeys<T>(v: T, f: (k: string) => string): T {
+  if (Array.isArray(v)) return v.map((x) => mapKeys(x, f)) as unknown as T;
+  if (v && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      out[f(k)] = mapKeys(val, f);
+    }
+    return out as T;
+  }
+  return v;
+}
+const camelize = <T>(v: T) => mapKeys(v, snakeToCamel);
+const snakify = <T>(v: T) => mapKeys(v, camelToSnake);
 import type {
   Account,
   ContentEntry,
@@ -16,18 +42,20 @@ import type {
 } from "./types";
 
 export const api = {
-  instanceList: () => invoke<Instance[]>("instance_list"),
+  instanceList: () => invoke<Instance[]>("instance_list").then(camelize),
   instanceCreate: (mcVersion: string, name: string) =>
-    invoke<Instance>("instance_create", { mcVersion, name }),
+    invoke<Instance>("instance_create", { mcVersion, name }).then(camelize),
   instanceRename: (id: string, name: string) =>
     invoke<Instance>("instance_rename", { id, name }),
-  instanceDuplicate: (id: string) => invoke<Instance>("instance_duplicate", { id }),
+  instanceDuplicate: (id: string) =>
+    invoke<Instance>("instance_duplicate", { id }).then(camelize),
   instanceDelete: (id: string, wipe: boolean) =>
     invoke<{ ok: boolean }>("instance_delete", { id, wipe }),
   instanceOpenDir: (id: string) => invoke<{ ok: boolean }>("instance_open_dir", { id }),
-  instanceSettingsGet: (id: string) => invoke<Instance>("instance_settings_get", { id }),
+  instanceSettingsGet: (id: string) =>
+    invoke<Instance>("instance_settings_get", { id }).then(camelize),
   instanceSettingsSet: (instance: Instance) =>
-    invoke<Instance>("instance_settings_set", { instance }),
+    invoke<Instance>("instance_settings_set", { instance: snakify(instance) }).then(camelize),
   instanceLaunch: (id: string, player: string) =>
     invoke<{ ok: boolean }>("instance_launch", { id, player }),
 
@@ -36,7 +64,7 @@ export const api = {
   loaderVersions: (loader: string) =>
     invoke<LoaderVersionEntry[]>("loader_versions", { loader }),
   loaderInstall: (id: string, loader: string, loaderVersion?: string) =>
-    invoke<Instance>("loader_install", { id, loader, loaderVersion }),
+    invoke<Instance>("loader_install", { id, loader, loaderVersion }).then(camelize),
 
   modrinthSearch: (query: string, mcVersion?: string, loader?: string, projectType?: string) =>
     invoke<SearchResult>("modrinth_search", { query, mcVersion, loader, projectType }),
@@ -48,7 +76,7 @@ export const api = {
     invoke<UpdateCheck[]>("content_update_check", { instanceId }),
   contentUpdateAll: (instanceId: string) => invoke<number>("content_update_all", { instanceId }),
   mrpackInstall: (path: string, name?: string) =>
-    invoke<Instance>("mrpack_install", { path, name }),
+    invoke<Instance>("mrpack_install", { path, name }).then(camelize),
 
   instanceOptimize: (instanceId: string) =>
     invoke<string[]>("instance_optimize", { instanceId }),

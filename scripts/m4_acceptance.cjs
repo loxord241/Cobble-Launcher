@@ -41,7 +41,9 @@ async function main() {
   console.log("OK: shell с навигацией и карточками");
 
   // 5. Запуск мышкой: кнопка Play на главной
-  await page.getByRole("button", { name: "Играть", exact: true }).first().click();
+  // Сланец: Play теперь квадратная кнопка в строке инстанса,
+  // aria-label = "Играть — {имя}" (было: общая кнопка "Играть" в хедере).
+  await page.getByRole("button", { name: /^Играть —/ }).first().click();
   console.log("OK: нажата кнопка Играть");
   await page.waitForTimeout(8000);
   await page.screenshot({ path: `${OUT}/5-launch-progress.png` });

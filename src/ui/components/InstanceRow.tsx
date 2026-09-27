@@ -35,6 +35,7 @@ export default function InstanceRow({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const firstItemRef = useRef<HTMLButtonElement>(null);
+  const kebabRef = useRef<HTMLButtonElement>(null);
   const phase = status?.phase;
   const busy = phase !== undefined && phase !== "exited";
 
@@ -54,8 +55,9 @@ export default function InstanceRow({
     if (menuOpen) firstItemRef.current?.focus();
   }, [menuOpen]);
 
-  const closeMenu = () => {
+  const closeMenu = (refocus = false) => {
     setMenuOpen(false);
+    if (refocus) kebabRef.current?.focus();
   };
 
   return (
@@ -100,6 +102,7 @@ export default function InstanceRow({
 
         <div className="relative">
           <button
+            ref={kebabRef}
             onClick={() => setMenuOpen((v) => !v)}
             aria-label={t("instances.actions", { name: inst.name })}
             aria-expanded={menuOpen}
@@ -110,9 +113,12 @@ export default function InstanceRow({
           </button>
           {menuOpen && (
             <>
-              <div className="fixed inset-0 z-40" onClick={closeMenu} />
+              <div className="fixed inset-0 z-40" onClick={() => closeMenu()} />
               <div
                 role="menu"
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") closeMenu(true);
+                }}
                 className="absolute right-0 top-11 z-50 min-w-44 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
               >
                 <MenuItem
@@ -148,9 +154,6 @@ export default function InstanceRow({
                     closeMenu();
                     onDelete();
                   }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") closeMenu();
-                  }}
                 />
               </div>
             </>
@@ -167,21 +170,18 @@ function MenuItem({
   onClick,
   danger,
   ref,
-  onKeyDown,
 }: {
   icon: typeof FolderOpen;
   label: string;
   onClick: () => void;
   danger?: boolean;
   ref?: React.Ref<HTMLButtonElement>;
-  onKeyDown?: (e: React.KeyboardEvent) => void;
 }) {
   return (
     <button
       ref={ref}
       role="menuitem"
       onClick={onClick}
-      onKeyDown={onKeyDown}
       className={`flex h-10 w-full items-center gap-2 rounded-md px-3 text-left text-sm ${
         danger ? "text-error hover:bg-error/10" : "text-text hover:bg-surface-2"
       }`}

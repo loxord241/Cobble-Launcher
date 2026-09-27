@@ -128,7 +128,7 @@ export default function ModsPage({ query }: { query: string }) {
             setUpdates(null);
           }}
           aria-label={t("mods.targetInstance")}
-          className="h-11 rounded-lg border border-border-strong bg-card px-3 text-sm"
+          className="h-11 min-w-40 max-w-[280px] rounded-lg border border-border-strong bg-card px-3 text-sm"
         >
           {instances.map((i) => (
             <option key={i.id} value={i.id}>
