@@ -20,27 +20,39 @@ pub struct AppState {
     pub paths: Paths,
     pub bus: EventBus,
     pub settings: RwLock<Settings>,
-    pub http: Arc<HttpClient>,
+    pub http: RwLock<Arc<HttpClient>>,
+    pub launching: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl AppState {
     pub fn new(paths: Paths, bus: EventBus, settings: Settings) -> Result<Self> {
         paths.ensure_dirs()?;
-        let http = Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+        let http = match HttpClient::new(settings.proxy_url.as_deref()) {
+            Ok(c) => Arc::new(c),
+            Err(e) => {
+                tracing::warn!("Не удалось инициализировать прокси: {e}, запуск напрямую");
+                Arc::new(HttpClient::new(None)?)
+            }
+        };
         Ok(Self {
             paths,
             bus,
             settings: RwLock::new(settings),
-            http,
+            http: RwLock::new(http),
+            launching: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
         })
     }
 
-    fn engine(&self) -> Arc<DownloadEngine> {
+    pub async fn http(&self) -> Arc<HttpClient> {
+        self.http.read().await.clone()
+    }
+
+    pub async fn engine(&self) -> Arc<DownloadEngine> {
         let parallelism = {
-            // блокирующее чтение RwLock допустимо: поле маленькое
-            self.settings.try_read().map(|s| s.download_parallelism as usize).unwrap_or(16)
+            self.settings.read().await.download_parallelism as usize
         };
-        DownloadEngine::new(self.http.clone(), parallelism, self.bus.clone())
+        let http = self.http().await;
+        DownloadEngine::new(http, parallelism, self.bus.clone())
     }
 }
 
@@ -63,9 +75,11 @@ pub async fn instance_create(
     name: String,
 ) -> Result<Instance> {
     // Версия должна существовать (манифест кэшируется).
-    let manifest = fetch_manifest(&state.http, &state.paths.manifests_cache()).await?;
+    let http = state.http().await;
+    let manifest = fetch_manifest(&http, &state.paths.manifests_cache()).await?;
     resolve_entry(&manifest, &mc_version)?;
-    let inst = Instance::new(&name, &mc_version);
+    let clean_name = crate::util::names::sanitize_user_name(&name, &mc_version);
+    let inst = Instance::new(&clean_name, &mc_version);
     instances::save(&state.paths, &inst)?;
     Ok(inst)
 }
@@ -123,48 +137,82 @@ pub async fn instance_launch(
     id: String,
     player: String,
 ) -> Result<OkMsg> {
-    let inst = instances::load(&state.paths, &id)?;
-    let engine = state.engine();
-    let settings_guard = state.settings.read().await.clone();
-    // Идентичность активного аккаунта (offline/MSA/ely) — спека §6.8.
-    let identity = match crate::auth::launch_identity(&state.paths, &state.http).await {
-        Ok(id) => id,
+    let inst_dir = instances::instance_dir(&state.paths, &id);
+    if instances::running_pid(&inst_dir).is_some() {
+        return Err(LauncherError::InvalidInput("инстанс уже запущен".into()));
+    }
+    {
+        let mut launching = state.launching.lock().await;
+        if launching.contains(&id) {
+            return Err(LauncherError::InvalidInput("инстанс уже запускается".into()));
+        }
+        launching.insert(id.clone());
+    }
+
+    let inst_id_clone = id.clone();
+    let res = async {
+        let inst = instances::load(&state.paths, &id)?;
+        let engine = state.engine().await;
+        let settings_guard = state.settings.read().await.clone();
+        let http = state.http().await;
+        // Идентичность активного аккаунта (offline/MSA/ely) — спека §6.8.
+        let identity = match crate::auth::launch_identity(&state.paths, &http).await {
+            Ok(id) => id,
+            Err(e) => {
+                // Обновление токена не удалось (нет сети и пр.) — событие в UI + fallback.
+                state.bus.emit(crate::events::LauncherEvent::AccountRefreshFailed {
+                    account_id: crate::auth::active(&state.paths)
+                        .map(|a| a.id)
+                        .unwrap_or_default(),
+                    reason: e.to_string(),
+                });
+                crate::auth::offline::identity(&player)
+            }
+        };
+        // ely.by: скачать authlib-injector и подготовить -javaagent.
+        let javaagent = match crate::auth::active(&state.paths).map(|a| a.kind) {
+            Some(crate::auth::AccountKind::Ely) => {
+                let jar =
+                    crate::auth::ely::authlib_injector_jar(&http, &state.paths.cache_dir()).await?;
+                Some(crate::auth::ely::javaagent_arg(&jar))
+            }
+            _ => None,
+        };
+        let prepared = instances::run::prepare(
+            &state.paths,
+            &settings_guard,
+            http,
+            engine,
+            &state.bus,
+            &inst,
+            instances::run::AccountIdentity {
+                player_name: identity.player_name,
+                uuid: identity.uuid,
+                access_token: identity.access_token,
+                user_type: identity.user_type,
+                javaagent,
+            },
+        )
+        .await?;
+
+        Ok::<_, LauncherError>((inst, prepared))
+    }
+    .await;
+
+    // Снимаем признак запуска/подготовки
+    state.launching.lock().await.remove(&inst_id_clone);
+
+    let (inst, prepared) = match res {
+        Ok(pair) => pair,
         Err(e) => {
-            // Обновление токена не удалось (нет сети и пр.) — событие в UI + fallback.
-            state.bus.emit(crate::events::LauncherEvent::AccountRefreshFailed {
-                account_id: crate::auth::active(&state.paths)
-                    .map(|a| a.id)
-                    .unwrap_or_default(),
-                reason: e.to_string(),
+            state.bus.emit(crate::events::LauncherEvent::LaunchState {
+                instance_id: inst_id_clone,
+                phase: crate::events::LaunchPhase::Exited,
+                exit_code: None,
             });
-            crate::auth::offline::identity(&player)
+            return Err(e);
         }
     };
-    // ely.by: скачать authlib-injector и подготовить -javaagent.
-    let javaagent = match crate::auth::active(&state.paths).map(|a| a.kind) {
-        Some(crate::auth::AccountKind::Ely) => {
-            let jar =
-                crate::auth::ely::authlib_injector_jar(&state.http, &state.paths.cache_dir()).await?;
-            Some(crate::auth::ely::javaagent_arg(&jar))
-        }
-        _ => None,
-    };
-    let prepared = instances::run::prepare(
-        &state.paths,
-        &settings_guard,
-        state.http.clone(),
-        engine,
-        &state.bus,
-        &inst,
-        instances::run::AccountIdentity {
-            player_name: identity.player_name,
-            uuid: identity.uuid,
-            access_token: identity.access_token,
-            user_type: identity.user_type,
-            javaagent,
-        },
-    )
-    .await?;
 
     // Спавн + фоновая супервизия: логи → события, lock до выхода игры.
     let bus = state.bus.clone();
@@ -191,8 +239,9 @@ pub async fn modrinth_search(
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Result<crate::modrinth::api::SearchResult> {
+    let http = state.http().await;
     crate::modrinth::api::search(
-        &state.http,
+        &http,
         &query,
         mc_version.as_deref(),
         loader.as_deref(),
@@ -211,10 +260,11 @@ pub async fn content_install(
     version_id: Option<String>,
 ) -> Result<Vec<crate::instances::ContentEntry>> {
     let inst = instances::load(&state.paths, &instance_id)?;
-    let engine = state.engine();
+    let engine = state.engine().await;
+    let http = state.http().await;
     crate::modrinth::install::install_project(
         &state.paths,
-        state.http.clone(),
+        http,
         engine,
         &inst,
         &project_id,
@@ -237,7 +287,8 @@ pub async fn content_update_check(
     instance_id: String,
 ) -> Result<Vec<crate::modrinth::updates::UpdateCheck>> {
     let inst = instances::load(&state.paths, &instance_id)?;
-    crate::modrinth::updates::check_updates(&state.paths, &state.http, &inst).await
+    let http = state.http().await;
+    crate::modrinth::updates::check_updates(&state.paths, &http, &inst).await
 }
 
 #[tauri::command]
@@ -246,8 +297,9 @@ pub async fn content_update_all(
     instance_id: String,
 ) -> Result<usize> {
     let inst = instances::load(&state.paths, &instance_id)?;
-    let engine = state.engine();
-    crate::modrinth::updates::update_all(&state.paths, state.http.clone(), engine, &inst)
+    let engine = state.engine().await;
+    let http = state.http().await;
+    crate::modrinth::updates::update_all(&state.paths, http, engine, &inst)
         .await
 }
 
@@ -258,10 +310,11 @@ pub async fn mrpack_install(
     path: String,
     name: Option<String>,
 ) -> Result<Instance> {
+    let http = state.http().await;
     crate::modrinth::mrpack::install_mrpack(
         &state.paths,
         &state.settings.read().await.clone(),
-        state.http.clone(),
+        http,
         std::path::Path::new(&path),
         name.as_deref(),
     )
@@ -276,10 +329,11 @@ pub async fn modpack_install(
     project_id: String,
     name: Option<String>,
 ) -> Result<Instance> {
+    let http = state.http().await;
     crate::modrinth::mrpack::install_modpack_project(
         &state.paths,
         &state.settings.read().await.clone(),
-        state.http.clone(),
+        http,
         &project_id,
         name.as_deref(),
     )
@@ -294,8 +348,9 @@ pub async fn instance_optimize(
     instance_id: String,
 ) -> Result<Vec<String>> {
     let inst = instances::load(&state.paths, &instance_id)?;
-    let engine = state.engine();
-    crate::optimize::optimize(&state.paths, state.http.clone(), engine, &inst).await
+    let engine = state.engine().await;
+    let http = state.http().await;
+    crate::optimize::optimize(&state.paths, http, engine, &inst).await
 }
 
 #[tauri::command]
@@ -305,6 +360,21 @@ pub async fn ram_guide() -> Result<crate::optimize::RamGuide> {
 
 #[tauri::command]
 pub async fn instance_kill(state: State<'_, AppState>, instance_id: String) -> Result<OkMsg> {
+    let was_launching = {
+        let mut launching = state.launching.lock().await;
+        launching.remove(&instance_id)
+    };
+    if was_launching {
+        let engine = state.engine().await;
+        engine.cancel_group(&format!("instance:{instance_id}"));
+        state.bus.emit(crate::events::LauncherEvent::LaunchState {
+            instance_id: instance_id.clone(),
+            phase: crate::events::LaunchPhase::Exited,
+            exit_code: None,
+        });
+        return Ok(OkMsg { ok: true });
+    }
+
     instances::kill(&instances::instance_dir(&state.paths, &instance_id))?;
     Ok(OkMsg { ok: true })
 }
@@ -334,7 +404,60 @@ pub async fn account_add_offline(
         uuid,
         refresh_ref: None,
     };
-    crate::auth::add(&state.paths, acc)
+    let added = crate::auth::add(&state.paths, acc)?;
+    let _ = crate::auth::set_active(&state.paths, &added.id);
+    Ok(added)
+}
+
+/// Вход Microsoft через системный браузер (auth-code flow, спека §6.8).
+#[tauri::command]
+pub async fn account_add_msa_browser(
+    state: State<'_, AppState>,
+) -> Result<crate::auth::Account> {
+    let client_id = state
+        .settings
+        .read()
+        .await
+        .azure_client_id
+        .clone()
+        .ok_or_else(|| {
+            crate::errors::LauncherError::InvalidInput(
+                "Укажите azureClientId в Настройках (инструкция в README)".into(),
+            )
+        })?;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| LauncherError::network(format!("локальный порт для OAuth: {e}")))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| LauncherError::network(format!("local_addr: {e}")))?
+        .port();
+
+    let auth_url = crate::auth::msa::authorize_url(&client_id, port);
+    opener::open(&auth_url)
+        .map_err(|e| LauncherError::Internal(format!("не удалось открыть браузер: {e}")))?;
+
+    let code = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        crate::auth::msa::wait_auth_code(listener),
+    )
+    .await
+    .map_err(|_| LauncherError::network("таймаут ожидания входа в браузере (5 мин)"))??;
+
+    let http = state.http().await;
+    let session = crate::auth::msa::finish_web_login(&http, &client_id, &code, port).await?;
+    let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
+    crate::auth::keyring_set(&ref_name, &session.refresh_token)?;
+    let acc = crate::auth::Account {
+        id: uuid::Uuid::new_v4().to_string(),
+        kind: crate::auth::AccountKind::Msa,
+        name: session.player_name.clone(),
+        uuid: session.uuid.clone(),
+        refresh_ref: Some(ref_name),
+    };
+    crate::auth::add(&state.paths, acc.clone())?;
+    let _ = crate::auth::set_active(&state.paths, &acc.id);
+    Ok(acc)
 }
 
 /// Начало MSA device-code: UI показывает user_code и открывает браузер.
@@ -353,7 +476,8 @@ pub async fn account_add_msa_start(
                 "Укажите azureClientId в Настройках (инструкция в README)".into(),
             )
         })?;
-    crate::auth::msa::device_code_start(&state.http, &client_id).await
+    let http = state.http().await;
+    crate::auth::msa::device_code_start(&http, &client_id).await
 }
 
 /// Опрос: Ok(Some) — вход завершён, аккаунт добавлен (refresh → keyring).
@@ -371,7 +495,8 @@ pub async fn account_add_msa_poll(
         .ok_or_else(|| {
             crate::errors::LauncherError::InvalidInput("нет azureClientId в настройках".into())
         })?;
-    let Some(session) = crate::auth::msa::device_code_poll(&state.http, &client_id, &device_code).await? else {
+    let http = state.http().await;
+    let Some(session) = crate::auth::msa::device_code_poll(&http, &client_id, &device_code).await? else {
         return Ok(None);
     };
     let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
@@ -384,6 +509,7 @@ pub async fn account_add_msa_poll(
         refresh_ref: Some(ref_name),
     };
     crate::auth::add(&state.paths, acc.clone())?;
+    let _ = crate::auth::set_active(&state.paths, &acc.id);
     Ok(Some(acc))
 }
 
@@ -394,7 +520,8 @@ pub async fn account_add_ely(
     username: String,
     password: String,
 ) -> Result<crate::auth::Account> {
-    let session = crate::auth::ely::authenticate(&state.http, &username, &password).await?;
+    let http = state.http().await;
+    let session = crate::auth::ely::authenticate(&http, &username, &password).await?;
     let ref_name = format!("ely-refresh-{}", uuid::Uuid::new_v4());
     crate::auth::keyring_set(&ref_name, &session.refresh_token)?;
     let acc = crate::auth::Account {
@@ -405,6 +532,7 @@ pub async fn account_add_ely(
         refresh_ref: Some(ref_name),
     };
     crate::auth::add(&state.paths, acc.clone())?;
+    let _ = crate::auth::set_active(&state.paths, &acc.id);
     Ok(acc)
 }
 
@@ -428,10 +556,11 @@ pub async fn instance_import(
     path: String,
     name: Option<String>,
 ) -> Result<Instance> {
+    let http = state.http().await;
     let (mut inst, loader) = crate::import::import_archive(
         &state.paths,
         &state.settings.read().await.clone(),
-        state.http.clone(),
+        http.clone(),
         std::path::Path::new(&path),
         name.as_deref(),
     )
@@ -441,7 +570,7 @@ pub async fn instance_import(
         inst = instances::run::install_loader(
             &state.paths,
             &state.settings.read().await.clone(),
-            state.http.clone(),
+            http,
             &inst,
             &kind,
             Some(&ver),
@@ -473,7 +602,8 @@ pub async fn manifest_versions(
     show_snapshots: bool,
     show_old: bool,
 ) -> Result<Vec<VersionEntry>> {
-    let manifest = fetch_manifest(&state.http, &state.paths.manifests_cache()).await?;
+    let http = state.http().await;
+    let manifest = fetch_manifest(&http, &state.paths.manifests_cache()).await?;
     Ok(filter_versions(&manifest, show_snapshots, show_old)
         .into_iter()
         .map(|v| VersionEntry {
@@ -495,20 +625,21 @@ pub async fn loader_versions(
     state: State<'_, AppState>,
     loader: String,
 ) -> Result<Vec<LoaderVersionEntry>> {
+    let http = state.http().await;
     match loader.as_str() {
-        "fabric" => Ok(crate::loaders::fabric::loader_versions(&state.http)
+        "fabric" => Ok(crate::loaders::fabric::loader_versions(&http)
             .await?
             .into_iter()
             .map(|l| LoaderVersionEntry { version: l.version, stable: l.stable })
             .collect()),
-        "quilt" => Ok(crate::loaders::quilt::loader_versions(&state.http)
+        "quilt" => Ok(crate::loaders::quilt::loader_versions(&http)
             .await?
             .into_iter()
             .map(|l| LoaderVersionEntry { version: l.version, stable: l.stable })
             .collect()),
         "neoforge" => {
             // Список длинный и плоский — отдаём последние 30 стабильных.
-            let all = crate::loaders::neoforge::versions(&state.http).await?;
+            let all = crate::loaders::neoforge::versions(&http).await?;
             Ok(all
                 .into_iter()
                 .filter(|v| !v.ends_with("-beta"))
@@ -532,10 +663,11 @@ pub async fn loader_install(
 ) -> Result<Instance> {
     let inst = instances::load(&state.paths, &id)?;
     let settings_guard = state.settings.read().await.clone();
+    let http = state.http().await;
     instances::run::install_loader(
         &state.paths,
         &settings_guard,
-        state.http.clone(),
+        http,
         &inst,
         &loader,
         loader_version.as_deref(),
@@ -556,7 +688,8 @@ pub async fn java_install(
     state: State<'_, AppState>,
     major: u32,
 ) -> Result<JavaInstall> {
-    let exe = crate::java::adoptium::install_jre(&state.http, &state.paths.runtime_dir(), major, |_, _| {})
+    let http = state.http().await;
+    let exe = crate::java::adoptium::install_jre(&http, &state.paths.runtime_dir(), major, |_, _| {})
         .await?;
     crate::java::detect::inspect(&exe, "adoptium").await
 }
@@ -570,6 +703,18 @@ pub async fn settings_get(state: State<'_, AppState>) -> Result<Settings> {
 
 #[tauri::command]
 pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> Result<OkMsg> {
+    let old_proxy = state.settings.read().await.proxy_url.clone();
+    if settings.proxy_url != old_proxy {
+        match HttpClient::new(settings.proxy_url.as_deref()) {
+            Ok(new_http) => {
+                *state.http.write().await = Arc::new(new_http);
+                tracing::info!("HTTP-клиент обновлен с новым proxy_url");
+            }
+            Err(e) => {
+                tracing::warn!("Некорректный proxy_url: {e}");
+            }
+        }
+    }
     settings.save(&state.paths.settings_file())?;
     *state.settings.write().await = settings;
     Ok(OkMsg { ok: true })

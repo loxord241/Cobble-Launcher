@@ -12,25 +12,37 @@ use std::path::{Path, PathBuf};
 pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Instance {
+    #[serde(alias = "schema_version")]
     pub schema_version: u32,
     pub id: String,
     pub name: String,
     pub icon: Option<String>,
+    #[serde(alias = "mc_version")]
     pub mc_version: String,
     pub loader: Option<String>,
+    #[serde(alias = "loader_version")]
     pub loader_version: Option<String>,
     /// id version JSON, который запускаем (после установки загрузчика:
     /// `fabric-loader-…`, `neoforge-…`). None = чистый mc_version.
+    #[serde(alias = "version_id")]
     pub version_id: Option<String>,
+    #[serde(alias = "java_path")]
     pub java_path: Option<String>,
+    #[serde(alias = "ram_mb")]
     pub ram_mb: u32,
+    #[serde(alias = "jvm_flags")]
     pub jvm_flags: Vec<String>,
+    #[serde(alias = "game_args_extra")]
     pub game_args_extra: Vec<String>,
+    #[serde(alias = "created_at")]
     pub created_at: u64,
+    #[serde(alias = "last_played")]
     pub last_played: Option<u64>,
+    #[serde(alias = "play_seconds")]
     pub play_seconds: u64,
+    #[serde(alias = "launch_count")]
     pub launch_count: u64,
     pub notes: String,
 }
@@ -215,6 +227,12 @@ pub fn list(paths: &crate::paths::Paths) -> Vec<Instance> {
 }
 
 pub fn rename(paths: &crate::paths::Paths, id: &str, new_name: &str) -> Result<Instance> {
+    let dir = instance_dir(paths, id);
+    if running_pid(&dir).is_some() {
+        return Err(LauncherError::InvalidInput(
+            "нельзя переименовать работающий инстанс: сначала остановите его".into(),
+        ));
+    }
     let mut inst = load(paths, id)?;
     inst.name = crate::util::names::sanitize_user_name(new_name, &inst.name);
     save(paths, &inst)?;
@@ -239,8 +257,13 @@ pub const UNIQUE_FILES: &[&str] = &["options.txt", "servers.dat", "usercache.jso
 /// уникальное (saves/mods/config…) — копия (спека §6.12). Запись в hardlink
 /// через одну из копий меняла бы обе — поэтому уникальное копируется байтами.
 pub fn duplicate(paths: &crate::paths::Paths, id: &str) -> Result<Instance> {
-    let src = load(paths, id)?;
     let src_dir = instance_dir(paths, id);
+    if running_pid(&src_dir).is_some() {
+        return Err(LauncherError::InvalidInput(
+            "нельзя дублировать работающий инстанс: сначала остановите его".into(),
+        ));
+    }
+    let src = load(paths, id)?;
     let mut inst = Instance::new(&format!("{} (копия)", src.name), &src.mc_version);
     inst.loader = src.loader.clone();
     inst.loader_version = src.loader_version.clone();
@@ -263,6 +286,11 @@ pub fn delete(paths: &crate::paths::Paths, id: &str, wipe: bool) -> Result<()> {
     let dir = instance_dir(paths, id);
     if !dir.exists() {
         return Err(LauncherError::NotFound(format!("инстанс {id}")));
+    }
+    if running_pid(&dir).is_some() {
+        return Err(LauncherError::InvalidInput(
+            "нельзя удалить работающий инстанс: сначала остановите его".into(),
+        ));
     }
     let mc = minecraft_dir(&dir);
     for shared in ["libraries", "versions", "bin"] {
@@ -365,6 +393,7 @@ pub fn running_instances(paths: &crate::paths::Paths) -> Vec<(String, u32)> {
 /// `.lock` на время работы инстанса (защита от двойного запуска).
 pub struct InstanceLock {
     path: PathBuf,
+    expected_pid: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl InstanceLock {
@@ -385,14 +414,29 @@ impl InstanceLock {
                 "инстанс уже запущен (.lock)".into(),
             ));
         }
-        std::fs::write(&long, std::process::id().to_string())?;
-        Ok(Self { path })
+        let my_pid = std::process::id();
+        std::fs::write(&long, my_pid.to_string())?;
+        Ok(Self {
+            path,
+            expected_pid: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(my_pid)),
+        })
+    }
+
+    pub fn set_child_pid(&self, pid: u32) {
+        self.expected_pid.store(pid, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
 impl Drop for InstanceLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(long_path(&self.path));
+        let long = long_path(&self.path);
+        if let Ok(text) = std::fs::read_to_string(&long) {
+            let file_pid = text.trim().parse::<u32>().unwrap_or(0);
+            let exp = self.expected_pid.load(std::sync::atomic::Ordering::SeqCst);
+            if file_pid == exp || file_pid == std::process::id() {
+                let _ = std::fs::remove_file(&long);
+            }
+        }
     }
 }
 
@@ -509,5 +553,73 @@ mod tests {
         assert_eq!(std::fs::read(&lib2).unwrap(), b"CHANGED", "hardlink shared");
         std::fs::write(&save, b"EDITED").unwrap();
         assert_eq!(std::fs::read(&save2).unwrap(), b"unique world", "копия unique");
+    }
+
+    #[test]
+    fn camelcase_serialization_and_snake_alias() {
+        let inst = Instance::new("Test", "1.20.1");
+        let json = serde_json::to_string(&inst).unwrap();
+        assert!(json.contains("\"mcVersion\":\"1.20.1\""), "сериализуется в camelCase");
+        assert!(json.contains("\"schemaVersion\":1"), "schemaVersion в camelCase");
+
+        // Чтение старого формата со snake_case
+        let old_json = r#"{
+            "schema_version": 1,
+            "id": "old-id",
+            "name": "Old",
+            "mc_version": "1.19.2",
+            "ram_mb": 4096,
+            "jvm_flags": [],
+            "game_args_extra": [],
+            "created_at": 12345,
+            "play_seconds": 0,
+            "launch_count": 0,
+            "notes": ""
+        }"#;
+        let loaded: Instance = serde_json::from_str(old_json).unwrap();
+        assert_eq!(loaded.mc_version, "1.19.2", "читает snake_case через alias");
+        assert_eq!(loaded.ram_mb, 4096);
+    }
+
+    #[test]
+    fn lock_no_cross_delete() {
+        let (_d, paths) = test_paths();
+        let inst = Instance::new("x", "1.20.1");
+        save(&paths, &inst).unwrap();
+        let dir = instance_dir(&paths, &inst.id);
+
+        let lock1 = InstanceLock::acquire(&dir).unwrap();
+        lock1.set_child_pid(1111);
+        std::fs::write(dir.join(".lock"), "1111").unwrap();
+
+        // Предположим, lock был перезаписан другим запуском с PID 2222
+        std::fs::write(dir.join(".lock"), "2222").unwrap();
+
+        // Когда первый lock завершается и дропается, он НЕ должен стереть файл с PID 2222
+        drop(lock1);
+        assert!(dir.join(".lock").exists(), "чужой lock не должен удаляться");
+        assert_eq!(std::fs::read_to_string(dir.join(".lock")).unwrap().trim(), "2222");
+
+        let _ = std::fs::remove_file(dir.join(".lock"));
+    }
+
+    #[test]
+    fn delete_duplicate_rename_reject_running() {
+        let (_d, paths) = test_paths();
+        let inst = Instance::new("running-test", "1.20.1");
+        save(&paths, &inst).unwrap();
+        let dir = instance_dir(&paths, &inst.id);
+
+        // Имитируем живой процесс текущего теста
+        let current_pid = std::process::id();
+        std::fs::write(dir.join(".lock"), current_pid.to_string()).unwrap();
+
+        assert!(rename(&paths, &inst.id, "new-name").is_err());
+        assert!(duplicate(&paths, &inst.id).is_err());
+        assert!(delete(&paths, &inst.id, false).is_err());
+
+        // Снимаем lock
+        let _ = std::fs::remove_file(dir.join(".lock"));
+        assert!(rename(&paths, &inst.id, "new-name").is_ok());
     }
 }

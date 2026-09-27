@@ -409,6 +409,7 @@ pub fn launch_blocking(
     let mut child = command
         .spawn()
         .map_err(|e| LauncherError::JavaNotFound(format!("не удалось запустить игру: {e}")))?;
+    lock.set_child_pid(child.id());
     emit(bus, &inst.id, LaunchPhase::Running);
 
     let mut found = true;
@@ -621,6 +622,7 @@ pub fn launch_detached(
     let mut child = command
         .spawn()
         .map_err(|e| LauncherError::JavaNotFound(format!("не удалось запустить игру: {e}")))?;
+    lock.set_child_pid(child.id());
     // PID в .lock: instance_kill / process_status читают отсюда.
     let _ = std::fs::write(
         crate::util::fs::long_path(&inst_dir.join(".lock")),

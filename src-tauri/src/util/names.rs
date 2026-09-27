@@ -25,8 +25,10 @@ pub fn sanitize_user_name(name: &str, fallback: &str) -> String {
     }
     let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = cleaned.trim().chars().take(64).collect::<String>();
-    let final_name = trimmed.trim_end().to_string();
-    if final_name.is_empty() {
+    // На Windows имя не может заканчиваться на точку или пробел, и не может быть пустым
+    let final_name = trimmed.trim_start().trim_end_matches([' ', '.']).to_string();
+    let upper = final_name.to_uppercase();
+    if final_name.is_empty() || RESERVED.contains(&upper.as_str()) {
         fallback.to_string()
     } else {
         final_name
@@ -76,7 +78,15 @@ mod tests {
     #[test]
     fn falls_back_on_empty() {
         assert_eq!(sanitize_user_name("   ", "Инстанс"), "Инстанс");
-        assert_eq!(sanitize_user_name("../..", "Инстанс"), ".");
+        assert_eq!(sanitize_user_name("../..", "Инстанс"), "Инстанс");
+    }
+
+    #[test]
+    fn handles_reserved_and_trailing_dots() {
+        assert_eq!(sanitize_user_name("CON", "Инстанс"), "Инстанс");
+        assert_eq!(sanitize_user_name("nul", "Инстанс"), "Инстанс");
+        assert_eq!(sanitize_user_name("test...", "Инстанс"), "test");
+        assert_eq!(sanitize_user_name("..test..", "Инстанс"), ".test");
     }
 
     #[test]

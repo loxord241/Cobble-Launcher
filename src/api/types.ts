@@ -154,3 +154,9 @@ export interface RamGuide {
   recommendedMb: number;
   warning?: string;
 }
+
+export interface Diagnosis {
+  ruleId: string;
+  title: string;
+  advice: string;
+}

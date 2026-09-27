@@ -47,6 +47,7 @@ fn cache_data_path(cache_dir: &Path) -> PathBuf {
 }
 
 /// Манифест с кэшем (TTL 1 час). Кэш-файл без TTL-метки = протухший.
+/// В офлайн-режиме (ошибка сети) протухший кэш используется как fallback (спека §6.1, §6.10).
 pub async fn fetch_manifest(client: &HttpClient, cache_dir: &Path) -> Result<VersionManifest> {
     std::fs::create_dir_all(crate::util::fs::long_path(cache_dir))?;
     let meta_path = cache_meta_path(cache_dir);
@@ -67,14 +68,30 @@ pub async fn fetch_manifest(client: &HttpClient, cache_dir: &Path) -> Result<Ver
         }
     }
 
-    let m: VersionManifest = client.get_json_retry(MANIFEST_URL).await?;
-    atomic_write(&cache_data_path(cache_dir), &serde_json::to_vec_pretty(&m)?)?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    atomic_write(&meta_path, &serde_json::to_vec(&now)?)?;
-    Ok(m)
+    match client.get_json_retry(MANIFEST_URL).await {
+        Ok(m) => {
+            atomic_write(&cache_data_path(cache_dir), &serde_json::to_vec_pretty(&m)?)?;
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            atomic_write(&meta_path, &serde_json::to_vec(&now)?)?;
+            Ok(m)
+        }
+        Err(e) => {
+            // Офлайн-fallback: если есть кэш (пусть даже протухший) — используем его
+            let data_path = cache_data_path(cache_dir);
+            if data_path.exists() {
+                if let Ok(data) = std::fs::read(&data_path) {
+                    if let Ok(m) = serde_json::from_slice::<VersionManifest>(&data) {
+                        tracing::warn!("fetch_manifest не удался ({e}), используем кэш");
+                        return Ok(m);
+                    }
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Найти версию: `latest`/`latest.release` → последний релиз, `latest.snapshot`
@@ -168,5 +185,19 @@ mod tests {
         assert_eq!(filter_versions(&m, false, false).len(), 1); // только релизы
         assert_eq!(filter_versions(&m, true, false).len(), 2); // + снапшот
         assert_eq!(filter_versions(&m, true, true).len(), 4); // + alpha/beta
+    }
+
+    #[tokio::test]
+    async fn fetch_manifest_uses_stale_cache_when_network_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path();
+        let fixture = include_str!("../../tests/fixtures/version_manifest_sample.json");
+        // Записываем старый кэш без meta (т.е. TTL заведомо истёк)
+        std::fs::write(cache_data_path(cache_dir), fixture).unwrap();
+
+        // Несуществующий прокси гарантирует ошибку сети
+        let client = HttpClient::new(Some("http://127.0.0.1:54321")).unwrap();
+        let m = fetch_manifest(&client, cache_dir).await.expect("должен вернуть stale-кэш при ошибке сети");
+        assert_eq!(m.latest.release, "1.20.1");
     }
 }

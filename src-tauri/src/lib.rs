@@ -128,6 +128,7 @@ pub fn run() -> tauri::Result<()> {
             commands::account_add_offline,
             commands::account_add_msa_start,
             commands::account_add_msa_poll,
+            commands::account_add_msa_browser,
             commands::account_add_ely,
             commands::account_remove,
             commands::account_active_set,
