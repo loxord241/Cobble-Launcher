@@ -207,3 +207,11 @@ Rust-структура `Instance` сериализуется в snake_case (`mc
 нормализация ключей добавлена в `api/client.ts` (camelize на выходе,
 snakify для instance_settings_set на входе). Правильное долгосрочное
 решение — `#[serde(rename_all = "camelCase")]` в ядре.
+
+Статус (2026-09-27): закрыто. Правильный фикс выполнен — `Instance`
+и события ядра сериализуются в camelCase (`instances/mod.rs` —
+`rename_all = "camelCase"` в c62334f/d2b2e7b; `events.rs` —
+`rename_all_fields = "camelCase"` в 72c1c4e). Фронтовые трансформеры
+(camelize/snakify/snakeToCamel) из `api/client.ts` удалены; invoke
+нормализует ошибки IPC в `Error` (d2b2e7b). Контракт ядро↔UI теперь
+camelCase на обоих концах.
