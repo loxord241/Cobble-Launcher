@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Download, Search, SearchX } from "lucide-react"
 import { api } from "../../api/client"
-import { apiErrorText, currentLanguage, t } from "../../i18n"
+import { apiErrorText, currentLanguage, plural, t } from "../../i18n"
 import ProjectDetailModal from "../components/ProjectDetailModal"
 import type { SearchHit } from "../../api/types"
 
@@ -84,16 +84,25 @@ function CatalogRow({ hit, onOpen }: { hit: SearchHit, onOpen: () => void }) {
           </div>
         )}
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-          {hit.categories.slice(0, 3).map((c) => (
-            <span key={c} className="badge-soft">
-              {c}
-            </span>
-          ))}
-          {hit.categories.length > 3 && (
-            <span className="chip-mono">+{hit.categories.length - 3}</span>
-          )}
+          {/* Modrinth кладёт в categories и категории, и загрузчики —
+              возможны повторы (fabric дважды), дедуплицируем. */}
+          {(() => {
+            const cats = [...new Set(hit.categories)];
+            return (
+              <>
+                {cats.slice(0, 3).map((c) => (
+                  <span key={c} className="badge-soft">
+                    {c}
+                  </span>
+                ))}
+                {cats.length > 3 && <span className="chip-mono">+{cats.length - 3}</span>}
+              </>
+            );
+          })()}
           <span className="font-mono text-[13px] text-text-muted">
-            {t("mods.downloads", { n: hit.downloads.toLocaleString(currentLanguage()) })}
+            {plural("mods.downloads", hit.downloads, {
+              n: hit.downloads.toLocaleString(currentLanguage()),
+            })}
           </span>
           <span className="text-[12px] text-text-muted">
             {t("project.updated", { when: relativeDate(hit.date_modified) })}
@@ -217,7 +226,9 @@ export default function HomePage({ query }: { query: string }) {
     <div className="mx-auto flex max-w-[1100px] flex-col gap-4">
       <div className="mt-1 flex items-baseline gap-2">
         <h2 className="text-lg font-semibold tracking-tight">{t("home.catalog.title")}</h2>
-        {searched && <span className="chip-mono">{t("home.found", { n: total })}</span>}
+        {searched && (
+          <span className="chip-mono">{t("home.found", { n: total.toLocaleString(currentLanguage()) })}</span>
+        )}
       </div>
 
       {/* Переключатель типа каталога (стиль табов ModsPage). */}
@@ -246,9 +257,9 @@ export default function HomePage({ query }: { query: string }) {
             value={localQuery}
             onChange={(e) => setLocalQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void doSearch()}
-            placeholder={t("mods.searchPlaceholder")}
+            placeholder={t(tab === "modpack" ? "home.searchPacks" : "home.searchMods")}
             className="w-full bg-transparent font-mono text-sm text-text outline-none placeholder:text-text-muted placeholder:font-ui"
-            aria-label={t("mods.searchPlaceholder")}
+            aria-label={t(tab === "modpack" ? "home.searchPacks" : "home.searchMods")}
           />
         </div>
         <select

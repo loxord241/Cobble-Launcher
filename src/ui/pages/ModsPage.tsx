@@ -15,7 +15,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api } from "../../api/client";
-import { apiErrorText, currentLanguage, t } from "../../i18n";
+import { apiErrorText, currentLanguage, plural, t } from "../../i18n";
 import type { ContentEntry, Instance, SearchHit, UpdateCheck } from "../../api/types";
 
 const PAGE_SIZE = 20;
@@ -493,7 +493,7 @@ export default function ModsPage({
                 )}
                 <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
                   <span className="font-mono text-[13px] text-text-muted">
-                    {t("mods.by", { author: h.author })} · {t("mods.downloads", { n: h.downloads.toLocaleString(currentLanguage()) })}
+                    {t("mods.by", { author: h.author })} · {plural("mods.downloads", h.downloads, { n: h.downloads.toLocaleString(currentLanguage()) })}
                   </span>
                   {h.categories.slice(0, 3).map((c) => (
                     <span key={c} className="badge-soft accent">

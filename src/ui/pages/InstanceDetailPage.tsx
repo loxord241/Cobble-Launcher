@@ -701,10 +701,11 @@ export default function InstanceDetailPage({
                   <div className="flex flex-wrap items-center gap-2 px-2">
                     <span className="text-[13px] font-semibold text-text">{t("mods.snapshots")}</span>
                     <span className="text-[12px] text-text-muted">{t("mods.snapshot.hint")}</span>
-                    <span className="ml-auto text-[12px] text-text-muted">
-                      {t("mods.snapshots.empty")}
-                    </span>
                   </div>
+                  {/* Пустое состояние — своей строкой слева, как пункт списка. */}
+                  <p className="mt-1 px-2 pb-1 text-[12px] text-text-muted">
+                    {t("mods.snapshots.empty")}
+                  </p>
                 </div>
               )}
               {snapshots !== null && snapshots.length > 0 && (

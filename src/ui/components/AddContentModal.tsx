@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, Loader2, Search, SearchX, X } from "lucide-react";
 import { api } from "../../api/client";
-import { apiErrorText, currentLanguage, t } from "../../i18n";
+import { apiErrorText, currentLanguage, plural, t } from "../../i18n";
 import { useModalA11y } from "../hooks/useModalA11y";
 import type { Instance, SearchHit } from "../../api/types";
 
@@ -262,7 +262,9 @@ export default function AddContentModal({
                     <div className="truncate text-sm font-semibold leading-tight">{h.title}</div>
                     <div className="mt-0.5 truncate font-mono text-[12px] text-text-muted">
                       {t("mods.by", { author: h.author })} ·{" "}
-                      {t("mods.downloads", { n: h.downloads.toLocaleString(currentLanguage()) })}
+                      {plural("mods.downloads", h.downloads, {
+                        n: h.downloads.toLocaleString(currentLanguage()),
+                      })}
                     </div>
                   </div>
                   <button

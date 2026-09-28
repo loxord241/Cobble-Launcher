@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Clock, Download, HardDrive, Heart, LoaderCircle, Scale, X } from "lucide-react";
 import { api } from "../../api/client";
-import { apiErrorText, currentLanguage, t } from "../../i18n";
+import { apiErrorText, currentLanguage, plural, t } from "../../i18n";
 import { useModalA11y } from "../hooks/useModalA11y";
 import { Markdown } from "./markdown";
 import type {
@@ -41,7 +41,8 @@ function relWhen(iso: string): string {
 
 // Бейдж типа версии; тип не задан — бейджа нет (никакого фейка).
 function typeBadge(versionType?: string): { key: string; cls: string } | null {
-  if (versionType === "release") return { key: "project.type.release", cls: "badge-soft" };
+  if (versionType === "release")
+    return { key: "project.type.release", cls: "badge-soft accent" };
   if (versionType === "beta") return { key: "project.type.beta", cls: "badge-soft opacity-70" };
   if (versionType === "alpha") return { key: "project.type.alpha", cls: "badge-soft opacity-70" };
   return null;
@@ -120,8 +121,10 @@ export default function ProjectDetailModal({
   }, [loadDetail]);
 
   useEffect(() => {
-    if (tab === "changelog" || tab === "versions") ensureVersions();
-  }, [tab, ensureVersions]);
+    // Сразу при открытии: чип размера в шапке одинаковый на всех табах,
+    // а табы «Версии»/«Журнал изменений» не ждут догрузки.
+    ensureVersions();
+  }, [ensureVersions]);
 
   const install = async (versionId?: string) => {
     setBusy(true);
@@ -296,7 +299,7 @@ export default function ProjectDetailModal({
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <span className="chip-mono flex items-center gap-1 text-xs">
               <Download size={12} aria-hidden />
-              {t("mods.downloads", {
+              {plural("mods.downloads", detail?.downloads ?? hit.downloads, {
                 n: (detail?.downloads ?? hit.downloads).toLocaleString(currentLanguage()),
               })}
             </span>
@@ -475,13 +478,16 @@ export default function ProjectDetailModal({
                           {v.loaders.length > 0 && (
                             <span className="badge-soft">{v.loaders.join(", ")}</span>
                           )}
+                          {/* Дата/размер — правый край строки: слева тип и версии игры. */}
                           {v.datePublished && (
-                            <span className="text-[13px] text-text-muted">
+                            <span className="ml-auto text-[13px] text-text-muted">
                               {new Date(v.datePublished).toLocaleDateString(currentLanguage())}
                             </span>
                           )}
                           {primary && (
-                            <span className="chip-mono text-xs">{fmtBytes(primary.size)}</span>
+                            <span className={`chip-mono text-xs ${v.datePublished ? "" : "ml-auto"}`}>
+                              {fmtBytes(primary.size)}
+                            </span>
                           )}
                           {isMod && (
                             <button

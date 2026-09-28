@@ -410,5 +410,11 @@
   "instances.sort.created": "Creation date",
   "addContent.title": "Add content — {name}",
   "addContent.installed": "Installed: {files}",
-  "addContent.open": "Add mods"
+  "addContent.open": "Add mods",
+  "home.searchPacks": "Search modpacks on Modrinth…",
+  "home.searchMods": "Search mods on Modrinth…",
+  "mods.downloads.one": "{n} download",
+  "mods.downloads.few": "{n} downloads",
+  "mods.downloads.many": "{n} downloads",
+  "mods.downloads.other": "{n} downloads"
 }

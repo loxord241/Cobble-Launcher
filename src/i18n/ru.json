@@ -410,5 +410,11 @@
   "instances.sort.created": "По дате создания",
   "addContent.title": "Добавить контент — {name}",
   "addContent.installed": "Установлено: {files}",
-  "addContent.open": "Добавить моды"
+  "addContent.open": "Добавить моды",
+  "home.searchPacks": "Поиск модпаков на Modrinth…",
+  "home.searchMods": "Поиск модов на Modrinth…",
+  "mods.downloads.one": "{n} загрузка",
+  "mods.downloads.few": "{n} загрузки",
+  "mods.downloads.many": "{n} загрузок",
+  "mods.downloads.other": "{n} загрузки"
 }

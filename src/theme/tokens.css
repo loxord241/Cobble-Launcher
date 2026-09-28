@@ -295,3 +295,30 @@ body {
 .badge-soft.warning {
   --badge-color: var(--warning);
 }
+
+/* Тёмный скроллбар вместо нативного светлого (правка по судье UI): тонкий,
+   скруглённый, прозрачный трек — единый вид во всех скролл-областях окна. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
