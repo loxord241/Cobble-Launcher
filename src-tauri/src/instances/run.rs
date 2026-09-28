@@ -728,6 +728,8 @@ pub fn launch_detached(
     instance_id: &str,
     prepared: PreparedLaunch,
     bus: &EventBus,
+    // F26: Some(имя инстанса) — включить Discord Rich Presence.
+    discord_rpc: Option<String>,
 ) -> Result<()> {
     let inst_dir = crate::instances::instance_dir(paths, instance_id);
     let lock = InstanceLock::acquire(&inst_dir)?;
@@ -762,6 +764,35 @@ pub fn launch_detached(
     let id_clone = instance_id.to_string();
     let bus_clone = bus.clone();
     let game_dir = prepared.game_dir;
+    let pid = child.id();
+    // F26: Discord Rich Presence — фоновый поток, живёт пока процесс игры;
+    // Discord не запущен → connect вернёт None и поток сразу закончится.
+    if let Some(details) = discord_rpc {
+        let details = details.chars().take(128).collect::<String>();
+        std::thread::spawn(move || {
+            let conn = match crate::process::discord::RpcConnection::connect(
+                pid,
+                crate::process::discord::DISCORD_CLIENT_ID,
+            ) {
+                Ok(Some(c)) => c,
+                Ok(None) => return,
+                Err(e) => {
+                    tracing::warn!("discord rpc: подключение не удалось: {e}");
+                    return;
+                }
+            };
+            let _ = conn.set_activity(&details);
+            // Обновление раз в минуту; игра вышла — pipe закрывается.
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                if !super::running_pid_alive(pid) {
+                    break;
+                }
+                let _ = conn.set_activity(&details);
+            }
+            conn.close();
+        });
+    }
     std::thread::spawn(move || {
         supervise_detached(&paths_clone, &id_clone, child, &game_dir, lock, &bus_clone);
     });

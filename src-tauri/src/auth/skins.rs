@@ -53,6 +53,9 @@ fn target(account: &Account) -> Target {
         AccountKind::Offline => Target::None,
         AccountKind::Ely => Target::Ely(account.name.clone()),
         AccountKind::Msa => Target::Msa(account.uuid.clone()),
+        // Свой authlib-сервер (F13): скин из чужого skinsystem не берём —
+        // адрес скинов не allowlist-ен. Честный дефолт UI, как у offline.
+        AccountKind::Authlib => Target::None,
     }
 }
 
@@ -223,6 +226,7 @@ mod tests {
             name: name.into(),
             uuid: uuid.into(),
             refresh_ref: None,
+            authlib_server: None,
         }
     }
 
@@ -232,6 +236,14 @@ mod tests {
             target(&account(AccountKind::Offline, "Tester", "409f7b8c")),
             Target::None
         );
+    }
+
+    /// Свой authlib-сервер (F13): скина из skinsystem нет — честный дефолт UI.
+    #[test]
+    fn authlib_has_no_skin_source() {
+        let mut acc = account(AccountKind::Authlib, "Tester", "409f7b8c");
+        acc.authlib_server = Some("https://auth.example.org".into());
+        assert_eq!(target(&acc), Target::None);
     }
 
     #[test]

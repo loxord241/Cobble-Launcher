@@ -17,7 +17,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 ## Команды (invoke)
 
-Все 70 команд `invoke_handler` (`src-tauri/src/lib.rs:104`), обработчики —
+Все 75 команд `invoke_handler` (`src-tauri/src/lib.rs:104`), обработчики —
 `src-tauri/src/commands/mod.rs`.
 
 ### Инстансы и процессы
@@ -84,6 +84,11 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `instance_screens_open` | `{id}` | `{ok}` (каталог не создаётся) | not_found, internal |
 | `content_metadata` | `{id}` | `ModMetadata[]` {file, id?, missingDeps, disabledDeps, conflicts} (из fabric/quilt.mod.json jar'ов; окружение minecraft/fabricloader/java не считается missing) | not_found, invalid_input |
 | `pack_art` | `{id, kinds[]}` | `PackArtInfo[]` {file, description?, png?} (pack.png/pack.mcmeta из zip; >300 КБ → png нет) | not_found |
+| `instance_configs` | `{id}` | `ConfigFile[]` {rel, bytes} (config/, ≤4 компонентов пути, ≤500 файлов) | not_found, invalid_input |
+| `config_read` | `{id, rel}` | `{rel, bytes}` (текст ≤1 МБ, lossy UTF-8) | not_found, invalid_input |
+| `config_write` | `{id, rel, text}` | `{ok}` (запущено → instance_running; текст ≤1 МБ; каталог не создаётся) | not_found, invalid_input, instance_running, io |
+| `authlib_server_info` | `{serverUrl}` | `AuthlibServerInfo` {serverUrl, serverName?} (https; http — только localhost) | invalid_input, network, offline_mode, http |
+| `account_add_authlib` | `{serverUrl, username, password}` | `Account` (kind authlib, authlibServer нормализован; токен в keyring; сразу активен) | invalid_input, network, offline_mode, http, io, internal |
 | `instance_shortcut` | `{id}` | `{path}` (.lnk на рабочем столе → mcl instance-launch --id … --no-wait) | not_found, invalid_input, internal |
 | `game_resources` | `{id}` | `GameResourceSample | null` {cpuPercent, ramBytes} (sysinfo, опрос UI 2 с) | — |
 | `instance_launch_safe` | `{id, player}` | `{ok}` (F30: сброс JVM-флагов + отключение шейдеров, затем обычный запуск) | not_found, invalid_input |

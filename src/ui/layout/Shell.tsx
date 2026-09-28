@@ -12,6 +12,7 @@ import {
   Settings as SettingsIcon,
   Puzzle,
   Box,
+  Command,
   Search,
   Minus,
   Square,
@@ -36,6 +37,7 @@ import SettingsPage from "../pages/SettingsPage";
 import InstanceDetailPage from "../pages/InstanceDetailPage";
 import AccountsModal from "../components/AccountsModal";
 import CrashReportModal from "../components/CrashReportModal";
+import CommandPalette from "../components/CommandPalette";
 
 type Page = "home" | "instances" | "mods" | "settings";
 
@@ -67,19 +69,22 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   // F12: черновик быстрого офлайн-ника в открытом меню профиля.
   const [quickNick, setQuickNick] = useState("");
   const [accountsModalOpen, setAccountsModalOpen] = useState(false);
+  // F19: палитра команд (Ctrl+P / кнопка в титлбаре).
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const noticeTimer = useRef<number | null>(null);
   const dropBusy = useRef(false);
   // A8: узкий селектор — сброс лог-буфера каждые 200 мс не должен
   // перерисовывать всё дерево Shell (как в страницах, D8).
-  const { load, subscribeEvents, list, crashReport, clearCrashReport } = useInstances(
+  const { load, subscribeEvents, list, crashReport, clearCrashReport, launch } = useInstances(
     useShallow((s) => ({
       load: s.load,
       subscribeEvents: s.subscribeEvents,
       list: s.list,
       crashReport: s.crashReport,
       clearCrashReport: s.clearCrashReport,
+      launch: s.launch,
     })),
   );
   const { settings, update: updateSettings, load: loadSettings } = useSettings();
@@ -150,11 +155,19 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   }, [load, loadSettings, subscribeEvents, loadAccounts]);
 
   // Ctrl+K — фокус в поиск (спека фазы B); Esc чистит внутри инпута.
+  // F19: палитра команд живёт на Ctrl+P, а не на Ctrl+K — приёмка
+  // scripts/ui_checks.cjs (#4) ждёт, что Ctrl+K ставит фокус в поле поиска,
+  // поэтому перехватывать его палитрой нельзя.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key.toLowerCase() === "k") {
+      const key = e.key.toLowerCase();
+      if (e.ctrlKey && key === "k") {
         e.preventDefault();
         searchRef.current?.focus();
+      } else if (e.ctrlKey && key === "p") {
+        // preventDefault гасит нативную «печать» вебвью.
+        e.preventDefault();
+        setPaletteOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -244,6 +257,17 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
         </div>
 
         <div data-tauri-drag-region className="flex-1" />
+
+        {/* F19: палитра команд (Ctrl+P); обычная кнопка — под drag-region
+            не попадает, клики работают. */}
+        <button
+          onClick={() => setPaletteOpen(true)}
+          aria-label={t("shell.palette.open")}
+          title={t("shell.palette.open")}
+          className="icon-btn"
+        >
+          <Command size={16} aria-hidden />
+        </button>
 
         {/* F16: «Работать офлайн» — сеть ядра отключается, запуск из кэша.
             Обычная кнопка в flex-ряду — под drag-region не попадает. */}
@@ -473,6 +497,21 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
 
       {accountsModalOpen && (
         <AccountsModal onClose={() => setAccountsModalOpen(false)} />
+      )}
+
+      {/* F19: палитра команд. Открытие инстанса — через список, чтобы
+          навигация закрыла прежнюю страницу; затем ставим целевой инстанс. */}
+      {paletteOpen && (
+        <CommandPalette
+          onClose={() => setPaletteOpen(false)}
+          onNavigate={goToPage}
+          onOpenInstance={(id) => {
+            goToPage("instances");
+            setOpenInstanceId(id);
+          }}
+          onLaunchInstance={(id, player) => void launch(id, player)}
+          onManageAccounts={() => setAccountsModalOpen(true)}
+        />
       )}
 
       {crashReport && (

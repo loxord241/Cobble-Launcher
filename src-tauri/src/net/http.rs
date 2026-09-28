@@ -2,7 +2,7 @@
 
 use crate::errors::{LauncherError, Result};
 use reqwest::header::RETRY_AFTER;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,6 +20,9 @@ pub struct HttpClient {
     inner: reqwest::Client,
     /// F16 «работать офлайн»: Arc — флаг общий для всех клонов клиента.
     offline: Arc<AtomicBool>,
+    /// F17 лимит скорости загрузки, КБ/с (0 — без ограничения).
+    /// Arc — как offline: значение общее для всех клонов клиента.
+    speed_limit: Arc<AtomicU32>,
 }
 
 impl HttpClient {
@@ -44,6 +47,8 @@ impl HttpClient {
         Ok(Self {
             inner: builder.build()?,
             offline: Arc::new(AtomicBool::new(false)),
+            // По умолчанию лимита нет: ограничение включается только из настроек.
+            speed_limit: Arc::new(AtomicU32::new(0)),
         })
     }
 
@@ -55,6 +60,18 @@ impl HttpClient {
 
     pub fn offline(&self) -> bool {
         self.offline.load(Ordering::Relaxed)
+    }
+
+    /// F17: общий лимит скорости загрузки, КБ/с (0 — без ограничения).
+    /// Вызывается интегратором при старте движка — как `set_offline`;
+    /// смена на лету подхватывается на ближайшем семпле троттлинга.
+    pub fn set_speed_limit(&self, kbps: u32) {
+        self.speed_limit.store(kbps, Ordering::Relaxed);
+    }
+
+    /// Текущий лимит, КБ/с; 0 — без ограничения.
+    pub fn speed_limit(&self) -> u32 {
+        self.speed_limit.load(Ordering::Relaxed)
     }
 
     pub fn raw(&self) -> &reqwest::Client {
@@ -162,6 +179,20 @@ mod tests {
         assert!(c.offline());
         c.set_offline(false);
         assert!(!c.offline());
+    }
+
+    #[test]
+    fn speed_limit_default_zero_roundtrip_and_shared() {
+        // Контракт для интегратора: по умолчанию лимита нет; set_speed_limit
+        // на общем Arc видят все клоны клиента (как set_offline).
+        let c = HttpClient::new(None).unwrap();
+        assert_eq!(c.speed_limit(), 0, "по умолчанию лимита нет");
+        let c2 = c.clone();
+        c.set_speed_limit(10240);
+        assert_eq!(c.speed_limit(), 10240);
+        assert_eq!(c2.speed_limit(), 10240);
+        c.set_speed_limit(0);
+        assert_eq!(c2.speed_limit(), 0);
     }
 
     #[test]

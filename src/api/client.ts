@@ -15,6 +15,9 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 import type {
   Account,
   ArchiveResult,
+  AuthlibServerInfo,
+  ConfigContent,
+  ConfigFile,
   ContentEntry,
   ContentKind,
   Diagnosis,
@@ -205,6 +208,18 @@ export const api = {
   // Обложки ресурспаков/шейдеров (F25)
   packArt: (id: string, kinds: ContentKind[]) =>
     invoke<PackArtInfo[]>("pack_art", { id, kinds }),
+
+  // ---------- Волна D37-C ----------
+  // Конфиги модов (F29)
+  instanceConfigs: (id: string) => invoke<ConfigFile[]>("instance_configs", { id }),
+  configRead: (id: string, rel: string) => invoke<ConfigContent>("config_read", { id, rel }),
+  configWrite: (id: string, rel: string, text: string) =>
+    invoke<{ ok: boolean }>("config_write", { id, rel, text }),
+  // Свой authlib-сервер (F13)
+  authlibServerInfo: (serverUrl: string) =>
+    invoke<AuthlibServerInfo>("authlib_server_info", { serverUrl }),
+  accountAddAuthlib: (serverUrl: string, username: string, password: string) =>
+    invoke<Account>("account_add_authlib", { serverUrl, username, password }),
 };
 
 /** Подписка на события ядра (dl_progress, launch_state, game_log_line, dl_queue_state, account_refresh_failed). */

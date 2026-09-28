@@ -69,6 +69,10 @@ impl AppState {
         if let Some(e) = self.engines.lock().unwrap().get(group) {
             return e.clone();
         }
+        // F17: лимит скорости живёт на HttpClient (общем) — применим текущие
+        // настройки при создании движка (как set_offline в AppState::new).
+        let limit = self.settings.read().await.speed_limit_kbps;
+        self.http().await.set_speed_limit(limit);
         let e = self.engine().await;
         self.engines
             .lock()
@@ -254,12 +258,29 @@ pub async fn instance_launch(
                 crate::auth::offline::identity(&player)
             }
         };
-        // ely.by: скачать authlib-injector и подготовить -javaagent.
-        let javaagent = match crate::auth::active(&state.paths).map(|a| a.kind) {
-            Some(crate::auth::AccountKind::Ely) => {
+        // ely.by и свой authlib-сервер: authlib-injector + -javaagent.
+        let active_acc = crate::auth::active(&state.paths);
+        let javaagent = match (&active_acc, active_acc.as_ref().and_then(|a| a.authlib_server.clone())) {
+            (Some(crate::auth::Account { kind: crate::auth::AccountKind::Ely, .. }), _) => {
                 let jar =
                     crate::auth::ely::authlib_injector_jar(&http, &state.paths.cache_dir()).await?;
                 Some(crate::auth::ely::javaagent_arg(&jar))
+            }
+            (
+                Some(crate::auth::Account {
+                    kind: crate::auth::AccountKind::Authlib,
+                    ..
+                }),
+                Some(server),
+            ) => {
+                let jar =
+                    crate::auth::ely::authlib_injector_jar(&http, &state.paths.cache_dir()).await?;
+                Some(crate::auth::custom::build_agent_arg(&jar, &server))
+            }
+            (Some(crate::auth::Account { kind: crate::auth::AccountKind::Authlib, .. }), None) => {
+                return Err(LauncherError::InvalidInput(
+                    "у authlib-аккаунта нет адреса сервера".into(),
+                ));
             }
             _ => None,
         };
@@ -325,7 +346,19 @@ pub async fn instance_launch(
     let instance_id = inst.id.clone();
     let spawn_res = {
         let mut launching = state.launching.lock().await;
-        let res = instances::run::launch_detached(&state.paths, &instance_id, prepared, &state.bus);
+        // F26: имя инстанса для Discord Rich Presence, если тумблер включён.
+        let discord = if state.settings.read().await.discord_rpc {
+            Some(inst.name.clone())
+        } else {
+            None
+        };
+        let res = instances::run::launch_detached(
+            &state.paths,
+            &instance_id,
+            prepared,
+            &state.bus,
+            discord,
+        );
         launching.remove(&inst_id_clone);
         res
     };
@@ -713,6 +746,7 @@ pub async fn account_add_offline(
         name: crate::util::names::sanitize_user_name(&name, "Player"),
         uuid,
         refresh_ref: None,
+        authlib_server: None,
     };
     let added = crate::auth::add(&state.paths, acc)?;
     let _ = crate::auth::set_active(&state.paths, &added.id);
@@ -768,6 +802,7 @@ pub async fn account_add_msa_browser(
         name: session.player_name.clone(),
         uuid: session.uuid.clone(),
         refresh_ref: Some(ref_name),
+        authlib_server: None,
     };
     crate::auth::add(&state.paths, acc.clone())?;
     let _ = crate::auth::set_active(&state.paths, &acc.id);
@@ -821,6 +856,7 @@ pub async fn account_add_msa_poll(
         name: session.player_name.clone(),
         uuid: session.uuid.clone(),
         refresh_ref: Some(ref_name),
+        authlib_server: None,
     };
     crate::auth::add(&state.paths, acc.clone())?;
     let _ = crate::auth::set_active(&state.paths, &acc.id);
@@ -844,6 +880,7 @@ pub async fn account_add_ely(
         name: session.player_name.clone(),
         uuid: session.uuid.clone(),
         refresh_ref: Some(ref_name),
+        authlib_server: None,
     };
     crate::auth::add(&state.paths, acc.clone())?;
     let _ = crate::auth::set_active(&state.paths, &acc.id);
@@ -1079,11 +1116,14 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> Res
         }
     }
     settings.save(&state.paths.settings_file())?;
-    // F16: режим «Работать офлайн» применяется к актуальному HTTP-клиенту
-    // (в т.ч. к только что созданному при смене прокси — swap уже произошёл).
+    // F16/F17: офлайн-режим и лимит скорости применяются к актуальному
+    // HTTP-клиенту (в т.ч. к созданному при смене прокси — swap уже был).
     let work_offline = settings.work_offline;
+    let speed_limit = settings.speed_limit_kbps;
     *state.settings.write().await = settings;
-    state.http().await.set_offline(work_offline);
+    let http = state.http().await;
+    http.set_offline(work_offline);
+    http.set_speed_limit(speed_limit);
     Ok(OkMsg { ok: true })
 }
 
@@ -1452,6 +1492,93 @@ pub async fn instance_launch_safe(
     .map_err(join_err)??;
     tracing::info!("safe mode: {measures:?}");
     instance_launch(state, id, player).await
+}
+
+/// Конфиги модов: список (F29).
+#[tauri::command]
+pub async fn instance_configs(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<crate::instances::configs::ConfigFile>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::configs::list(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Прочитать конфиг (F29; cap 1 МБ).
+#[tauri::command]
+pub async fn config_read(
+    state: State<'_, AppState>,
+    id: String,
+    rel: String,
+) -> Result<crate::instances::configs::ConfigFile> {
+    let paths = state.paths.clone();
+    let (rel_out, text) = tauri::async_runtime::spawn_blocking(move || {
+        let text = crate::instances::configs::read(&paths, &id, &rel)?;
+        Ok::<_, LauncherError>((rel, text))
+    })
+    .await
+    .map_err(join_err)??;
+    Ok(crate::instances::configs::ConfigFile {
+        rel: rel_out,
+        bytes: text.len() as u64,
+    })
+}
+
+/// Сохранить конфиг (F29; игра запущена → instance_running).
+#[tauri::command]
+pub async fn config_write(
+    state: State<'_, AppState>,
+    id: String,
+    rel: String,
+    text: String,
+) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::configs::write(&paths, &id, &rel, &text)
+    })
+    .await
+    .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+/// Метаданные своего authlib-сервера (F13): проверка URL до входа.
+#[tauri::command]
+pub async fn authlib_server_info(
+    state: State<'_, AppState>,
+    server_url: String,
+) -> Result<crate::auth::custom::ServerInfo> {
+    let http = state.http().await;
+    crate::auth::custom::server_info(&http, &server_url).await
+}
+
+/// Вход на свой authlib-сервер (F13): токен в keyring, сервер нормализован.
+#[tauri::command]
+pub async fn account_add_authlib(
+    state: State<'_, AppState>,
+    server_url: String,
+    username: String,
+    password: String,
+) -> Result<crate::auth::Account> {
+    let http = state.http().await;
+    let server = crate::auth::custom::normalize_server_url(&server_url)?;
+    let session = crate::auth::custom::login(&http, &server, &username, &password).await?;
+    let acc = crate::auth::Account {
+        id: uuid::Uuid::new_v4().to_string(),
+        kind: crate::auth::AccountKind::Authlib,
+        name: if session.player_name.is_empty() { username } else { session.player_name },
+        uuid: session.uuid,
+        refresh_ref: None,
+        authlib_server: Some(server),
+    };
+    // Токен в keyring по образцу account_add_ely.
+    let ref_name = format!("authlib-refresh-{}", acc.id);
+    crate::auth::keyring_set(&ref_name, &session.access_token)?;
+    let acc = crate::auth::Account { refresh_ref: Some(ref_name), ..acc };
+    let added = crate::auth::add(&state.paths, acc)?;
+    let _ = crate::auth::set_active(&state.paths, &added.id);
+    Ok(added)
 }
 
 // ---------- события: мост bus → окно ----------

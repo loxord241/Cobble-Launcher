@@ -286,6 +286,7 @@ async fn run(cli: Cli) -> Result<()> {
                 name: nick.clone(),
                 uuid,
                 refresh_ref: None,
+                authlib_server: None,
             };
             mc_launcher_v2_lib::auth::add(&paths, acc)?;
             println!("Офлайн-профиль {nick} добавлен");
@@ -321,6 +322,7 @@ async fn run(cli: Cli) -> Result<()> {
                             name: session.player_name.clone(),
                             uuid: session.uuid.clone(),
                             refresh_ref: Some(ref_name),
+                            authlib_server: None,
                         };
                         println!("Вход выполнен: {} ({})", session.player_name, session.uuid);
                         mc_launcher_v2_lib::auth::add(&paths, acc)?;
@@ -353,6 +355,7 @@ async fn run(cli: Cli) -> Result<()> {
                 name: session.player_name.clone(),
                 uuid: session.uuid.clone(),
                 refresh_ref: Some(ref_name),
+                authlib_server: None,
             };
             println!("Вход выполнен: {} ({})", session.player_name, session.uuid);
             mc_launcher_v2_lib::auth::add(&paths, acc)?;

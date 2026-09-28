@@ -495,6 +495,37 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
           <p className="mt-1 text-xs text-text-muted">
             {t("settings.azureClientIdHint")}
           </p>
+
+          <Field label={t("settings.speedLimit")}>
+            <select
+              value={settings.speedLimitKbps}
+              onChange={(e) => commit({ speedLimitKbps: Number(e.target.value) })}
+              aria-label={t("settings.speedLimit")}
+              className="h-10 rounded-lg border border-border-strong bg-card px-3 text-sm"
+            >
+              {/* 0 — без ограничения; остальные пресеты — КБ/с, подпись в МБ/с */}
+              <option value={0}>{t("settings.speedLimit.none")}</option>
+              {[1024, 4096, 10240, 30720].map((kbps) => (
+                <option key={kbps} value={kbps}>
+                  {t("settings.speedLimit.mb", { mb: kbps / 1024 })}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {/* F26: Discord Rich Presence (нулевые инъекции — только pipe). */}
+          <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={settings.discordRpc}
+              onChange={(e) => commit({ discordRpc: e.target.checked })}
+              className="accent-accent"
+              aria-label={t("settings.discordRpc")}
+            />
+            <span>
+              {t("settings.discordRpc")}
+              <span className="ml-2 text-xs text-text-muted">{t("settings.discordRpc.hint")}</span>
+            </span>
+          </label>
         </div>
       </section>
 

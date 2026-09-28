@@ -1,13 +1,15 @@
 // Типы — зеркало Rust-структур (docs/UI-CONTRACT.md). Рассинхрон = ошибка ревью.
 
 // Профиль аккаунта (зеркало crate::auth::Account, camelCase).
-export type AccountKind = "offline" | "msa" | "ely";
+export type AccountKind = "offline" | "msa" | "ely" | "authlib";
 export interface Account {
   id: string;
   kind: AccountKind;
   name: string;
   uuid: string;
   refreshRef?: string;
+  /** Сервер для kind=authlib (F13), нормализованный URL. */
+  authlibServer?: string;
 }
 
 /** Откуда взят скин профиля (зеркало crate::auth::skins::SkinSource). */
@@ -77,6 +79,10 @@ export interface Settings {
   uiAccent: string;
   /** Режим «Работать офлайн» (F16): сеть ядра отключается, запуск из кэша. */
   workOffline: boolean;
+  /** Ограничение скорости загрузки, КБ/с (F17); 0 — без ограничения. */
+  speedLimitKbps: number;
+  /** Discord Rich Presence (F26). */
+  discordRpc: boolean;
 }
 
 // ---------- Волна D37 (фаза 2 аудита паритета) ----------
@@ -333,4 +339,27 @@ export interface PackArtInfo {
   file: string;
   description?: string;
   png?: string;
+}
+
+// ---------- Волна D37-C ----------
+
+/** Файл конфига мода (F29; зеркало instances::configs::ConfigFile). */
+export interface ConfigFile {
+  /** Относительный путь внутри config/ (напр. sodium-options.json). */
+  rel: string;
+  bytes: number;
+}
+
+/** Результат чтения конфига (F29). */
+export interface ConfigContent {
+  rel: string;
+  text: string;
+}
+
+/** Публичная часть authlib-сервера (F13; зеркало auth::server_info). */
+export interface AuthlibServerInfo {
+  /** Домен/URL, показываемый пользователю. */
+  serverUrl: string;
+  /** Имя сервера из metadata (может отсутствовать). */
+  serverName?: string;
 }

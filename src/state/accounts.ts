@@ -60,4 +60,5 @@ export const accountKindLabelKey: Record<AccountKind, string> = {
   offline: "account.kind.offline",
   msa: "account.kind.msa",
   ely: "account.kind.ely",
+  authlib: "account.kind.authlib",
 };

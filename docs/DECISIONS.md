@@ -551,3 +551,30 @@ UI-CONTRACT: 70 команд. Приёмка parity3_features.cjs; 12 приём
 cargo 259+10 (+31), clippy/tsc чистые. Известное: kill игры пользователем
 инкрементирует счётчик крашей (как и краш-модалка после kill — поведение
 сохранено); .gz-логи не читаются до появления flate2 в прямых зависимостях.
+
+## D37-C. Финал аудита: свой authlib-сервер, лимит скорости, палитра, конфиги, Discord (2026-09-28, ночь)
+
+Волна C (5 субагентов + интеграция), аудит закрыт полностью:
+1. **F13 Свой authlib-сервер** (auth/custom.rs): любой authlib-injector URL
+   (https; http — только localhost), проверка метаданных до входа, токен в
+   keyring, AccountKind::Authlib + authlib_server (serde-совместимо со
+   старым accounts.json); javaagent подключён в launch; вкладка «Свой
+   сервер» в аккаунтах. Скин authlib-аккаунта — честный дефолт (чужие
+   skinsystem не allowlist-ены).
+2. **F17 Лимит скорости** (net/http+download): Settings.speedLimitKbps,
+   общий token-bucket на движок (окно 1 с, sleep ≤50 мс), селект 0/1/4/10/30
+   МБ/с; применяется при создании движка и из настроек.
+3. **F19 Палитра команд** (CommandPalette.tsx): Ctrl+P + кнопка в титлбаре
+   (Ctrl+K сохранён — на нём приёмка), поиск инстансов/навигации/аккаунтов,
+   полный combobox-a11y.
+4. **F29 Конфиги модов** (instances/configs.rs): список/чтение/запись config/
+   (≤4 компонентов пути, ≤1 МБ, ≤500 файлов, traversal-барьер, guard
+   InstanceRunning); вкладка «Конфиги модов» с редактором.
+5. **F26 Discord RPC** (process/discord.rs): named pipe \.\pipe\discord-ipc-*
+   руками (без крейтов), HANDSHAKE+SET_ACTIVITY, поток в супервизии живёт
+   пока PID игры, тумблер в настройках. Application ID — шаг владельца
+   (discord.com/developers/applications), как ключи подписи: с заглушкой
+   Discord молча игнорирует presence.
+UI-CONTRACT: 75 команд. Приёмка parity4_features.cjs; 15 приёмок зелёные;
+cargo 298+10 (+39), clippy/tsc чистые. АУДИТ ПАРИТЕТА ЗАКРЫТ ПОЛНОСТЬЮ:
+F1–F30 все реализованы (кроме сознательных анти-фич из отчёта).

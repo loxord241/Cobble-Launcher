@@ -1,17 +1,19 @@
 import { useEffect, useState } from "react";
-import { X, Trash2, Globe, Shield, User, Plus, ExternalLink, RefreshCw } from "lucide-react";
+import { X, Trash2, Globe, Shield, User, Plus, ExternalLink, RefreshCw, Server } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAccounts, accountKindLabelKey } from "../../state/accounts";
 import { useSkins } from "../../state/skins";
 import { useSettings } from "../../state/settings";
 import { useModalA11y } from "../hooks/useModalA11y";
 import { SkinBody, SkinHead } from "./SkinViews";
+import { api } from "../../api/client";
 import { apiErrorText, t } from "../../i18n";
 
-type Tab = "msa" | "ely" | "offline";
+type Tab = "msa" | "ely" | "offline" | "custom";
 
 export default function AccountsModal({ onClose }: { onClose: () => void }) {
-  const { list: accounts, setActive, remove, addOffline, addMsaBrowser, addEly } = useAccounts();
+  const { list: accounts, setActive, remove, addOffline, addMsaBrowser, addEly, load } =
+    useAccounts();
   const { settings } = useSettings();
   const [activeTab, setActiveTab] = useState<Tab>("offline");
 
@@ -32,6 +34,13 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
   // Ely.by форма
   const [elyUser, setElyUser] = useState("");
   const [elyPass, setElyPass] = useState("");
+
+  // Свой authlib-сервер форма (F13)
+  const [customUrl, setCustomUrl] = useState("");
+  const [customUser, setCustomUser] = useState("");
+  const [customPass, setCustomPass] = useState("");
+  // Имя сервера из метаданных — показываем сразу после успешной проверки URL.
+  const [customServerName, setCustomServerName] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -88,6 +97,33 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
       setElyUser("");
       setElyPass("");
       setStatusMsg(t("accounts.elySuccess", { name: acc.name }));
+    } catch (err) {
+      setError(apiErrorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Свой authlib-сервер (F13): сперва проверяем URL метаданными (пользователь
+  // видит имя сервера до ввода пароля), затем логин на нормализованном URL.
+  const handleAddCustom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const url = customUrl.trim();
+    if (!url || !customUser.trim() || !customPass) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const info = await api.authlibServerInfo(url);
+      setCustomServerName(info.serverName ?? info.serverUrl);
+      const acc = await api.accountAddAuthlib(info.serverUrl, customUser.trim(), customPass);
+      await load();
+      await setActive(acc.id);
+      setCustomUrl("");
+      setCustomUser("");
+      setCustomPass("");
+      setStatusMsg(
+        `${t("accounts.customAuth")}: «${acc.name}» (${info.serverName ?? info.serverUrl}) — ${t("accounts.active")}`,
+      );
     } catch (err) {
       setError(apiErrorText(err));
     } finally {
@@ -165,7 +201,13 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
                           )}
                         </div>
                         <span className="text-xs text-text-muted">
-                          {t(accountKindLabelKey[acc.kind])}
+                          {/* kind "authlib" нет в TS-зеркале AccountKind (types.ts не
+                              наш файл) — подпись берём из ключа вкладки «Свой сервер». */}
+                          {t(
+                            acc.kind in accountKindLabelKey
+                              ? accountKindLabelKey[acc.kind]
+                              : "accounts.customAuth",
+                          )}
                         </span>
                       </div>
                     </div>
@@ -305,6 +347,22 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
               <Shield size={15} />
               Ely.by
             </button>
+            <button
+              onClick={() => {
+                setActiveTab("custom");
+                setError(null);
+                setStatusMsg(null);
+                setCustomServerName(null);
+              }}
+              className={`flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors ${
+                activeTab === "custom"
+                  ? "bg-accent text-on-accent"
+                  : "text-text-muted hover:bg-surface-2 hover:text-text"
+              }`}
+            >
+              <Server size={15} />
+              {t("accounts.customAuth")}
+            </button>
           </div>
 
           <div className="mt-3">
@@ -371,6 +429,52 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
                 >
                   <Plus size={16} />
                   {t("accounts.elyLoginBtn")}
+                </button>
+              </form>
+            )}
+
+            {/* Свой authlib-сервер форма (F13) */}
+            {activeTab === "custom" && (
+              <form onSubmit={handleAddCustom} className="flex flex-col gap-2">
+                <p className="text-xs leading-relaxed text-text-muted">
+                  {t("accounts.customAuth.hint")}
+                </p>
+                <input
+                  type="text"
+                  value={customUrl}
+                  onChange={(e) => setCustomUrl(e.target.value)}
+                  placeholder={t("accounts.customAuth.url")}
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="h-10 rounded-md border border-border-app bg-bg px-3 text-sm text-text outline-none focus:border-accent"
+                />
+                <input
+                  type="text"
+                  value={customUser}
+                  onChange={(e) => setCustomUser(e.target.value)}
+                  placeholder={t("accounts.nickPlaceholder")}
+                  autoComplete="off"
+                  className="h-10 rounded-md border border-border-app bg-bg px-3 text-sm text-text outline-none focus:border-accent"
+                />
+                <input
+                  type="password"
+                  value={customPass}
+                  onChange={(e) => setCustomPass(e.target.value)}
+                  placeholder={t("accounts.elyPassPlaceholder")}
+                  className="h-10 rounded-md border border-border-app bg-bg px-3 text-sm text-text outline-none focus:border-accent"
+                />
+                {customServerName && (
+                  <p className="text-xs text-accent">
+                    {customServerName}
+                  </p>
+                )}
+                <button
+                  type="submit"
+                  disabled={busy || !customUrl.trim() || !customUser.trim() || !customPass}
+                  className="btn-primary mt-1 flex h-10 items-center justify-center gap-2 text-sm"
+                >
+                  <Plus size={16} />
+                  {t("accounts.customAuth.add")}
                 </button>
               </form>
             )}

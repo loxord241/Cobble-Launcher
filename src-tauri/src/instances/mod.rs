@@ -3,6 +3,7 @@
 
 pub mod content;
 pub mod repair;
+pub mod configs;
 pub mod screens;
 pub mod modmeta;
 pub mod packart;
@@ -527,6 +528,11 @@ fn recycle_dir(dir: &Path) -> Result<()> {
 }
 
 /// PID запущенного инстанса из `.lock` (None = не запущен / протух).
+/// Жив ли процесс по PID (для Discord-RPC-потока F26; не трогает .lock).
+pub(crate) fn running_pid_alive(pid: u32) -> bool {
+    pid_alive(pid)
+}
+
 pub fn running_pid(instance_dir: &Path) -> Option<u32> {
     let lock = instance_dir.join(".lock");
     let text = std::fs::read_to_string(long_path(&lock)).ok()?;

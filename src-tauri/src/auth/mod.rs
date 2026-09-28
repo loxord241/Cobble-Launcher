@@ -1,6 +1,7 @@
 //! Аккаунты (спека §6.8): реестр accounts.json, offline/MSA/ely.by.
 //! Refresh-токены — в Windows Credential Manager (keyring), в файле — ссылки.
 
+pub mod custom;
 pub mod ely;
 pub mod msa;
 pub mod offline;
@@ -11,12 +12,15 @@ use crate::util::fs::{atomic_write, long_path};
 use serde::{Deserialize, Serialize};
 
 /// Тип профиля. Offline — «нелицензионный профиль» (пометка в UI, спека §6.8).
+/// Authlib — свой authlib-injector сервер (F13); ely.by — частный случай с
+/// зашитым URL (auth/ely.rs), поэтому отдельный вид.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AccountKind {
     Offline,
     Msa,
     Ely,
+    Authlib,
 }
 
 /// Профиль аккаунта. Токены НЕ хранятся здесь — только ссылка на keyring.
@@ -30,6 +34,11 @@ pub struct Account {
     /// Имя записи в keyring (service = "mc-launcher-v2").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_ref: Option<String>,
+    /// Корень authlib-сервера (нормализованный, auth::custom::normalize_server_url)
+    /// для kind = Authlib; у ely/MSA/offline — None (и в JSON не пишется:
+    /// старый accounts.json без поля читается как раньше).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authlib_server: Option<String>,
 }
 
 impl Account {
@@ -38,6 +47,7 @@ impl Account {
             AccountKind::Offline => "офлайн (нелицензионный)",
             AccountKind::Msa => "Microsoft",
             AccountKind::Ely => "ely.by",
+            AccountKind::Authlib => "authlib-сервер",
         }
     }
 }
@@ -221,6 +231,31 @@ pub async fn launch_identity(
                 user_type: "msa".into(),
             })
         }
+        AccountKind::Authlib => {
+            // Свой authlib-сервер (F13): refresh по тому же протоколу, что у
+            // ely, но URL берётся из аккаунта.
+            let Some(server) = &acc.authlib_server else {
+                return Err(LauncherError::InvalidInput(
+                    "у authlib-аккаунта нет URL сервера".into(),
+                ));
+            };
+            let Some(rr) = &acc.refresh_ref else {
+                return Err(LauncherError::InvalidInput(
+                    "у authlib-аккаунта нет refresh-токена".into(),
+                ));
+            };
+            let refresh = keyring_get(rr)?;
+            let session = custom::refresh_session(client, server, &refresh).await?;
+            if session.refresh_token != refresh {
+                keyring_set(rr, &session.refresh_token)?;
+            }
+            Ok(LaunchIdentity {
+                player_name: session.player_name,
+                uuid: session.uuid,
+                access_token: session.access_token,
+                user_type: "msa".into(),
+            })
+        }
     }
 }
 
@@ -267,6 +302,7 @@ mod tests {
             name: "Steve".into(),
             uuid: "0000".into(),
             refresh_ref: Some("msa-refresh-x".into()),
+            authlib_server: None,
         };
         add(&paths, acc).unwrap();
         let list = list(&paths);
@@ -298,6 +334,7 @@ mod tests {
             uuid: format!("uuid-{id}"),
             // Без keyring — тесты герметичны.
             refresh_ref: None,
+            authlib_server: None,
         }
     }
 
@@ -345,5 +382,73 @@ mod tests {
         assert_eq!(active(&paths).unwrap().id, "a2");
         let settings = crate::settings::Settings::load(&paths.settings_file()).unwrap();
         assert_eq!(settings.accounts_active_id.as_deref(), Some("a2"));
+    }
+
+    /// F13/serde-совместимость: старый accounts.json без поля authlibServer
+    /// читается как раньше (поле — default None), существующие kinds не менялись.
+    #[test]
+    fn old_accounts_json_without_authlib_server_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        std::fs::write(
+            crate::util::fs::long_path(&accounts_path(&paths)),
+            br#"[{"id":"x","kind":"ely","name":"S","uuid":"u","refreshRef":"ely-refresh-1"}]"#,
+        )
+        .unwrap();
+        let list = list(&paths);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].kind, AccountKind::Ely);
+        assert_eq!(list[0].authlib_server, None);
+        assert_eq!(list[0].kind_label(), "ely.by");
+    }
+
+    /// Authlib-аккаунт: kind "authlib" и authlibServer переживают roundtrip;
+    /// для аккаунтов без сервера поле в JSON не пишется (skip_serializing_if).
+    #[test]
+    fn authlib_account_roundtrip_keeps_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        add(
+            &paths,
+            Account {
+                id: "c1".into(),
+                kind: AccountKind::Authlib,
+                name: "Steve".into(),
+                uuid: "c1uuid".into(),
+                refresh_ref: Some("authlib-refresh-1".into()),
+                authlib_server: Some("https://auth.example.org".into()),
+            },
+        )
+        .unwrap();
+        // Соседний offline-аккаунт — чтобы проверить отсутствие поля у других kinds.
+        add(&paths, offline_acc("o1", "Alex")).unwrap();
+        let raw = std::fs::read(crate::util::fs::long_path(&accounts_path(&paths))).unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_slice(&raw).unwrap();
+        let c1 = parsed
+            .iter()
+            .find(|v| v["id"] == "c1")
+            .expect("authlib-аккаунт в JSON");
+        assert_eq!(c1["kind"], "authlib");
+        assert_eq!(c1["authlibServer"], "https://auth.example.org");
+        let o1 = parsed
+            .iter()
+            .find(|v| v["id"] == "o1")
+            .expect("offline-аккаунт в JSON");
+        assert!(
+            o1.get("authlibServer").is_none(),
+            "None не сериализуется: {o1}"
+        );
+
+        // И обратно в Account: сервер на месте, label честный.
+        let list = list(&paths);
+        let authlib = list.iter().find(|a| a.id == "c1").unwrap();
+        assert_eq!(authlib.kind, AccountKind::Authlib);
+        assert_eq!(
+            authlib.authlib_server.as_deref(),
+            Some("https://auth.example.org")
+        );
+        assert_eq!(authlib.kind_label(), "authlib-сервер");
     }
 }

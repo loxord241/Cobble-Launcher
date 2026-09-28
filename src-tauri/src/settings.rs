@@ -62,6 +62,10 @@ pub struct Settings {
     /// сразу (offline_mode), без ожидания таймаутов; запуск — только из
     /// уже скачанных файлов.
     pub work_offline: bool,
+    /// Ограничение скорости загрузки, КБ/с (F17); 0 — без ограничения.
+    pub speed_limit_kbps: u32,
+    /// Discord Rich Presence (F26): статус «играет в <инстанс>».
+    pub discord_rpc: bool,
 }
 
 impl Default for Settings {
@@ -87,6 +91,8 @@ impl Default for Settings {
             ui_font: String::new(),
             ui_accent: String::new(),
             work_offline: false,
+            speed_limit_kbps: 0,
+            discord_rpc: false,
         }
     }
 }

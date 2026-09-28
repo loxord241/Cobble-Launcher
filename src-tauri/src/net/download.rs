@@ -1,6 +1,7 @@
 //! Движок загрузок (спека §4.4): очередь с приоритетами, параллелизм,
 //! retry/backoff, хэши, атомарные записи, отмена по группе/глобально,
-//! персистентность очереди, троттлинг прогресса ≤ 10 соб./с.
+//! персистентность очереди, троттлинг прогресса ≤ 10 соб./с,
+//! общий лимит скорости (F17).
 
 use crate::errors::{LauncherError, Result};
 use crate::events::{DlProgress, DlQueueState, EventBus, LauncherEvent};
@@ -54,6 +55,34 @@ pub struct TaskEntry {
 pub const MAX_ATTEMPTS: u32 = 4;
 const PROGRESS_TICK: Duration = Duration::from_millis(100);
 
+/// F17: окно bucket'а — скользящая секунда общего счётчика байтов.
+const THROTTLE_WINDOW: Duration = Duration::from_secs(1);
+/// F17: минимальный семпл троттлинга — решение принимаем по кускам ≥ 64 КБ
+/// (корректность важнее точности, мьютекс не гоняется на каждый мелкий чанк).
+const THROTTLE_SAMPLE: usize = 64 * 1024;
+/// Границы сна одной итерации ожидания бюджета: без горячего спина,
+/// пауза/отмена подхватываются в пределах десятков миллисекунд.
+const THROTTLE_SLEEP_MIN: Duration = Duration::from_millis(10);
+const THROTTLE_SLEEP_MAX: Duration = Duration::from_millis(50);
+
+/// F17: сколько ждать перед записью чанка (семпла) при лимите `limit_kbps`.
+/// ZERO — лимит выключен или окно позволяет; >0 — бюджет переполнен, оценка —
+/// время пополнения «лишних» байтов по скорости лимита. Движок спит эту
+/// оценку итерациями по 10–50 мс с перепроверкой окна, поэтому корректен,
+/// даже если оценка длиннее остатка окна.
+fn throttle_delay(bytes_this_second: u64, limit_kbps: u32, chunk: usize) -> Duration {
+    if limit_kbps == 0 {
+        return Duration::ZERO;
+    }
+    let limit = u64::from(limit_kbps).saturating_mul(1024);
+    let total = bytes_this_second.saturating_add(chunk as u64);
+    if total <= limit {
+        return Duration::ZERO;
+    }
+    let excess = total - limit;
+    Duration::from_secs_f64(excess as f64 / limit as f64)
+}
+
 struct Runtime {
     tasks: Mutex<Vec<TaskEntry>>,
     global_cancel: AtomicBool,
@@ -63,6 +92,9 @@ struct Runtime {
     failed_files: AtomicU64,
     /// Байты, реально полученные по сети (учитываются и повторные загрузки).
     received_bytes: AtomicU64,
+    /// F17: окно общего bucket'а — (начало окна, байты за окно). Одно на
+    /// движок: лимит общий на все worker'ы, а не на файл/соединение.
+    throttle_window: Mutex<Option<(Instant, u64)>>,
 }
 
 pub struct DownloadEngine {
@@ -86,6 +118,7 @@ impl DownloadEngine {
                 done_files: AtomicU64::new(0),
                 failed_files: AtomicU64::new(0),
                 received_bytes: AtomicU64::new(0),
+                throttle_window: Mutex::new(None),
             },
         })
     }
@@ -324,17 +357,68 @@ impl DownloadEngine {
         let mut file = std::fs::File::create(part)?;
         let mut stream = resp.bytes_stream();
         let mut written: u64 = 0;
+        // F17: накопитель семпла — лимит общий на движок, поэтому перед записью
+        // ждём разрешения в общем окне (см. throttle_wait).
+        let mut sample: usize = 0;
         while let Some(chunk) = stream.next().await {
             if cancel.load(Ordering::SeqCst) {
                 return Err(LauncherError::Cancelled);
             }
             let chunk = chunk?;
+            sample = sample.saturating_add(chunk.len());
+            if sample >= THROTTLE_SAMPLE {
+                self.throttle_wait(sample).await;
+                sample = 0;
+            }
             file.write_all(&chunk)?;
             written += chunk.len() as u64;
+        }
+        // Хвост меньше семпла тоже учитываем, иначе недосчёт ускорит следующий файл.
+        if sample > 0 {
+            self.throttle_wait(sample).await;
         }
         file.sync_all()?;
         self.rt.received_bytes.fetch_add(written, Ordering::Relaxed);
         Ok(written)
+    }
+
+    /// F17: дождаться бюджета семпла в общем окне. Лимит берём с клиента
+    /// (0 — без ограничения); смена лимита на лету подхватывается здесь же.
+    async fn throttle_wait(&self, sample: usize) {
+        let limit = self.client.speed_limit();
+        if limit == 0 {
+            return;
+        }
+        loop {
+            let delay = self.reserve_sample(limit, sample);
+            if delay.is_zero() {
+                return;
+            }
+            // Спим итерациями 10–50 мс: без горячего спина. Окно перекатывается
+            // само, поэтому каждый заход резервирует заново — это корректнее,
+            // чем один долгий сон по теоретической оценке.
+            tokio::time::sleep(delay.clamp(THROTTLE_SLEEP_MIN, THROTTLE_SLEEP_MAX))
+                .await;
+        }
+    }
+
+    /// Попытка зачислить семпл из `sample` байтов в текущее окно:
+    /// Duration::ZERO — можно (байты уже учтены), >0 — окно переполнено,
+    /// ждать (счётчик не трогаем).
+    fn reserve_sample(&self, limit_kbps: u32, sample: usize) -> Duration {
+        let mut guard = self.rt.throttle_window.lock().unwrap();
+        let (start, mut bytes) = match *guard {
+            Some((start, bytes)) if start.elapsed() < THROTTLE_WINDOW => (start, bytes),
+            // Окна нет или оно перекатилось — новое окно с нулевым счётчиком.
+            _ => (Instant::now(), 0),
+        };
+        let delay = throttle_delay(bytes, limit_kbps, sample);
+        if delay.is_zero() {
+            bytes = bytes.saturating_add(sample as u64);
+        }
+        // При отказе якорь окна не двигается — иначе ожидание стало бы вечным.
+        *guard = Some((start, bytes));
+        delay
     }
 
     /// Троттлинг прогресса: не чаще 10 событий/с (спека §4.4).
@@ -540,5 +624,55 @@ mod tests {
             .iter()
             .any(|(url, reason)| url.ends_with("/file.bin") && reason.contains("офлайн")));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// F17: лимит выключен — троттлинга нет ни при каком накоплении.
+    #[test]
+    fn throttle_delay_zero_when_limit_off() {
+        assert_eq!(throttle_delay(0, 0, THROTTLE_SAMPLE), Duration::ZERO);
+        assert_eq!(throttle_delay(u64::MAX, 0, THROTTLE_SAMPLE), Duration::ZERO);
+    }
+
+    /// F17: окно не переполнено (в т.ч. ровно в пределе) — ждать не нужно.
+    #[test]
+    fn throttle_delay_zero_within_window() {
+        let limit_kbps = 1024u32; // 1 МБ/с = 1 МиБ за окно
+        assert_eq!(throttle_delay(0, limit_kbps, THROTTLE_SAMPLE), Duration::ZERO);
+        let almost_full = u64::from(limit_kbps) * 1024 - THROTTLE_SAMPLE as u64;
+        assert_eq!(throttle_delay(almost_full, limit_kbps, THROTTLE_SAMPLE), Duration::ZERO);
+        // Семпл, укладывающийся ровно в остаток окна, — ещё не переполнение.
+        let fits_exactly = u64::from(limit_kbps) * 1024 - THROTTLE_SAMPLE as u64;
+        assert_eq!(throttle_delay(fits_exactly, limit_kbps, 0), Duration::ZERO);
+        // Переполнение — строго total > limit (см. positive-тест ниже).
+    }
+
+    /// F17: переполнение — ждать >0, дольше при большем излишке.
+    #[test]
+    fn throttle_delay_positive_when_overfilled() {
+        let limit_kbps = 1024u32;
+        // 1 МиБ уже ушло + ещё 64 КБ → лишних 64 КБ → 62.5 мс пополнения.
+        let d = throttle_delay(1024 * 1024, limit_kbps, THROTTLE_SAMPLE);
+        assert!(d > Duration::ZERO);
+        assert_eq!(d, Duration::from_secs_f64(64.0 * 1024.0 / (1024.0 * 1024.0)));
+        // Излишек в 4 раза больше — ожидание тоже.
+        let d2 = throttle_delay(4 * 1024 * 1024, limit_kbps, THROTTLE_SAMPLE);
+        assert!(d2 > d);
+    }
+
+    /// F17: окно bucket'а одно на движок — второй worker видит байты первого,
+    /// а при отказе счётчик не меняется (якорь окна не продлевается).
+    #[test]
+    fn throttle_window_shared_across_workers() {
+        let client = Arc::new(HttpClient::new(None).unwrap());
+        client.set_speed_limit(1024); // 1 МиБ за окно
+        let engine = DownloadEngine::new(client, 2, EventBus::default());
+
+        assert_eq!(engine.reserve_sample(1024, 512 * 1024), Duration::ZERO);
+        // Второй «worker»: 512 КБ + 576 КБ = 1 МиБ + 64 КБ → переполнение.
+        assert!(engine.reserve_sample(1024, 512 * 1024 + 64 * 1024) > Duration::ZERO);
+        // Отказ не израсходовал бюджет и не сдвинул окно.
+        let guard = engine.rt.throttle_window.lock().unwrap();
+        let (_, bytes) = guard.expect("окно должно существовать после первого резерва");
+        assert_eq!(bytes, 512 * 1024);
     }
 }

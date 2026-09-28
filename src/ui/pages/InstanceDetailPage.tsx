@@ -42,6 +42,7 @@ import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
 import WorldsTab from "../components/instance/WorldsTab";
 import ScreensTab from "../components/instance/ScreensTab";
+import ConfigsTab from "../components/instance/ConfigsTab";
 import PackArt from "../components/instance/PackArt";
 import { fileBase } from "./ModsPage";
 import type {
@@ -55,9 +56,9 @@ import type {
   UpdateCheck,
 } from "../../api/types";
 
-type Tab = "overview" | "worlds" | "screens" | "mods" | "logs";
+type Tab = "overview" | "worlds" | "screens" | "configs" | "mods" | "logs";
 
-const TABS: Tab[] = ["overview", "worlds", "screens", "mods", "logs"];
+const TABS: Tab[] = ["overview", "worlds", "screens", "configs", "mods", "logs"];
 
 /** Логов этого инстанса ещё нет: стабильная ссылка для селектора стора. */
 const NO_LOGS: string[] = [];
@@ -602,7 +603,9 @@ export default function InstanceDetailPage({
                 ? t("instances.tab.worlds")
                 : id === "screens"
                   ? t("instances.tab.screens")
-                  : t(`instance.tab.${id}`)}
+                  : id === "configs"
+                    ? t("instance.configs.title")
+                    : t(`instance.tab.${id}`)}
           </button>
         ))}
       </div>
@@ -654,6 +657,10 @@ export default function InstanceDetailPage({
         )}
 
         {tab === "screens" && <ScreensTab instanceId={instanceId} setError={setError} />}
+
+        {tab === "configs" && (
+          <ConfigsTab instanceId={instanceId} setError={setError} setNotice={setNotice} />
+        )}
 
         {tab === "mods" && (
           <>

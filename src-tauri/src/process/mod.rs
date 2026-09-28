@@ -1,6 +1,7 @@
 //! Процесс игры: супервизия (instances/run), краш-анализ, мониторинг ресурсов.
 
 pub mod crash;
+pub mod discord;
 pub mod monitor;
 
 /// Семпл ресурсов запущенного инстанса (F28): PID берём из `.lock`.
