@@ -519,6 +519,16 @@ pub async fn content_update_all(
     let group = format!("instance:{instance_id}");
     let engine = state.engine_for(&group).await;
     let http = state.http().await;
+    // F8: перед пакетным обновлением — авто-снапшот mods/ (ротация 3).
+    {
+        let snap_paths = state.paths.clone();
+        let snap_id = instance_id.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            crate::instances::snapshots::create(&snap_paths, &snap_id)
+        })
+        .await
+        .map_err(join_err);
+    }
     let out = crate::modrinth::updates::update_all(&state.paths, http, engine, &inst).await;
     state.engine_done(&group);
     out
@@ -1075,6 +1085,244 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> Res
     *state.settings.write().await = settings;
     state.http().await.set_offline(work_offline);
     Ok(OkMsg { ok: true })
+}
+
+// ---------- волна D37 (фаза 2 аудита паритета) ----------
+
+/// Список миров инстанса (F24).
+#[tauri::command]
+pub async fn instance_worlds(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<crate::instances::worlds::WorldInfo>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::worlds::list_worlds(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Бэкап мира в zip (F24).
+#[tauri::command]
+pub async fn world_backup(
+    state: State<'_, AppState>,
+    id: String,
+    world: String,
+) -> Result<crate::instances::worlds::ArchiveResult> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::worlds::backup_world(&paths, &id, &world)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Удаление мира/Незера/Энда (F24).
+#[tauri::command]
+pub async fn world_delete_data(
+    state: State<'_, AppState>,
+    id: String,
+    world: String,
+    scope: crate::instances::worlds::WorldScope,
+) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::worlds::delete_world_data(&paths, &id, &world, scope)
+    })
+    .await
+    .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+/// Проверка целостности и починка игровых файлов (F2). Движок группы
+/// instance:{id} — как у запуска: отмена запуска гасит и ремонт.
+#[tauri::command]
+pub async fn instance_repair(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<crate::instances::repair::RepairReport> {
+    instances::load(&state.paths, &id)?;
+    let group = format!("instance:{id}");
+    let engine = state.engine_for(&group).await;
+    let http = state.http().await;
+    let paths = state.paths.clone();
+    let out =
+        crate::instances::repair::repair_instance(&paths, http, engine, &id).await;
+    state.engine_done(&group);
+    out
+}
+
+/// Запуск `java -version` для проверки пути (F15).
+#[tauri::command]
+pub async fn java_test_path(java_exe: String) -> Result<crate::java::detect::JavaTestInfo> {
+    tauri::async_runtime::spawn_blocking(move || crate::java::detect::test_java(&java_exe))
+        .await
+        .map_err(join_err)?
+}
+
+/// Ответ mclo.gs-шеринга (зеркало client.ts logShareMclogs).
+#[derive(Debug, serde::Serialize)]
+pub struct ShareResult {
+    pub url: String,
+}
+
+/// Отправить последний лог инстанса на mclo.gs (F22): redact → upload.
+#[tauri::command]
+pub async fn log_share_mclogs(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ShareResult> {
+    instances::valid_id(&id)?;
+    let paths = state.paths.clone();
+    let text = tauri::async_runtime::spawn_blocking(move || {
+        let dir = crate::instances::instance_dir(&paths, &id)
+            .join("minecraft")
+            .join("logs");
+        let data = std::fs::read(crate::util::fs::long_path(&dir.join("latest.log")))?;
+        // Хвост 512 КБ — mclo.gs сам режет большие, нам хватит с запасом.
+        let slice: &[u8] = if data.len() > 512 * 1024 {
+            &data[data.len() - 512 * 1024..]
+        } else {
+            &data
+        };
+        Ok::<_, LauncherError>(String::from_utf8_lossy(slice).into_owned())
+    })
+    .await
+    .map_err(join_err)??;
+    let redacted = crate::util::redact::redact(&text);
+    let http = state.http().await;
+    let url = crate::mclogs::upload(&http, &redacted).await?;
+    Ok(ShareResult { url })
+}
+
+/// Список архивных логов инстанса (F23).
+#[tauri::command]
+pub async fn instance_logs_list(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<crate::mclogs::LogFileInfo>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::mclogs::list_archived(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Прочитать архивный лог (F23), хвост до 512 КБ.
+#[tauri::command]
+pub async fn instance_log_read(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<String> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::mclogs::read_archived(&paths, &id, &name, 512 * 1024)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Снапшоты модов инстанса (F8).
+#[tauri::command]
+pub async fn content_snapshots(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<crate::instances::snapshots::SnapshotInfo>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::snapshots::list(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Откатить моды к снапшоту (F8).
+#[tauri::command]
+pub async fn content_rollback(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<Vec<crate::instances::ContentEntry>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::snapshots::restore(&paths, &id, &name)?;
+        Ok(crate::instances::load_content_manifest(&paths, &id))
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Скопировать контент в другой инстанс (F10).
+#[tauri::command]
+pub async fn content_copy(
+    state: State<'_, AppState>,
+    from_id: String,
+    to_id: String,
+    file: String,
+) -> Result<crate::instances::ContentEntry> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::content::copy_entry(&paths, &from_id, &to_id, &file)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Размеры областей каталога данных (F18).
+#[tauri::command]
+pub async fn storage_stats(state: State<'_, AppState>) -> Result<crate::storage::Stats> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::storage::stats(&paths))
+        .await
+        .map_err(join_err)?
+}
+
+/// Очистить кэш и корзину ядра (F18).
+#[tauri::command]
+pub async fn storage_clean(state: State<'_, AppState>) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    let freed = tauri::async_runtime::spawn_blocking(move || crate::storage::clean(&paths))
+        .await
+        .map_err(join_err)??;
+    Ok(OkMsg { ok: freed > 0 })
+}
+
+/// Экспорт настроек в файл без секретов (F20).
+#[tauri::command]
+pub async fn settings_export(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<OkMsg> {
+    let settings = state.settings.read().await.clone();
+    let json = crate::settings::export_json(&settings);
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(dir) = std::path::Path::new(&path).parent() {
+            std::fs::create_dir_all(crate::util::fs::long_path(dir))?;
+        }
+        std::fs::write(crate::util::fs::long_path(std::path::Path::new(&path)), json)?;
+        Ok::<_, LauncherError>(())
+    })
+    .await
+    .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+/// Импорт настроек из файла (F20): валидация, секреты не переносятся.
+#[tauri::command]
+pub async fn settings_import(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Settings> {
+    let data = tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read_to_string(crate::util::fs::long_path(std::path::Path::new(&path)))
+            .map_err(LauncherError::from)
+    })
+    .await
+    .map_err(join_err)??;
+    let settings = crate::settings::import_json(&data)?;
+    // Тот же путь, что settings_set: файл + свап стейта + офлайн-флаг.
+    settings.save(&state.paths.settings_file())?;
+    let work_offline = settings.work_offline;
+    *state.settings.write().await = settings.clone();
+    state.http().await.set_offline(work_offline);
+    Ok(settings)
 }
 
 // ---------- события: мост bus → окно ----------

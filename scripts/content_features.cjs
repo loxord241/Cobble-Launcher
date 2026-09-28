@@ -20,9 +20,9 @@ async function main() {
   await page.getByRole("navigation").getByRole("button", { name: /^Моды/ }).click();
   await page.waitForTimeout(800);
   const tabs = page.getByRole("tablist", { name: "Тип контента" });
-  (await tabs.getByRole("tab").count()) === 4
-    ? ok("каталог: 4 вкладки типа контента")
-    : fail("вкладок типа контента не 4");
+  (await tabs.getByRole("tab").count()) === 5
+    ? ok("каталог: 5 вкладок типа контента (D37: +датапаки)")
+    : fail(`вкладок типа контента ${await tabs.getByRole("tab").count()}, ожидалось 5`);
   const firstTitle = await page.locator('.flex.flex-col.gap-2 .truncate, [role="button"][aria-label^="Открыть "] .truncate').first().textContent().catch(() => "");
   await tabs.getByRole("tab", { name: "Шейдеры" }).click();
   await page.waitForTimeout(1500);

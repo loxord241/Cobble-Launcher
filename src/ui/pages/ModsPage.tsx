@@ -1,5 +1,5 @@
 // Браузер контента Modrinth (спека §8): поиск, бесконечный скролл, установка
-// в инстанс, вкладки типов (моды/шейдеры/ресурспаки/модпаки), установка
+// в инстанс, вкладки типов (моды/шейдеры/ресурспаки/модпаки/датапаки), установка
 // .mrpack, проверка/применение обновлений и управление установленным
 // (вкл/выкл, удаление). Паттерн строк «Сланца».
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -20,14 +20,20 @@ import type { ContentEntry, Instance, SearchHit, UpdateCheck } from "../../api/t
 
 const PAGE_SIZE = 20;
 
-type Tab = "mod" | "shader" | "resourcepack" | "modpack";
+type Tab = "mod" | "shader" | "resourcepack" | "modpack" | "datapacks";
 
 const TABS: { id: Tab; defaultQuery: string }[] = [
   { id: "mod", defaultQuery: "mods" },
   { id: "shader", defaultQuery: "shaders" },
   { id: "resourcepack", defaultQuery: "resourcepacks" },
   { id: "modpack", defaultQuery: "modpacks" },
+  { id: "datapacks", defaultQuery: "datapacks" },
 ];
+
+/** project_type для Modrinth API — единственное число (F7: вкладка «Датапаки»). */
+function projectTypeOf(tab: Tab): string {
+  return tab === "datapacks" ? "datapack" : tab;
+}
 
 /** Логический путь файла контента → имя на диске (без .disabled). Экспорт — для страницы инстанса. */
 export function fileBase(file: string): string {
@@ -114,7 +120,7 @@ export default function ModsPage({
         localQuery || TABS.find((x) => x.id === tab)!.defaultQuery,
         target?.mcVersion,
         target?.loader,
-        tab,
+        projectTypeOf(tab),
         PAGE_SIZE,
         0,
       );
@@ -145,7 +151,7 @@ export default function ModsPage({
         localQuery || TABS.find((x) => x.id === tab)!.defaultQuery,
         target?.mcVersion,
         target?.loader,
-        tab,
+        projectTypeOf(tab),
         PAGE_SIZE,
         hits.length,
       );

@@ -35,6 +35,7 @@ pub fn dir_for_kind(kind: ContentKind) -> &'static str {
         ContentKind::Mod => "mods",
         ContentKind::ResourcePack => "resourcepacks",
         ContentKind::Shader => "shaderpacks",
+        ContentKind::Datapack => "datapacks",
     }
 }
 
@@ -43,6 +44,7 @@ fn kind_for_project_type(project_type: &str) -> Result<ContentKind> {
         "mod" => Ok(ContentKind::Mod),
         "resourcepack" => Ok(ContentKind::ResourcePack),
         "shader" => Ok(ContentKind::Shader),
+        "datapack" => Ok(ContentKind::Datapack),
         other => Err(LauncherError::InvalidInput(format!(
             "неподдерживаемый тип контента: {other}"
         ))),

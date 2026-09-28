@@ -1,7 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, X, Copy, Check, FolderOpen, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  AlertTriangle,
+  X,
+  Copy,
+  Check,
+  FolderOpen,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  LoaderCircle,
+  Upload,
+} from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../../api/client";
-import { t } from "../../i18n";
+import { apiErrorText, t } from "../../i18n";
 import { useModalA11y } from "../hooks/useModalA11y";
 import type { CrashReport } from "../../state/instances";
 
@@ -14,6 +26,10 @@ export default function CrashReportModal({
 }) {
   const [showLog, setShowLog] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Шаринг на mclo.gs (F22): команда сама читает latest.log инстанса.
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [shareError, setShareError] = useState<string | null>(null);
   // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
   const dialogRef = useModalA11y(onClose);
   const copyTimer = useRef<number | null>(null);
@@ -45,6 +61,28 @@ export default function CrashReportModal({
 
   const openFolder = () => {
     void api.instanceOpenDir(report.instanceId);
+  };
+
+  const share = async () => {
+    setShareBusy(true);
+    setShareError(null);
+    setShareUrl(null);
+    try {
+      const { url } = await api.logShareMclogs(report.instanceId);
+      setShareUrl(url);
+    } catch (e) {
+      setShareError(apiErrorText(e));
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const openLink = async (url: string) => {
+    try {
+      await openUrl(url);
+    } catch (e) {
+      setShareError(apiErrorText(e));
+    }
   };
 
   return (
@@ -119,6 +157,23 @@ export default function CrashReportModal({
         </div>
 
         {/* Действия */}
+        {(shareUrl || shareError) && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+            {shareUrl && (
+              <span className="flex items-center gap-2 text-text-muted">
+                {t("logs.share.done", { url: shareUrl })}
+                <button
+                  onClick={() => void openLink(shareUrl)}
+                  aria-label={shareUrl}
+                  className="icon-btn text-accent"
+                >
+                  <ExternalLink size={14} aria-hidden />
+                </button>
+              </span>
+            )}
+            {shareError && <span className="text-error">{shareError}</span>}
+          </div>
+        )}
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-border-app pt-4">
           <div className="flex items-center gap-2">
             <button
@@ -134,6 +189,19 @@ export default function CrashReportModal({
             >
               {copied ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
               {copied ? t("common.copied") : t("crash.copyReport")}
+            </button>
+            <button
+              onClick={() => void share()}
+              disabled={shareBusy}
+              aria-busy={shareBusy}
+              className="btn-ghost flex h-10 items-center gap-2 px-3 text-sm"
+            >
+              {shareBusy ? (
+                <LoaderCircle size={16} aria-hidden className="animate-spin" />
+              ) : (
+                <Upload size={16} aria-hidden />
+              )}
+              {t("logs.share")}
             </button>
           </div>
 

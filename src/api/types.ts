@@ -77,6 +77,54 @@ export interface Settings {
   workOffline: boolean;
 }
 
+// ---------- Волна D37 (фаза 2 аудита паритета) ----------
+
+/** Мир инстанса (зеркало instances::worlds::WorldInfo). */
+export interface WorldInfo {
+  name: string;
+  lastModified: number;
+  sizeBytes: number;
+  hasNether: boolean;
+  hasEnd: boolean;
+}
+
+export type WorldScope = "all" | "nether" | "end";
+
+/** Итог проверки файлов инстанса (зеркало instances::repair::RepairReport). */
+export interface RepairReport {
+  checked: number;
+  redownloaded: number;
+}
+
+/** Результат запуска java -version (зеркало java::JavaTestInfo). */
+export interface JavaTestInfo {
+  major: number;
+  bits: number;
+  versionLine: string;
+}
+
+/** Архивный лог инстанса (зеркало mclogs::LogFileInfo). */
+export interface LogFileInfo {
+  name: string;
+  bytes: number;
+  modified: number;
+}
+
+/** Снапшот модов (зеркало instances::snapshots::SnapshotInfo). */
+export interface SnapshotInfo {
+  name: string;
+  bytes: number;
+  createdAt: number;
+}
+
+/** Размеры областей каталога данных (зеркало storage::Stats). */
+export interface StorageStats {
+  instancesBytes: number;
+  cacheBytes: number;
+  trashBytes: number;
+  logsBytes: number;
+}
+
 export interface VersionEntry {
   id: string;
   type: string;
@@ -188,7 +236,7 @@ export interface ProjectMeta {
   iconUrl?: string;
 }
 
-export type ContentKind = "mod" | "resourcepack" | "shader";
+export type ContentKind = "mod" | "resourcepack" | "shader" | "datapack";
 export type ContentSource = "modrinth" | "curseforge" | "local";
 
 export interface ContentEntry {

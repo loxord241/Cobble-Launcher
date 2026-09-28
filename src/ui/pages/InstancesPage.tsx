@@ -31,6 +31,7 @@ type RowCallbacks = {
   onBackup: () => void;
   onExport: () => void;
   onForceUnlock: () => void;
+  onRepair: () => void;
   onIconSet: () => void;
   onIconClear?: () => void;
 };
@@ -140,6 +141,21 @@ export default function InstancesPage({
               void load();
             })
             .catch((e) => setError(apiErrorText(e))),
+        // F2: проверка целостности игровых файлов (движок группы инстанса).
+        onRepair: () => {
+          setNotice(t("instances.repair.started"));
+          void api
+            .instanceRepair(inst.id)
+            .then((r) =>
+              setNotice(
+                t("instances.repair.done", {
+                  checked: r.checked,
+                  redownloaded: r.redownloaded,
+                }),
+              ),
+            )
+            .catch((e) => setError(apiErrorText(e)));
+        },
         onIconSet: () => {
           void (async () => {
             try {

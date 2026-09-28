@@ -1,16 +1,25 @@
 // Настройки «Сланца»: панели с капс-заголовками; разделы Темы (карточки),
 // Общие (RAM/параллелизм/снапшоты), Java (сканирование и установка Adoptium), Сеть и Данные.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, RefreshCw, Check, Coffee } from "lucide-react";
+import { Download, RefreshCw, Check, Coffee, Trash2, Upload } from "lucide-react";
 import { isHexColor, useSettings } from "../../state/settings";
 import { api } from "../../api/client";
-import { t } from "../../i18n";
+import { apiErrorText, t } from "../../i18n";
+import { pickJsonPath, pickSavePath } from "../components/pickFile";
 import ThemeCards from "../components/ThemeCards";
-import type { JavaInstall, RamGuide, Settings } from "../../api/types";
+import type { JavaInstall, RamGuide, Settings, StorageStats } from "../../api/types";
 import UpdatesSection from "../components/UpdatesSection";
 
 /** D20: пауза перед записью в ядро — поля не пишутся на каждый keystroke. */
 const SAVE_DEBOUNCE_MS = 400;
+
+/** Человеческий размер для статистики диска (F18): МБ с округлением, ГБ с десятыми. */
+function fmtBytes(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} ГБ`;
+  if (mb >= 1) return `${Math.round(mb)} МБ`;
+  return `${Math.round(bytes / 1024)} КБ`;
+}
 
 /** Пресеты акцентного цвета (первый — сланцевый синий по умолчанию). */
 const ACCENT_PRESETS = ["#7FB2F0", "#6FBF8F", "#E8A25C", "#E06C6C", "#A78BE0"];
@@ -40,6 +49,13 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
   const [saveError, setSaveError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingPatch = useRef<Partial<Settings>>({});
+  // F18: статистика диска + сообщение (результат уборки или ошибка).
+  const [stats, setStats] = useState<StorageStats | null>(null);
+  const [storageMsg, setStorageMsg] = useState<string | null>(null);
+  const [storageBusy, setStorageBusy] = useState(false);
+  // F20: сообщение экспорта/импорта настроек (результат или ошибка).
+  const [settingsIoMsg, setSettingsIoMsg] = useState<string | null>(null);
+  const [settingsIoBusy, setSettingsIoBusy] = useState(false);
 
   const commit = useCallback(
     (patch: Partial<Settings>) => {
@@ -119,6 +135,69 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
   const saveAzure = () => {
     const val = azureInput.trim() || undefined;
     commit({ azureClientId: val });
+  };
+
+  /** F18: подсчитать размеры областей каталога данных. */
+  const scanStorage = async () => {
+    setStorageBusy(true);
+    setStorageMsg(null);
+    try {
+      setStats(await api.storageStats());
+    } catch (e) {
+      setStorageMsg(apiErrorText(e));
+    } finally {
+      setStorageBusy(false);
+    }
+  };
+
+  /** F18: очистить кэш и корзину, затем авто-пересчёт статистики. */
+  const cleanStorage = async () => {
+    setStorageBusy(true);
+    setStorageMsg(null);
+    try {
+      const res = await api.storageClean();
+      setStorageMsg(t("settings.storage.cleaned", { freed: fmtBytes(res.freedBytes) }));
+      setStats(await api.storageStats());
+    } catch (e) {
+      setStorageMsg(apiErrorText(e));
+    } finally {
+      setStorageBusy(false);
+    }
+  };
+
+  /** F20: экспорт настроек в выбранный .json (секреты ядро не вывозит). */
+  const exportSettings = async () => {
+    setSettingsIoBusy(true);
+    setSettingsIoMsg(null);
+    try {
+      const path = await pickSavePath("mc-launcher-settings.json");
+      if (!path) return;
+      await api.settingsExport(path);
+      setSettingsIoMsg(t("settings.export.done", { path }));
+    } catch (e) {
+      setSettingsIoMsg(apiErrorText(e));
+    } finally {
+      setSettingsIoBusy(false);
+    }
+  };
+
+  /** F20: импорт настроек из .json; стейт перечитываем из ядра целиком. */
+  const importSettings = async () => {
+    setSettingsIoBusy(true);
+    setSettingsIoMsg(null);
+    try {
+      const path = await pickJsonPath();
+      if (!path) return;
+      await api.settingsImport(path);
+      // Как после коммита: ядро — источник истины, load применит и сайд-эффекты
+      // (тема/шрифт/акцент/язык/масштаб) на свежих настройках.
+      await useSettings.getState().load();
+      setSettingsIoMsg(t("settings.import.done"));
+    } catch (e) {
+      setSettingsIoMsg(apiErrorText(e));
+    } finally {
+      setSettingsIoBusy(false);
+    }
   };
 
   if (!settings) return null;
@@ -445,6 +524,70 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
       </section>
 
       <UpdatesSection />
+
+      {/* Дисковое пространство (F18) и экспорт/импорт настроек (F20) */}
+      <section>
+        <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
+          {t("settings.storage")}
+        </h3>
+        <div className="max-w-2xl rounded-lg border border-border-app bg-card p-4">
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => void scanStorage()}
+              disabled={storageBusy}
+              aria-label={t("settings.storage.scan")}
+              className="btn-ghost btn-sm flex items-center gap-2"
+            >
+              <RefreshCw size={14} aria-hidden />
+              {t("settings.storage.scan")}
+            </button>
+            <button
+              onClick={() => void cleanStorage()}
+              disabled={storageBusy}
+              aria-label={t("settings.storage.clean")}
+              className="btn-ghost btn-sm flex items-center gap-2"
+            >
+              <Trash2 size={14} aria-hidden />
+              {t("settings.storage.clean")}
+            </button>
+          </div>
+          {stats && (
+            <p className="mt-3 text-xs text-text-muted">
+              {t("settings.storage.stats", {
+                instances: fmtBytes(stats.instancesBytes),
+                cache: fmtBytes(stats.cacheBytes),
+                trash: fmtBytes(stats.trashBytes),
+                logs: fmtBytes(stats.logsBytes),
+              })}
+            </p>
+          )}
+          {storageMsg && <p className="mt-2 text-xs text-accent">{storageMsg}</p>}
+
+          <div className="mt-4 border-t border-border-app pt-3">
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => void exportSettings()}
+                disabled={settingsIoBusy}
+                aria-label={t("settings.export")}
+                className="btn-ghost btn-sm flex items-center gap-2"
+              >
+                <Upload size={14} aria-hidden />
+                {t("settings.export")}
+              </button>
+              <button
+                onClick={() => void importSettings()}
+                disabled={settingsIoBusy}
+                aria-label={t("settings.import")}
+                className="btn-ghost btn-sm flex items-center gap-2"
+              >
+                <Download size={14} aria-hidden />
+                {t("settings.import")}
+              </button>
+            </div>
+            {settingsIoMsg && <p className="mt-2 text-xs text-accent">{settingsIoMsg}</p>}
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

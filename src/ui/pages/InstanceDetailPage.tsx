@@ -1,7 +1,8 @@
 // Страница установленного инстанса в стиле CurseForge (запрос владельца):
 // крупная карточка с иконкой, именем, чипами и большой кнопкой «Играть», под
-// ней — табы «Обзор / Моды (N) / Логи». Табов «Версии» и «Журнал изменений»
-// нет намеренно: у ядра нет для них источника данных — пустышку не рисуем.
+// ней — табы «Обзор / Миры / Моды (N) / Логи». Табов «Версии» и «Журнал
+// изменений» нет намеренно: у ядра нет для них источника данных — пустышку
+// не рисуем.
 // Действия и данные — те же API, что у страниц Инстансов и Модов (логика
 // панели «Установленные» переиспользуется, сама панель там остаётся).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -22,6 +23,7 @@ import {
   RefreshCw,
   Settings as SettingsIcon,
   Share,
+  ShieldCheck,
   Sparkles,
   Square,
   Trash2,
@@ -37,12 +39,13 @@ import { defaultArtwork } from "../defaultArt";
 import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
+import WorldsTab from "../components/instance/WorldsTab";
 import { fileBase } from "./ModsPage";
-import type { ContentEntry, ProjectMeta, UpdateCheck } from "../../api/types";
+import type { ContentEntry, LogFileInfo, ProjectMeta, SnapshotInfo, UpdateCheck } from "../../api/types";
 
-type Tab = "overview" | "mods" | "logs";
+type Tab = "overview" | "worlds" | "mods" | "logs";
 
-const TABS: Tab[] = ["overview", "mods", "logs"];
+const TABS: Tab[] = ["overview", "worlds", "mods", "logs"];
 
 /** Логов этого инстанса ещё нет: стабильная ссылка для селектора стора. */
 const NO_LOGS: string[] = [];
@@ -106,6 +109,10 @@ export default function InstanceDetailPage({
   const [updates, setUpdates] = useState<UpdateCheck[] | null>(null);
   const [contentBusy, setContentBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // F8: снапшоты модов (список + подтверждение отката).
+  const [snapshots, setSnapshots] = useState<SnapshotInfo[] | null>(null);
+  // F10: файл, который копируем в другой инстанс (модалка выбора цели).
+  const [copyFor, setCopyFor] = useState<string | null>(null);
   const kebabRef = useRef<HTMLButtonElement>(null);
   const firstItemRef = useRef<HTMLButtonElement>(null);
 
@@ -123,6 +130,8 @@ export default function InstanceDetailPage({
   }, [menuOpen]);
 
   const loadInstalled = useCallback(async () => {
+    // Снапшоты — вторичный источник (нет их — панель просто не показывается).
+    api.contentSnapshots(instanceId).then(setSnapshots).catch(() => setSnapshots(null));
     try {
       setInstalled(await api.contentInstalled(instanceId));
     } catch (e) {
@@ -482,6 +491,27 @@ export default function InstanceDetailPage({
                       void api.instanceOpenDir(instanceId).catch((e) => setError(String(e)));
                     }}
                   />
+                  {/* F2: проверка целостности игровых файлов (saves/config не трогает). */}
+                  <MenuItem
+                    icon={ShieldCheck}
+                    label={t("instances.repair.menu")}
+                    disabled={busy}
+                    onClick={() => {
+                      closeMenu();
+                      setNotice(t("instances.repair.started"));
+                      void api
+                        .instanceRepair(instanceId)
+                        .then((r) =>
+                          setNotice(
+                            t("instances.repair.done", {
+                              checked: r.checked,
+                              redownloaded: r.redownloaded,
+                            }),
+                          ),
+                        )
+                        .catch((e) => setError(apiErrorText(e)));
+                    }}
+                  />
                   <MenuItem
                     icon={Copy}
                     label={t("instances.duplicate")}
@@ -527,7 +557,9 @@ export default function InstanceDetailPage({
           >
             {id === "mods"
               ? t("instance.tab.mods", { n: installed?.length ?? 0 })
-              : t(`instance.tab.${id}`)}
+              : id === "worlds"
+                ? t("instances.tab.worlds")
+                : t(`instance.tab.${id}`)}
           </button>
         ))}
       </div>
@@ -574,6 +606,10 @@ export default function InstanceDetailPage({
           </>
         )}
 
+        {tab === "worlds" && (
+          <WorldsTab instanceId={instanceId} setError={setError} setNotice={setNotice} />
+        )}
+
         {tab === "mods" && (
           <>
             <div className="rounded-lg border border-border-app bg-card p-3">
@@ -607,6 +643,55 @@ export default function InstanceDetailPage({
                 </div>
               </div>
 
+              {/* F8: снапшоты модов — авто перед «Обновить все», откат в клик. */}
+              {snapshots !== null && snapshots.length === 0 && (
+                <div className="mt-2 border-t border-border-app pt-2">
+                  <div className="flex flex-wrap items-center gap-2 px-2">
+                    <span className="text-[13px] font-semibold text-text">{t("mods.snapshots")}</span>
+                    <span className="text-[12px] text-text-muted">{t("mods.snapshot.hint")}</span>
+                    <span className="ml-auto text-[12px] text-text-muted">
+                      {t("mods.snapshots.empty")}
+                    </span>
+                  </div>
+                </div>
+              )}
+              {snapshots !== null && snapshots.length > 0 && (
+                <div className="mt-2 border-t border-border-app pt-2">
+                  <div className="flex flex-wrap items-center gap-2 px-2">
+                    <span className="text-[13px] font-semibold text-text">
+                      {t("mods.snapshots")}
+                    </span>
+                    <span className="chip-mono">{snapshots.length}</span>
+                    <span className="text-[12px] text-text-muted">{t("mods.snapshot.hint")}</span>
+                  </div>
+                  <ul className="mt-1 flex flex-col gap-1 px-2 pb-1">
+                    {snapshots.map((sn) => (
+                      <li key={sn.name} className="flex items-center gap-2">
+                        <span className="font-mono text-[12px] text-text-muted">{sn.name}</span>
+                        <button
+                          disabled={contentBusy}
+                          onClick={() => {
+                            setContentBusy(true);
+                            setError(null);
+                            api
+                              .contentRollback(instanceId, sn.name)
+                              .then((entries) => {
+                                setInstalled(entries);
+                                setNotice(t("mods.rollback.done", { name: sn.name }));
+                              })
+                              .catch((e) => setError(apiErrorText(e)))
+                              .finally(() => setContentBusy(false));
+                          }}
+                          className="btn-ghost btn-sm ml-auto"
+                        >
+                          {t("mods.rollback")}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <div className="mt-2 border-t border-border-app pt-2">
                 {installed === null ? (
                   <p className="px-2 py-3 text-[13px] text-text-muted">{t("instance.mods.loading")}</p>
@@ -620,7 +705,7 @@ export default function InstanceDetailPage({
                       return (
                         <li
                           key={e.file}
-                          className={`grid min-h-14 grid-cols-[40px_1fr_auto_auto_auto] items-center gap-3 rounded-md border border-border-app px-3 py-2 transition-colors hover:border-accent/60 hover:bg-card-hover ${
+                          className={`grid min-h-14 grid-cols-[40px_1fr_auto_auto_auto_auto] items-center gap-3 rounded-md border border-border-app px-3 py-2 transition-colors hover:border-accent/60 hover:bg-card-hover ${
                             e.enabled ? "" : "opacity-55"
                           }`}
                         >
@@ -668,6 +753,15 @@ export default function InstanceDetailPage({
                             />
                           </button>
                           <button
+                            aria-label={t("mods.copyTo")}
+                            title={t("mods.copyTo")}
+                            disabled={contentBusy}
+                            onClick={() => setCopyFor(e.file)}
+                            className="icon-btn"
+                          >
+                            <Copy size={15} aria-hidden />
+                          </button>
+                          <button
                             aria-label={t("mods.installed.delete", { file: fileBase(e.file) })}
                             disabled={contentBusy}
                             onClick={() => void removeEntry(e.file)}
@@ -700,7 +794,7 @@ export default function InstanceDetailPage({
           </>
         )}
 
-        {tab === "logs" && <LogsPanel instanceId={instanceId} />}
+        {tab === "logs" && <LogsPanel instanceId={instanceId} setError={setError} />}
       </div>
 
       {settingsOpen && (
@@ -724,24 +818,97 @@ export default function InstanceDetailPage({
           }}
         />
       )}
+
+      {/* F10: выбор целевого инстанса для копирования мода. */}
+      {copyFor && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("mods.copy.choose", { file: fileBase(copyFor) })}
+          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setCopyFor(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setCopyFor(null);
+          }}
+        >
+          <div className="flex max-h-[70vh] w-[420px] max-w-full flex-col rounded-lg border border-border-app bg-card p-4 shadow-2xl">
+            <div className="text-sm font-semibold">
+              {t("mods.copy.choose", { file: fileBase(copyFor) })}
+            </div>
+            <div className="mt-3 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+              {list
+                .filter((i) => i.id !== instanceId)
+                .map((i) => (
+                  <button
+                    key={i.id}
+                    disabled={contentBusy}
+                    onClick={() => {
+                      const toId = i.id;
+                      setCopyFor(null);
+                      setContentBusy(true);
+                      setError(null);
+                      api
+                        .contentCopy(instanceId, toId, copyFor)
+                        .then(() => setNotice(t("mods.copyTo.done", { file: fileBase(copyFor), instance: i.name })))
+                        .catch((e) => setError(apiErrorText(e)))
+                        .finally(() => setContentBusy(false));
+                    }}
+                    className="flex h-10 items-center gap-2 rounded-md border border-border-app px-3 text-left text-sm hover:border-accent/60 hover:bg-card-hover disabled:opacity-50"
+                  >
+                    <span className="truncate font-semibold">{i.name}</span>
+                    <span className="chip-mono ml-auto">{i.mcVersion}</span>
+                  </button>
+                ))}
+              {list.filter((i) => i.id !== instanceId).length === 0 && (
+                <p className="px-1 py-3 text-[13px] text-text-muted">{t("instances.empty.title")}</p>
+              )}
+            </div>
+            <div className="mt-3 flex justify-end border-t border-border-app pt-2">
+              <button onClick={() => setCopyFor(null)} className="btn-ghost btn-sm">
+                {t("common.close")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 /** Встроенный просмотр логов инстанса: строки стора + автопрокрутка + копирование. */
-function LogsPanel({ instanceId }: { instanceId: string }) {
+function LogsPanel({
+  instanceId,
+  setError,
+}: {
+  instanceId: string;
+  setError: (msg: string | null) => void;
+}) {
   // Узкий селектор: на каждую строку лога перерисовывается только панель логов.
   const lines = useInstances((s) => s.logs[instanceId]) ?? NO_LOGS;
   const [autoScroll, setAutoScroll] = useState(true);
   const [copied, setCopied] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // F22: шеринг на mclo.gs; F23: архив + фильтр уровней.
+  const [shareState, setShareState] = useState<{ kind: "busy" | "ok" | "err"; text: string } | null>(null);
+  const [filter, setFilter] = useState<"all" | "errors" | "warns">("all");
+  const [archive, setArchive] = useState<{ name: string; lines: string[] } | null>(null);
+  const [archiveList, setArchiveList] = useState<LogFileInfo[] | null>(null);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+
+  const shown =
+    archive?.lines ??
+    (filter === "all"
+      ? lines
+      : lines.filter((l) => l.includes(filter === "errors" ? "ERROR" : "WARN")));
 
   useEffect(() => {
-    if (autoScroll && containerRef.current) {
+    if (autoScroll && containerRef.current && !archive) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [lines, autoScroll]);
+  }, [shown, autoScroll, archive]);
 
   // Таймер индикатора «Скопировано!» не должен жить после ухода с таба.
   useEffect(
@@ -769,8 +936,27 @@ function LogsPanel({ instanceId }: { instanceId: string }) {
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-3">
         <span className="chip-mono text-xs">
-          {lines.length} {plural("instances.logs.lines", lines.length)}
+          {shown.length} {plural("instances.logs.lines", shown.length)}
         </span>
+        {/* F23: фильтр уровней (подстроки, как в LogViewerModal). */}
+        {(["all", "errors", "warns"] as const).map((f) => (
+          <button
+            key={f}
+            aria-pressed={filter === f}
+            onClick={() => setFilter(f)}
+            className={`rounded-md px-2 py-1 text-xs transition-colors ${
+              filter === f ? "bg-accent text-on-accent" : "text-text-muted hover:bg-surface-2"
+            }`}
+          >
+            {t(
+              f === "all"
+                ? "logs.filter.all"
+                : f === "errors"
+                  ? "logs.filter.errors"
+                  : "logs.filter.warns",
+            )}
+          </button>
+        ))}
         <label className="ml-auto flex cursor-pointer items-center gap-2 text-sm text-text-muted hover:text-text">
           <input
             type="checkbox"
@@ -783,25 +969,115 @@ function LogsPanel({ instanceId }: { instanceId: string }) {
         </label>
         <button
           onClick={() => void copyLogs()}
-          disabled={lines.length === 0}
+          disabled={shown.length === 0}
           className="btn-ghost btn-sm"
         >
           {copied ? <Check size={14} aria-hidden /> : <Copy size={14} aria-hidden />}
           {copied ? t("common.copied") : t("common.copy")}
         </button>
+        <button
+          disabled={shareState?.kind === "busy"}
+          onClick={() => {
+            setShareState({ kind: "busy", text: "" });
+            api
+              .logShareMclogs(instanceId)
+              .then((r) => setShareState({ kind: "ok", text: r.url }))
+              .catch((e) => setShareState({ kind: "err", text: apiErrorText(e) }));
+          }}
+          className="btn-ghost btn-sm"
+        >
+          <Share size={14} aria-hidden />
+          {t("logs.share")}
+        </button>
+      </div>
+
+      {shareState && shareState.kind !== "busy" && (
+        <p
+          className={`rounded-md border px-3 py-2 text-[13px] ${
+            shareState.kind === "ok"
+              ? "border-success/40 bg-success/10 text-success"
+              : "border-error/40 bg-error/10 text-error"
+          }`}
+        >
+          {shareState.kind === "ok"
+            ? t("logs.share.done", { url: shareState.text })
+            : shareState.text}
+        </p>
+      )}
+
+      {/* F23: архив логов — сворачиваемая секция с переключением просмотра. */}
+      <div className="rounded-md border border-border-app">
+        <button
+          aria-expanded={archiveOpen}
+          onClick={() => {
+            const next = !archiveOpen;
+            setArchiveOpen(next);
+            if (next && archiveList === null) {
+              api
+                .instanceLogsList(instanceId)
+                .then(setArchiveList)
+                .catch(() => setArchiveList([]));
+            }
+          }}
+          className="flex h-9 w-full items-center gap-2 px-3 text-[13px] font-semibold hover:bg-card-hover"
+        >
+          {t("logs.history")}
+          {archiveList !== null && archiveList.length > 0 && (
+            <span className="chip-mono">{archiveList.length}</span>
+          )}
+        </button>
+        {archiveOpen && (
+          <div className="border-t border-border-app p-2">
+            {archive && (
+              <button onClick={() => setArchive(null)} className="btn-ghost btn-sm mb-2">
+                <ArrowLeft size={14} aria-hidden />
+                {t("onboarding.back")}
+              </button>
+            )}
+            {archiveList === null ? null : archiveList.length === 0 ? (
+              <p className="px-1 py-1 text-[13px] text-text-muted">{t("logs.archive.empty")}</p>
+            ) : (
+              <ul className="flex flex-col gap-1">
+                {archiveList.map((f) => (
+                  <li key={f.name}>
+                    <button
+                      onClick={() => {
+                        api
+                          .instanceLogRead(instanceId, f.name)
+                          .then((text) => {
+                            setArchive({ name: f.name, lines: text.split(/\r?\n/) });
+                            setFilter("all");
+                          })
+                          .catch((e) => setError(apiErrorText(e)));
+                      }}
+                      className={`flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] hover:bg-card-hover ${
+                        archive?.name === f.name ? "text-accent" : ""
+                      }`}
+                    >
+                      <span className="truncate font-mono">{f.name}</span>
+                      <span className="ml-auto text-text-muted">
+                        {Math.max(1, Math.round(f.bytes / 1024))} КБ
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
 
       <div
         ref={containerRef}
         className="h-[420px] overflow-y-auto rounded-md border border-border-app bg-bg p-3 font-mono text-xs leading-relaxed text-text selection:bg-accent selection:text-on-accent"
       >
-        {lines.length === 0 ? (
+        {shown.length === 0 ? (
           <div className="text-text-muted">
             <p>{t("instances.logs.empty")}</p>
             <p className="mt-1 text-[13px]">{t("instance.logs.emptyHint")}</p>
           </div>
         ) : (
-          lines.map((line, idx) => (
+          shown.map((line, idx) => (
             <div key={idx} className="whitespace-pre-wrap break-all hover:bg-surface-2/40">
               {line}
             </div>

@@ -13,7 +13,9 @@ pub mod mojang;
 pub mod modrinth;
 pub mod net;
 pub mod optimize;
+pub mod mclogs;
 pub mod paths;
+pub mod storage;
 pub mod process;
 pub mod settings;
 pub mod util;
@@ -180,6 +182,21 @@ pub fn run() -> tauri::Result<()> {
             commands::account_remove,
             commands::account_active_set,
             commands::account_skin,
+            commands::instance_worlds,
+            commands::world_backup,
+            commands::world_delete_data,
+            commands::instance_repair,
+            commands::java_test_path,
+            commands::log_share_mclogs,
+            commands::instance_logs_list,
+            commands::instance_log_read,
+            commands::content_snapshots,
+            commands::content_rollback,
+            commands::content_copy,
+            commands::storage_stats,
+            commands::storage_clean,
+            commands::settings_export,
+            commands::settings_import,
             commands::instance_import,
             commands::crash_analyze,
             commands::java_list,

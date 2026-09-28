@@ -18,7 +18,8 @@ use std::path::PathBuf;
 const DISABLED_SUFFIX: &str = ".disabled";
 
 /// Каталоги контента, которыми управляет манифест (вкл/выкл/удаление).
-const CONTENT_DIRS: [&str; 3] = ["mods", "resourcepacks", "shaderpacks"];
+/// F7: datapacks — датапаки (minecraft/datapacks), снапшоты их не берут.
+const CONTENT_DIRS: [&str; 4] = ["mods", "resourcepacks", "shaderpacks", "datapacks"];
 
 /// Каталоги-шум: ни в бэкап, ни в экспорт (логи, краши, временный кэш).
 const NOISE_DIRS: [&str; 3] = ["logs", "crash-reports", "cache"];
@@ -37,7 +38,8 @@ pub struct ArchiveResult {
 
 /// `file` ("mods/x.jar") → абсолютный путь внутри minecraft/ инстанса.
 /// Только каталоги контента, только вниз: traversal и чужие каталоги — ошибка.
-fn resolve_content_file(paths: &Paths, id: &str, file: &str) -> Result<PathBuf> {
+/// pub(crate): переиспользуется snapshots.rs (restore) как traversal-барьер.
+pub(crate) fn resolve_content_file(paths: &Paths, id: &str, file: &str) -> Result<PathBuf> {
     let norm = file.replace('\\', "/");
     let parts: Vec<&str> = norm.split('/').collect();
     if parts.len() < 2
@@ -55,7 +57,8 @@ fn resolve_content_file(paths: &Paths, id: &str, file: &str) -> Result<PathBuf> 
     Ok(p)
 }
 
-fn disk_path(entry_file: &str, enabled: bool) -> PathBuf {
+/// pub(crate): переиспользуется snapshots.rs (restore) для обоих состояний имени.
+pub(crate) fn disk_path(entry_file: &str, enabled: bool) -> PathBuf {
     let mut s = entry_file.replace('/', "\\");
     if !enabled {
         s.push_str(DISABLED_SUFFIX);
@@ -111,6 +114,49 @@ pub fn remove(paths: &Paths, id: &str, file: &str) -> Result<()> {
         }
     }
     save_content_manifest(paths, id, &manifest)
+}
+
+/// Копировать контент между инстансами (F10): файл в активном состоянии +
+/// запись в манифест приёмника (projectId/versionId/sha1/url/kind сохраняются,
+/// enabled = true). Оба инстанса должны быть остановлены (B9: файлы занятой
+/// игры на Windows нельзя читать/писать).
+pub fn copy_entry(paths: &Paths, from_id: &str, to_id: &str, file: &str) -> Result<ContentEntry> {
+    // load валидирует id и существование обоих инстансов (нет — NotFound).
+    crate::instances::load(paths, from_id)?;
+    crate::instances::load(paths, to_id)?;
+    for id in [from_id, to_id] {
+        if crate::instances::running_pid(&instance_dir(paths, id)).is_some() {
+            return Err(LauncherError::InstanceRunning(id.to_string()));
+        }
+    }
+    // Барьер traversal для пути файла в ОБЕИХ раскладках (одинаковый префикс).
+    resolve_content_file(paths, from_id, file)?;
+    resolve_content_file(paths, to_id, file)?;
+    let src_entry = load_content_manifest(paths, from_id)
+        .into_iter()
+        .find(|e| e.file == file)
+        .ok_or_else(|| LauncherError::InvalidInput(format!("нет записи в манифесте: {file}")))?;
+    let mut to_manifest = load_content_manifest(paths, to_id);
+    if to_manifest.iter().any(|e| e.file == file) {
+        return Err(LauncherError::InvalidInput(format!("уже установлен: {file}")));
+    }
+    let base = minecraft_dir(&instance_dir(paths, from_id));
+    let src = base.join(disk_path(file, true)); // активное состояние (без .disabled)
+    let dst = minecraft_dir(&instance_dir(paths, to_id)).join(disk_path(file, true));
+    if !crate::util::fs::long_path(&src).exists() {
+        return Err(LauncherError::NotFound(src.to_string_lossy().into()));
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(crate::util::fs::long_path(parent))?;
+    }
+    std::fs::copy(crate::util::fs::long_path(&src), crate::util::fs::long_path(&dst))?;
+    let entry = ContentEntry {
+        enabled: true,
+        ..src_entry
+    };
+    to_manifest.push(entry.clone());
+    save_content_manifest(paths, to_id, &to_manifest)?;
+    Ok(entry)
 }
 
 /// Бэкап инстанса целиком (zip): instance.json, манифест контента, versions/,
@@ -522,5 +568,73 @@ mod tests {
         let home = dirs::home_dir().expect("домашний каталог");
         let escape = home.join("../outside.png");
         assert!(set_icon(&paths, &inst.id, escape.to_str().unwrap()).is_err());
+    }
+
+    /// F10: копия мода между инстансами — файл на диске приёмника и запись
+    /// в его манифесте (enabled=true, метаданные сохранены); повтор — «уже
+    /// установлен»; чужой файл — InvalidInput; нет приёмника — NotFound.
+    #[test]
+    fn copy_entry_copies_file_and_manifest_record() {
+        let (_d, paths, from) = setup();
+        let to = Instance::new("Приёмник", "1.20.1");
+        crate::instances::save(&paths, &to).unwrap();
+        save_content_manifest(&paths, &from.id, &[entry("mods/a.jar", None)]).unwrap();
+
+        let e = copy_entry(&paths, &from.id, &to.id, "mods/a.jar").unwrap();
+        assert!(e.enabled, "копия включена");
+        assert_eq!(e.project_id.as_deref(), Some("aaa"), "метаданные сохранены");
+        assert_eq!(e.kind, crate::instances::ContentKind::Mod);
+        let mc = minecraft_dir(&instance_dir(&paths, &to.id));
+        assert_eq!(
+            std::fs::read(long(&mc.join("mods/a.jar"))).unwrap(),
+            b"AAA",
+            "файл скопирован на диск"
+        );
+        let manifest = load_content_manifest(&paths, &to.id);
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(manifest[0].file, "mods/a.jar");
+
+        // Повторная копия того же файла — «уже установлен».
+        let err = copy_entry(&paths, &from.id, &to.id, "mods/a.jar").unwrap_err();
+        assert_eq!(err.code(), "invalid_input");
+        // Нет записи в манифесте-источнике.
+        let err = copy_entry(&paths, &from.id, &to.id, "mods/ghost.jar").unwrap_err();
+        assert_eq!(err.code(), "invalid_input");
+        // Приёмника не существует.
+        let err = copy_entry(&paths, &from.id, "ghost", "mods/a.jar").unwrap_err();
+        assert_eq!(err.code(), "not_found");
+    }
+
+    /// F10/B9: копирование при работающем инстансе (любом из двух) запрещено.
+    #[test]
+    fn copy_entry_rejects_running_instance() {
+        let (_d, paths, from) = setup();
+        let to = Instance::new("Приёмник", "1.20.1");
+        crate::instances::save(&paths, &to).unwrap();
+        save_content_manifest(&paths, &from.id, &[entry("mods/a.jar", None)]).unwrap();
+        // Имитируем живой процесс источника: .lock с PID текущего теста.
+        std::fs::write(instance_dir(&paths, &from.id).join(".lock"), std::process::id().to_string())
+            .unwrap();
+        let err = copy_entry(&paths, &from.id, &to.id, "mods/a.jar").unwrap_err();
+        assert_eq!(err.code(), "instance_running");
+    }
+
+    /// F7: каталог datapacks — полноправный контент (путь проходит валидацию,
+    /// вкл/выкл и удаление работают). kind в записи здесь Mod — валидация пути
+    /// в content.rs строковая, вариант ContentKind::Datapack добавляет mod.rs.
+    #[test]
+    fn datapacks_dir_is_managed_content() {
+        let (_d, paths, inst) = setup();
+        assert!(resolve_content_file(&paths, &inst.id, "datapacks/w.zip").is_ok());
+        assert!(resolve_content_file(&paths, &inst.id, "datapacks/../evil").is_err());
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        std::fs::create_dir_all(long(&mc.join("datapacks"))).unwrap();
+        std::fs::write(long(&mc.join("datapacks/w.zip")), b"DP").unwrap();
+        save_content_manifest(&paths, &inst.id, &[entry("datapacks/w.zip", None)]).unwrap();
+        let e = toggle(&paths, &inst.id, "datapacks/w.zip").unwrap();
+        assert!(!e.enabled);
+        assert!(long(&mc.join("datapacks/w.zip.disabled")).exists());
+        remove(&paths, &inst.id, "datapacks/w.zip").unwrap();
+        assert!(load_content_manifest(&paths, &inst.id).is_empty());
     }
 }

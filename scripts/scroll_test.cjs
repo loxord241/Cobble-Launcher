@@ -3,7 +3,14 @@ const { chromium } = require("playwright-core");
 async function main() {
   const browser = await chromium.connectOverCDP("http://localhost:9223");
   const page = browser.contexts()[0].pages()[0];
-  await page.getByRole("button", { name: "Моды", exact: true }).click();
+  page.setDefaultTimeout(30000);
+  // Самодостаточность: сброс к чистому состоянию (после других приёмок окно
+  // может остаться на детальной странице инстанса с перекрытием).
+  await page.goto("http://localhost:1420/", { waitUntil: "networkidle" }).catch(() => {});
+  await page.evaluate(() => localStorage.setItem("lang", "ru"));
+  await page.reload({ waitUntil: "networkidle" }).catch(() => {});
+  await page.waitForTimeout(800);
+  await page.getByRole("navigation").getByRole("button", { name: /^Моды/ }).click();
   await page.waitForSelector("text=Показано", { timeout: 30000 });
   await page.waitForFunction(
     () => {

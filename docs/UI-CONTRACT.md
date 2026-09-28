@@ -17,7 +17,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 ## Команды (invoke)
 
-Все 52 команды `invoke_handler` (`src-tauri/src/lib.rs:104`), обработчики —
+Все 62 команды `invoke_handler` (`src-tauri/src/lib.rs:104`), обработчики —
 `src-tauri/src/commands/mod.rs`.
 
 ### Инстансы и процессы
@@ -76,6 +76,21 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `content_backfill_projects` | `{instanceId}` | `number` (сколько манифестов залечено sha1→projectId) | not_found, network, http, json |
 | `update_check` | — | `UpdateInfo` {current, latest?, url?, updateAvailable, checked, note?} (GitHub releases/latest) | network, http, json |
 | `java_recommended` | `{mcVersion}` | `number` (мажорная Java: 8/17/21, таблица как run.rs fallback_major) | — |
+| `instance_worlds` | `{id}` | `WorldInfo[]` {name, lastModified, sizeBytes, hasNether, hasEnd} (каталоги saves/ с level.dat) | not_found, invalid_input |
+| `world_backup` | `{id, world}` | `ArchiveResult` (zip в backups/worlds/, DIM-1/DIM1 внутри; запущено → instance_running) | not_found, invalid_input, instance_running, io |
+| `world_delete_data` | `{id, world, scope: all\|nether\|end}` | `{ok}` (в корзину ОС, как instance_delete) | not_found, invalid_input, instance_running |
+| `instance_repair` | `{id}` | `RepairReport` {checked, redownloaded} (клиент+библиотеки+нативы+ассеты по хэшам; saves/config/mods не трогаются) | not_found, instance_running, network, http |
+| `java_test_path` | `{javaExe}` | `JavaTestInfo` {major, bits, versionLine} (java -version, таймаут 5 с) | invalid_input, timeout |
+| `log_share_mclogs` | `{id}` | `{url}` (хвост latest.log 512 КБ → redact → api.mclo.gs; офлайн → offline_mode) | not_found, network, offline_mode, http |
+| `instance_logs_list` | `{id}` | `LogFileInfo[]` {name, bytes, modified} (*.log кроме latest; .gz не читается в этой версии) | not_found, invalid_input |
+| `instance_log_read` | `{id, name}` | `string` (хвост 512 КБ, целые строки) | not_found, invalid_input |
+| `content_snapshots` | `{id}` | `SnapshotInfo[]` {name, bytes, createdAt} (snapshots/mods-*.zip, ротация 3) | not_found, invalid_input |
+| `content_rollback` | `{id, name}` | `ContentEntry[]` (манифестные файлы заменяются содержимым снапшота) | not_found, invalid_input, instance_running |
+| `content_copy` | `{fromId, toId, file}` | `ContentEntry` (копия файла+записи манифеста; оба инстанса не запущены) | not_found, invalid_input, instance_running |
+| `storage_stats` | — | `StorageStats` {instancesBytes, cacheBytes, trashBytes, logsBytes} | io |
+| `storage_clean` | — | `{ok}` (очищены cache/ и instances/.trash; store/ не трогается) | io |
+| `settings_export` | `{path}` | `{ok}` (JSON без curseforgeApiKey/azureClientId) | io |
+| `settings_import` | `{path}` | `Settings` (validate+migrate; секреты из файла → None; офлайн-флаг применяется) | invalid_input, io |
 | `instance_force_unlock` | `{id}` | `{ok}` (мёртвый .lock без живого PID удаляется + событие Exited; запущено → instance_running) | not_found, instance_running, io |
 | `account_skin` | `{accountId}` | `SkinInfo \| null` ({source: `ely`\|`mojang`, dataUrl} — PNG как data-URL; `null` — скина нет: offline/404. Источники allowlist: skinsystem.ely.by, textures.minecraft.net; дисковый кэш 1 ч) | not_found, invalid_input, network, http, json, internal, io |
 

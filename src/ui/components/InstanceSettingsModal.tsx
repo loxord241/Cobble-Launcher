@@ -3,10 +3,10 @@
 import { useEffect, useState } from "react";
 import { X, Save, Sparkles } from "lucide-react";
 import { api } from "../../api/client";
-import { t } from "../../i18n";
+import { t, apiErrorText } from "../../i18n";
 import { useModalA11y } from "../hooks/useModalA11y";
 import { useAccounts, accountKindLabelKey } from "../../state/accounts";
-import type { Instance, JavaInstall, RamGuide } from "../../api/types";
+import type { Instance, JavaInstall, JavaTestInfo, RamGuide } from "../../api/types";
 
 /** F5: пресет ЗАМЕНЯЕТ содержимое поля флагов (пользователь может доредактировать).
  * Флаги сверены с валидатором ядра (FORBIDDEN_JVM_SUBSTRINGS) — запрещённых нет. */
@@ -73,6 +73,10 @@ export default function InstanceSettingsModal({
   );
   // F14: рекомендуемая Java — подсказка; ошибка/нет данных → ничего не показываем.
   const [javaRecommendedMajor, setJavaRecommendedMajor] = useState<number | null>(null);
+  // F15: пробный запуск выбранной java (кнопка «Проверить»).
+  const [javaTestBusy, setJavaTestBusy] = useState(false);
+  const [javaTestResult, setJavaTestResult] = useState<JavaTestInfo | null>(null);
+  const [javaTestError, setJavaTestError] = useState<string | null>(null);
   const [notes, setNotes] = useState(instance.notes ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,6 +99,29 @@ export default function InstanceSettingsModal({
     setJvmPreset(preset);
     const flags = JVM_PRESETS[preset];
     if (flags) setJvmFlags(flags.join(" "));
+  };
+
+  /** F15: пробный запуск выбранной java; результат показываем под селектом. */
+  const runJavaTest = async () => {
+    const exe = javaPath.trim();
+    if (!exe || javaTestBusy) return;
+    setJavaTestBusy(true);
+    setJavaTestResult(null);
+    setJavaTestError(null);
+    try {
+      setJavaTestResult(await api.javaTestPath(exe));
+    } catch (e) {
+      setJavaTestError(apiErrorText(e));
+    } finally {
+      setJavaTestBusy(false);
+    }
+  };
+
+  /** Смена Java сбрасывает результат проверки — он относится к прежней java. */
+  const changeJavaPath = (value: string) => {
+    setJavaPath(value);
+    setJavaTestResult(null);
+    setJavaTestError(null);
   };
 
   const totalRam = ramGuide?.totalMb ?? 16384;
@@ -227,19 +254,43 @@ export default function InstanceSettingsModal({
             <label htmlFor="inst-java" className="block text-sm font-medium text-text">
               {t("instances.settings.java")}
             </label>
-            <select
-              id="inst-java"
-              value={javaPath}
-              onChange={(e) => setJavaPath(e.target.value)}
-              className="mt-1 h-10 w-full rounded-md border border-border-app bg-bg px-3 text-sm text-text outline-none focus:border-accent"
-            >
-              <option value="">{t("instances.settings.javaAuto")}</option>
-              {javaList.map((j) => (
-                <option key={j.javaExe} value={j.javaExe}>
-                  Java {j.major} ({j.origin}, {j.archBits}-bit) — {j.javaExe}
-                </option>
-              ))}
-            </select>
+            <div className="mt-1 flex items-center gap-2">
+              <select
+                id="inst-java"
+                value={javaPath}
+                onChange={(e) => changeJavaPath(e.target.value)}
+                className="h-10 min-w-0 flex-1 rounded-md border border-border-app bg-bg px-3 text-sm text-text outline-none focus:border-accent"
+              >
+                <option value="">{t("instances.settings.javaAuto")}</option>
+                {javaList.map((j) => (
+                  <option key={j.javaExe} value={j.javaExe}>
+                    Java {j.major} ({j.origin}, {j.archBits}-bit) — {j.javaExe}
+                  </option>
+                ))}
+              </select>
+              {/* F15: пробный запуск выбранной java; без выбора кнопка неактивна. */}
+              <button
+                type="button"
+                onClick={() => void runJavaTest()}
+                disabled={!javaPath.trim() || javaTestBusy}
+                className="btn-ghost h-10 shrink-0 px-3 text-sm"
+              >
+                {t("instances.java.test")}
+              </button>
+            </div>
+            {javaTestResult && (
+              <p className="mt-1 text-xs text-success" role="status">
+                {t("instances.java.test.ok", {
+                  major: javaTestResult.major,
+                  bits: javaTestResult.bits,
+                })}
+              </p>
+            )}
+            {javaTestError && (
+              <p className="mt-1 text-xs text-error" role="alert">
+                {t("instances.java.test.fail", { error: javaTestError })}
+              </p>
+            )}
             <p className="mt-1 text-xs text-text-muted">
               {t("instances.settings.javaHint")}
             </p>

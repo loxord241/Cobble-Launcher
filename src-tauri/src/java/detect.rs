@@ -124,6 +124,101 @@ pub fn parse_arch_bits(text: &str) -> u32 {
     64
 }
 
+/// Результат пробного запуска конкретной java (F15; зеркало `JavaTestInfo`
+/// в src/api/types.ts).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JavaTestInfo {
+    pub major: i32,
+    pub bits: u32,
+    /// Строка вывода с `version "…"` (для диагностики в UI).
+    pub version_line: String,
+}
+
+/// Чистый разбор вывода `java -version` (F15): (major, битность, строка
+/// версии). Битность ищется по «64-Bit»/«32-Bit» (её печатает VM-строка);
+/// метки нет — 64 (все актуальные сборки 64-битные). Строки версии нет — None.
+pub fn parse_java_test_output(text: &str) -> Option<(i32, u32, String)> {
+    let major = i32::try_from(parse_java_version(text)?).ok()?;
+    let bits = if text.to_ascii_lowercase().contains("32-bit") {
+        32
+    } else {
+        64
+    };
+    let version_line = text
+        .lines()
+        .find(|l| l.contains("version \""))
+        .or_else(|| text.lines().find(|l| !l.trim().is_empty()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    Some((major, bits, version_line))
+}
+
+/// Пробный запуск java (F15): `java -version`, таймаут 5 с. Вывод версии
+/// java печатает в stderr. Ошибка старта (битый путь/не исполнимый) —
+/// InvalidInput с текстом, молчание дольше 5 с — Timeout.
+pub fn test_java(java_exe: &str) -> Result<JavaTestInfo> {
+    let exe = java_exe.trim();
+    if exe.is_empty() {
+        return Err(LauncherError::InvalidInput("путь к java пуст".into()));
+    }
+    let mut cmd = Command::new(crate::util::fs::long_path(Path::new(exe)));
+    cmd.arg("-version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    hide_console(&mut cmd);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| LauncherError::InvalidInput(format!("не удалось запустить {exe}: {e}")))?;
+
+    // java -version печатает ~200 байт — пайп не переполнится, пока поллим
+    // try_wait (читать и ждать одновременно на std::process нельзя без потока).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(LauncherError::Timeout(format!(
+                        "java -version не ответил за 5 с: {exe}"
+                    )));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(LauncherError::Internal(format!("try_wait java: {e}")));
+            }
+        }
+    }
+
+    let mut buf = Vec::new();
+    {
+        use std::io::Read as _;
+        if let Some(mut s) = child.stdout.take() {
+            let _ = s.read_to_end(&mut buf);
+        }
+        if let Some(mut s) = child.stderr.take() {
+            let _ = s.read_to_end(&mut buf);
+        }
+    }
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    let (major, bits, version_line) = parse_java_test_output(&text).ok_or_else(|| {
+        LauncherError::InvalidInput(format!(
+            "не удалось разобрать версию java: {}",
+            text.lines().next().unwrap_or("").trim()
+        ))
+    })?;
+    Ok(JavaTestInfo {
+        major,
+        bits,
+        version_line,
+    })
+}
+
 /// Определить версию и битность конкретной java (запуск процессов, скрытая консоль).
 pub async fn inspect(java_exe: &Path, origin: &str) -> Result<JavaInstall> {
     let exe = crate::util::fs::long_path(java_exe);
@@ -220,6 +315,53 @@ mod tests {
         );
         assert_eq!(parse_arch_bits("garbage"), 64);
         assert_eq!(parse_arch_bits("sun.arch.data.model = 32"), 32);
+    }
+
+    /// F15: разбор вывода `java -version` — современные и легаси-сборки.
+    #[test]
+    fn parses_java_test_output_modern_and_legacy() {
+        let modern = concat!(
+            "openjdk version \"17.0.2\" 2022-01-18\n",
+            "OpenJDK Runtime Environment Temurin-17.0.2+8 (build 17.0.2+8)\n",
+            "OpenJDK 64-Bit Server VM Temurin-17.0.2+8 (build 17.0.2+8, mixed mode, sharing)"
+        );
+        let (major, bits, line) = parse_java_test_output(modern).unwrap();
+        assert_eq!(major, 17);
+        assert_eq!(bits, 64);
+        assert!(line.contains("17.0.2"), "{line}");
+
+        let legacy = concat!(
+            "java version \"1.8.0_392\"\n",
+            "Java(TM) SE Runtime Environment (build 1.8.0_392-b13)\n",
+            "Java HotSpot(TM) 32-Bit Server VM (build 25.392-b13, mixed mode)"
+        );
+        let (major, bits, _) = parse_java_test_output(legacy).unwrap();
+        assert_eq!(major, 8);
+        assert_eq!(bits, 32);
+    }
+
+    /// F15: метки битности нет → 64 по умолчанию; версии нет → None.
+    #[test]
+    fn java_test_output_defaults_and_rejects_garbage() {
+        let (major, bits, line) = parse_java_test_output("openjdk version \"21\" 2023-09-19").unwrap();
+        assert_eq!((major, bits), (21, 64));
+        assert_eq!(line, "openjdk version \"21\" 2023-09-19");
+        assert!(parse_java_test_output("got garbage, no version").is_none());
+    }
+
+    /// F15: контракт с UI — camelCase (`versionLine`).
+    #[test]
+    fn java_test_info_serializes_camel_case_for_ui() {
+        let info = JavaTestInfo {
+            major: 21,
+            bits: 64,
+            version_line: "openjdk version \"21\"".into(),
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["major"], 21);
+        assert_eq!(v["bits"], 64);
+        assert_eq!(v["versionLine"], "openjdk version \"21\"");
+        assert!(v.get("version_line").is_none(), "snake_case не должен утекать в UI");
     }
 
     #[test]

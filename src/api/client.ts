@@ -21,11 +21,18 @@ import type {
   CoreEvent,
   Instance,
   JavaInstall,
+  WorldInfo,
+  WorldScope,
   LoaderVersionEntry,
   ProjectMeta,
   SearchResult,
+  JavaTestInfo,
+  LogFileInfo,
+  RepairReport,
   Settings,
+  SnapshotInfo,
   SkinInfo,
+  StorageStats,
   UpdateCheck,
   UpdateInfo,
   VersionEntry,
@@ -144,6 +151,35 @@ export const api = {
 
   // Снять зависшую блокировку инстанса (F27): .lock без живого процесса
   instanceForceUnlock: (id: string) => invoke<{ ok: boolean }>("instance_force_unlock", { id }),
+
+  // ---------- Волна D37 (фаза 2 аудита) ----------
+  // Миры инстанса (F24)
+  instanceWorlds: (id: string) => invoke<WorldInfo[]>("instance_worlds", { id }),
+  worldBackup: (id: string, world: string) => invoke<ArchiveResult>("world_backup", { id, world }),
+  worldDeleteData: (id: string, world: string, scope: WorldScope) =>
+    invoke<{ ok: boolean }>("world_delete_data", { id, world, scope }),
+  // Проверка целостности и починка файлов инстанса (F2)
+  instanceRepair: (id: string) => invoke<RepairReport>("instance_repair", { id }),
+  // Проверка java.exe (F15)
+  javaTestPath: (javaExe: string) => invoke<JavaTestInfo>("java_test_path", { javaExe }),
+  // Отправить последний лог на mclo.gs (F22)
+  logShareMclogs: (id: string) => invoke<{ url: string }>("log_share_mclogs", { id }),
+  // Архивные логи инстанса (F23)
+  instanceLogsList: (id: string) => invoke<LogFileInfo[]>("instance_logs_list", { id }),
+  instanceLogRead: (id: string, name: string) => invoke<string>("instance_log_read", { id, name }),
+  // Снапшоты модов (F8)
+  contentSnapshots: (id: string) => invoke<SnapshotInfo[]>("content_snapshots", { id }),
+  contentRollback: (id: string, name: string) =>
+    invoke<ContentEntry[]>("content_rollback", { id, name }),
+  // Скопировать контент в другой инстанс (F10)
+  contentCopy: (fromId: string, toId: string, file: string) =>
+    invoke<ContentEntry>("content_copy", { fromId, toId, file }),
+  // Дисковое пространство (F18)
+  storageStats: () => invoke<StorageStats>("storage_stats"),
+  storageClean: () => invoke<{ freedBytes: number }>("storage_clean"),
+  // Экспорт/импорт настроек (F20; секреты не вывозятся)
+  settingsExport: (path: string) => invoke<{ ok: boolean }>("settings_export", { path }),
+  settingsImport: (path: string) => invoke<Settings>("settings_import", { path }),
 };
 
 /** Подписка на события ядра (dl_progress, launch_state, game_log_line, dl_queue_state, account_refresh_failed). */

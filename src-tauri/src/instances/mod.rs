@@ -2,6 +2,9 @@
 //! удаление в корзину ОС, `.lock` на время работы.
 
 pub mod content;
+pub mod repair;
+pub mod snapshots;
+pub mod worlds;
 pub mod run;
 pub mod store;
 
@@ -119,6 +122,7 @@ pub enum ContentKind {
     Mod,
     ResourcePack,
     Shader,
+    Datapack,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -398,6 +402,8 @@ pub const UNIQUE_SUBDIRS: &[&str] = &[
     "mods",
     "resourcepacks",
     "shaderpacks",
+    "datapacks",
+    "snapshots",
     "screenshots",
     "config",
     "logs",

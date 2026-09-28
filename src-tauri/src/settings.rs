@@ -138,6 +138,32 @@ impl Settings {
     }
 }
 
+/// Экспорт настроек в JSON без секретов (F20): `curseforge_api_key` и
+/// `azure_client_id` обнуляются — файл может уйти другому человеку/машине,
+/// токены и клиентские id наружу не вывозим.
+pub fn export_json(s: &Settings) -> String {
+    let mut clean = s.clone();
+    clean.curseforge_api_key = None;
+    clean.azure_client_id = None;
+    // Pretty-формат: файл читают и правят руками. Сериализация структуры без
+    // карт/чисел с плавающей точкой не падает, но паниковать запрещено.
+    serde_json::to_string_pretty(&clean).unwrap_or_else(|_| "{}".into())
+}
+
+/// Импорт настроек из JSON (F20): парс + санитизация/миграции как в `load`,
+/// затем `validate`. Секреты из файла НЕ переносим (экспорт их не пишет,
+/// а чужой файл с вписанным ключом принимать не хотим), `schema_version`
+/// принудительно текущий — файл более старой/новой схемы не ломает ядро.
+pub fn import_json(text: &str) -> Result<Settings> {
+    let mut s: Settings = serde_json::from_str(text)?;
+    s.migrate();
+    s.schema_version = SCHEMA_VERSION;
+    s.curseforge_api_key = None;
+    s.azure_client_id = None;
+    s.validate()?;
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +278,74 @@ mod tests {
         s.save(&p).unwrap();
         let s2 = Settings::load(&p).unwrap();
         assert!(s2.work_offline);
+    }
+
+    #[test]
+    fn export_json_omits_secret_values() {
+        let s = Settings {
+            curseforge_api_key: Some("cf-secret-value".into()),
+            azure_client_id: Some("azure-client-value".into()),
+            language: "ru".into(),
+            ui_scale: 125,
+            ..Default::default()
+        };
+        let json = export_json(&s);
+        assert!(!json.contains("cf-secret-value"), "ключ CurseForge не вывозится");
+        assert!(!json.contains("azure-client-value"), "azure client id не вывозится");
+        // Несекретные поля в файле есть (roundtrip-основа).
+        assert!(json.contains("\"language\": \"ru\""));
+        assert!(json.contains("\"uiScale\": 125"));
+    }
+
+    #[test]
+    fn import_json_roundtrips_main_fields() {
+        let s = Settings {
+            theme: Theme::Light,
+            language: "uk".into(),
+            download_parallelism: 8,
+            default_ram_mb: 4096,
+            ui_scale: 110,
+            ui_font: "mono".into(),
+            ui_accent: "#7FB2F0".into(),
+            work_offline: true,
+            curseforge_api_key: Some("cf-secret-value".into()),
+            azure_client_id: Some("azure-client-value".into()),
+            ..Default::default()
+        };
+        let imported = import_json(&export_json(&s)).expect("свой экспорт импортируется");
+        assert_eq!(imported.theme, Theme::Light);
+        assert_eq!(imported.language, "uk");
+        assert_eq!(imported.download_parallelism, 8);
+        assert_eq!(imported.default_ram_mb, 4096);
+        assert_eq!(imported.ui_scale, 110);
+        assert_eq!(imported.ui_font, "mono");
+        assert_eq!(imported.ui_accent, "#7FB2F0");
+        assert!(imported.work_offline);
+        // Секреты через import не переносятся даже из СВОЕГО экспорта.
+        assert_eq!(imported.curseforge_api_key, None);
+        assert_eq!(imported.azure_client_id, None);
+    }
+
+    #[test]
+    fn import_json_sanitizes_bad_accent_and_forces_schema() {
+        let text = r##"{"schemaVersion": 0, "theme": "dark", "uiAccent": "#zzz", "uiFont": "mono"}"##;
+        let s = import_json(text).expect("битый акцент санитизируется, а не отклоняется");
+        assert_eq!(s.ui_accent, "", "мусор в uiAccent сброшен в «из темы», как в load");
+        assert_eq!(s.ui_font, "mono", "валидное поле из файла сохранено");
+        assert_eq!(s.schema_version, SCHEMA_VERSION, "версия схемы принудительно текущая");
+        assert!(s.validate().is_ok(), "после санитизации настройки проходят validate");
+    }
+
+    #[test]
+    fn import_json_does_not_carry_secrets() {
+        let text = r##"{"theme": "light", "curseForgeApiKey": "leak", "azureClientId": "leak2"}"##;
+        let s = import_json(text).expect("файл с вписанными секретами читается");
+        assert_eq!(s.curseforge_api_key, None, "чужие секреты не переносим");
+        assert_eq!(s.azure_client_id, None);
+    }
+
+    #[test]
+    fn import_json_rejects_broken_json() {
+        assert!(import_json("не json").is_err());
     }
 }

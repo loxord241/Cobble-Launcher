@@ -15,6 +15,7 @@ import {
   Image,
   ImageOff,
   LockOpen,
+  ShieldCheck,
 } from "lucide-react";
 import { t } from "../../i18n";
 import type { Instance } from "../../api/types";
@@ -31,6 +32,8 @@ export type KebabCallbacks = {
   onExport?: () => void;
   /** F27: снять зависшую .lock-блокировку (не блокируется busy). */
   onForceUnlock?: () => void;
+  /** F2: проверить/починить игровые файлы (saves/mods/config не трогаются). */
+  onRepair?: () => void;
   onIconSet?: () => void;
   onIconClear?: () => void;
 };
@@ -65,6 +68,7 @@ export default function InstanceKebabMenu({
     onBackup,
     onExport,
     onForceUnlock,
+    onRepair,
     onIconSet,
     onIconClear,
     onOptimize,
@@ -195,6 +199,18 @@ export default function InstanceKebabMenu({
                 onClick={() => {
                   closeMenu();
                   onForceUnlock();
+                }}
+              />
+            )}
+            {/* F2: проверка файлов идёт движком загрузок — во время busy не копим. */}
+            {onRepair && (
+              <MenuItem
+                icon={ShieldCheck}
+                label={t("instances.repair.menu")}
+                disabled={busy}
+                onClick={() => {
+                  closeMenu();
+                  onRepair();
                 }}
               />
             )}
