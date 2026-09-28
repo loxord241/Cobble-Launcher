@@ -19,6 +19,9 @@ use tokio::sync::RwLock;
 /// Общее состояние приложения для команд.
 pub struct AppState {
     pub paths: Paths,
+    /// Хэндлер приложения (заполняется в setup): применение логотипа к окну
+    /// (D38) без прокидки AppHandle через каждую команду.
+    pub app: std::sync::OnceLock<tauri::AppHandle>,
     pub bus: EventBus,
     pub settings: RwLock<Settings>,
     pub http: RwLock<Arc<HttpClient>>,
@@ -31,6 +34,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(paths: Paths, bus: EventBus, settings: Settings) -> Result<Self> {
         paths.ensure_dirs()?;
+        let app = std::sync::OnceLock::new();
         let http = match HttpClient::new(settings.proxy_url.as_deref()) {
             Ok(c) => Arc::new(c),
             Err(e) => {
@@ -42,6 +46,7 @@ impl AppState {
         // сразу при старте (settings читаются раньше создания http).
         http.set_offline(settings.work_offline);
         Ok(Self {
+            app,
             paths,
             bus,
             settings: RwLock::new(settings),
@@ -1579,6 +1584,48 @@ pub async fn account_add_authlib(
     let added = crate::auth::add(&state.paths, acc)?;
     let _ = crate::auth::set_active(&state.paths, &added.id);
     Ok(added)
+}
+
+/// Выбранный пользователем PNG логотипа → каталог данных (D38).
+#[tauri::command]
+pub async fn logo_set_custom(state: State<'_, AppState>, path: String) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::branding::set_custom(&paths, &path))
+        .await
+        .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogoResult {
+    pub ok: bool,
+    /// PNG логотипа как data-URL — для бренд-чипа интерфейса.
+    pub data_url: String,
+}
+
+/// Применить логотип к иконке окна и вернуть его data-URL (бренд-чип).
+#[tauri::command]
+pub async fn apply_logo(state: State<'_, AppState>, logo: String) -> Result<LogoResult> {
+    let app = state
+        .app
+        .get()
+        .cloned()
+        .ok_or_else(|| LauncherError::Internal("приложение ещё не готово".into()))?;
+    let logo_for_apply = logo.clone();
+    let paths = state.paths.clone();
+    let data_url = tauri::async_runtime::spawn_blocking(move || {
+        crate::branding::apply_window_icon(&app, &logo_for_apply, &paths);
+        let bytes = crate::branding::resolve_png(&logo_for_apply, &paths);
+        use base64::Engine as _;
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    })
+    .await
+    .map_err(join_err)?;
+    Ok(LogoResult { ok: true, data_url })
 }
 
 // ---------- события: мост bus → окно ----------

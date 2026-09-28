@@ -14,6 +14,7 @@ pub mod modrinth;
 pub mod net;
 pub mod optimize;
 pub mod mclogs;
+pub mod branding;
 pub mod paths;
 pub mod storage;
 pub mod process;
@@ -138,7 +139,6 @@ pub fn run() -> tauri::Result<()> {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(state)
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::instance_list,
@@ -210,6 +210,8 @@ pub fn run() -> tauri::Result<()> {
             commands::config_write,
             commands::authlib_server_info,
             commands::account_add_authlib,
+            commands::logo_set_custom,
+            commands::apply_logo,
             commands::instance_import,
             commands::crash_analyze,
             commands::java_list,
@@ -224,8 +226,15 @@ pub fn run() -> tauri::Result<()> {
         ])
         .setup(|app| {
             use tauri::Manager as _;
+            // Состояние регистрируется здесь, чтобы startup-блок ниже видел его.
+            app.manage(state);
             let state: tauri::State<commands::AppState> = app.state();
+            let _ = state.app.set(app.handle().clone());
             commands::spawn_event_bridge(app.handle().clone(), state.bus.clone());
+            // D38: логотип владельца — иконка окна при старте.
+            let logo = state.settings.blocking_read().logo.clone();
+            let paths = state.paths.clone();
+            crate::branding::apply_window_icon(app.handle(), &logo, &paths);
             Ok(())
         })
         .run(tauri::generate_context!())

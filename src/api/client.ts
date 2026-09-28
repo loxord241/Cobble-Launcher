@@ -29,6 +29,7 @@ import type {
   WorldInfo,
   WorldScope,
   LoaderVersionEntry,
+  LogoResult,
   ProjectMeta,
   SearchResult,
   JavaTestInfo,
@@ -220,6 +221,9 @@ export const api = {
     invoke<AuthlibServerInfo>("authlib_server_info", { serverUrl }),
   accountAddAuthlib: (serverUrl: string, username: string, password: string) =>
     invoke<Account>("account_add_authlib", { serverUrl, username, password }),
+  // Логотип (D38): свой PNG → каталог данных; применение к окну + data-URL
+  logoSetCustom: (path: string) => invoke<{ ok: boolean }>("logo_set_custom", { path }),
+  applyLogo: (logo: string) => invoke<LogoResult>("apply_logo", { logo }),
 };
 
 /** Подписка на события ядра (dl_progress, launch_state, game_log_line, dl_queue_state, account_refresh_failed). */

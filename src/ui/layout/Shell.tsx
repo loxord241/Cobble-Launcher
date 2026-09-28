@@ -87,7 +87,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
       launch: s.launch,
     })),
   );
-  const { settings, update: updateSettings, load: loadSettings } = useSettings();
+  const { settings, loaded: loadedSettings, update: updateSettings, load: loadSettings } = useSettings();
   const { list: accounts, load: loadAccounts, setActive, addOffline } = useAccounts();
 
   const showNotice = useCallback((kind: "ok" | "error", text: string) => {
@@ -198,6 +198,23 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     for (const acc of accounts) void loadSkin(acc);
   }, [accounts, loadSkin]);
 
+  // D38: логотип (иконка окна применяет ядро; data-URL — для бренд-чипа).
+  const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
+  const logo = settings?.logo ?? "";
+  useEffect(() => {
+    if (!loadedSettings) return;
+    let alive = true;
+    api
+      .applyLogo(logo)
+      .then((r) => {
+        if (alive) setBrandLogoUrl(r.dataUrl);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [logo, loadedSettings]);
+
   const pickAccount = useCallback(
     (id: string) => {
       setAccountOpen(false);
@@ -233,9 +250,14 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
         className="flex h-[52px] flex-none items-center gap-4 border-b border-border-app pl-4 pr-3"
       >
         <div data-tauri-drag-region className="flex items-center gap-2 text-[15px] font-semibold">
-          <span className="grid size-6 place-items-center rounded-md bg-accent text-on-accent">
-            <Box size={15} aria-hidden />
-          </span>
+          {/* D38: выбранный логотип; встроенный — дефолтная плашка. */}
+          {brandLogoUrl ? (
+            <img src={brandLogoUrl} alt="" className="size-6 rounded-md object-cover" />
+          ) : (
+            <span className="grid size-6 place-items-center rounded-md bg-accent text-on-accent">
+              <Box size={15} aria-hidden />
+            </span>
+          )}
           {t("app.name")}
         </div>
 

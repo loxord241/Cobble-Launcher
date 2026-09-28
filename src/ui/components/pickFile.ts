@@ -47,3 +47,12 @@ export async function pickJsonPath(): Promise<string | null> {
   });
   return typeof picked === "string" ? picked : null;
 }
+
+/** PNG для логотипа лаунчера (D38) или null при отмене выбора. */
+export async function pickPngPath(): Promise<string | null> {
+  const picked = await open({
+    multiple: false,
+    filters: [{ name: "PNG", extensions: ["png"] }],
+  });
+  return typeof picked === "string" ? picked : null;
+}

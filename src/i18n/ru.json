@@ -355,5 +355,15 @@
   "shell.palette.placeholder": "Инстанс, раздел, действие…",
   "shell.palette.hint": "Enter — выбрать · Esc — закрыть",
   "shell.palette.launch": "Запустить {name}",
-  "shell.palette.openInstance": "Открыть {name}"
+  "shell.palette.openInstance": "Открыть {name}",
+  "settings.logo": "Логотип",
+  "settings.logo.hint": "Иконка окна и плашка бренда; на установленный exe не влияет",
+  "settings.logo.grass": "Травяной",
+  "settings.logo.copper": "Медный",
+  "settings.logo.chest": "Сундук",
+  "settings.logo.honey": "Соты",
+  "settings.logo.flat": "Минимал",
+  "settings.logo.custom": "Свой PNG",
+  "settings.logo.default": "по умолчанию",
+  "settings.logo.customSet": "Свой логотип сохранён"
 }

@@ -355,5 +355,15 @@
   "shell.palette.placeholder": "Інстанс, розділ, дія…",
   "shell.palette.hint": "Enter — вибрати · Esc — закрити",
   "shell.palette.launch": "Запустити {name}",
-  "shell.palette.openInstance": "Відкрити {name}"
+  "shell.palette.openInstance": "Відкрити {name}",
+  "settings.logo": "Логотип",
+  "settings.logo.hint": "Іконка вікна і плашка бренду; на встановлений exe не впливає",
+  "settings.logo.grass": "Трав'яний",
+  "settings.logo.copper": "Мідний",
+  "settings.logo.chest": "Скриня",
+  "settings.logo.honey": "Стільники",
+  "settings.logo.flat": "Мінімал",
+  "settings.logo.custom": "Власний PNG",
+  "settings.logo.default": "за замовчуванням",
+  "settings.logo.customSet": "Власний логотип збережено"
 }

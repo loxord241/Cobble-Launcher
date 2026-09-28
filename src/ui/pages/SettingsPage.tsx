@@ -5,7 +5,7 @@ import { Download, RefreshCw, Check, Coffee, Trash2, Upload } from "lucide-react
 import { isHexColor, useSettings } from "../../state/settings";
 import { api } from "../../api/client";
 import { apiErrorText, t } from "../../i18n";
-import { pickJsonPath, pickSavePath } from "../components/pickFile";
+import { pickJsonPath, pickPngPath, pickSavePath } from "../components/pickFile";
 import ThemeCards from "../components/ThemeCards";
 import type { JavaInstall, RamGuide, Settings, StorageStats } from "../../api/types";
 import UpdatesSection from "../components/UpdatesSection";
@@ -551,6 +551,76 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               {t("settings.resetOnboarding")}
             </button>
           </Field>
+        </div>
+      </section>
+
+      {/* D38: выбор логотипа лаунчера (иконка окна + бренд-чип). */}
+      <section>
+        <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
+          {t("settings.logo")}
+        </h3>
+        <div className="max-w-2xl rounded-lg border border-border-app bg-card p-4">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-2">
+            {(
+              [
+                ["grass", "settings.logo.grass", true],
+                ["copper", "settings.logo.copper", false],
+                ["chest", "settings.logo.chest", false],
+                ["honey", "settings.logo.honey", false],
+                ["flat", "settings.logo.flat", false],
+                ["custom", "settings.logo.custom", false],
+              ] as const
+            ).map(([id, label, isDefault]) => {
+              const selected = (settings?.logo ?? "") === id || (isDefault && !settings?.logo);
+              return (
+                <button
+                  key={id}
+                  aria-pressed={selected}
+                  aria-label={`${t(label)}${isDefault ? ` (${t("settings.logo.default")})` : ""}`}
+                  onClick={() => {
+                    if (id === "custom") {
+                      void (async () => {
+                        const path = await pickPngPath();
+                        if (!path) return;
+                        try {
+                          await api.logoSetCustom(path);
+                          await update({ logo: "custom" });
+                          await api.applyLogo("custom");
+                        } catch (err) {
+                          setSaveError(apiErrorText(err));
+                        }
+                      })();
+                      return;
+                    }
+                    void update({ logo: id })
+                      .then(() => api.applyLogo(id))
+                      .then(() => setSaveError(null))
+                      .catch((e) => setSaveError(messageOf(e)));
+                  }}
+                  className={`flex flex-col items-center gap-1.5 rounded-lg border p-2 transition-colors ${
+                    selected
+                      ? "border-accent bg-accent-soft/30"
+                      : "border-border-app hover:border-border-strong"
+                  }`}
+                >
+                  {id === "custom" ? (
+                    <span
+                      aria-hidden
+                      className={`grid size-14 place-items-center rounded-lg border border-dashed border-border-strong text-[11px] font-semibold text-text-muted ${
+                        settings?.logo === "custom" ? "border-accent text-accent" : ""
+                      }`}
+                    >
+                      PNG
+                    </span>
+                  ) : (
+                    <img src={`/logos/${id}.png`} alt="" className="size-14 rounded-lg object-cover" />
+                  )}
+                  <span className="text-[11px] leading-tight text-text-muted">{t(label)}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-2 text-xs text-text-muted">{t("settings.logo.hint")}</p>
         </div>
       </section>
 

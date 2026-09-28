@@ -83,6 +83,8 @@ export interface Settings {
   speedLimitKbps: number;
   /** Discord Rich Presence (F26). */
   discordRpc: boolean;
+  /** Логотип (D38): "" | grass | copper | chest | honey | flat | custom. */
+  logo: string;
 }
 
 // ---------- Волна D37 (фаза 2 аудита паритета) ----------
@@ -362,4 +364,10 @@ export interface AuthlibServerInfo {
   serverUrl: string;
   /** Имя сервера из metadata (может отсутствовать). */
   serverName?: string;
+}
+
+/** Результат применения логотипа (D38; зеркало commands::LogoResult). */
+export interface LogoResult {
+  ok: boolean;
+  dataUrl: string;
 }

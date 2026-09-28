@@ -66,6 +66,9 @@ pub struct Settings {
     pub speed_limit_kbps: u32,
     /// Discord Rich Presence (F26): статус «играет в <инстанс>».
     pub discord_rpc: bool,
+    /// Логотип (D38): "" | grass | copper | chest | honey | flat | custom.
+    /// "" и неизвестное = встроенный травяной (дефолт).
+    pub logo: String,
 }
 
 impl Default for Settings {
@@ -93,6 +96,7 @@ impl Default for Settings {
             work_offline: false,
             speed_limit_kbps: 0,
             discord_rpc: false,
+            logo: String::new(),
         }
     }
 }
@@ -124,6 +128,13 @@ impl Settings {
             return Err(LauncherError::InvalidInput(format!(
                 "ui_accent: ожидается цвет вида #RRGGBB, получено {}",
                 self.ui_accent
+            )));
+        }
+        const LOGOS: [&str; 7] = ["", "grass", "copper", "chest", "honey", "flat", "custom"];
+        if !LOGOS.contains(&self.logo.as_str()) {
+            return Err(LauncherError::InvalidInput(format!(
+                "logo: неизвестное значение {:?}",
+                self.logo
             )));
         }
         Ok(())

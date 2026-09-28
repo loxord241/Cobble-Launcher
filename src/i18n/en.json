@@ -355,5 +355,15 @@
   "shell.palette.placeholder": "Instance, section, action…",
   "shell.palette.hint": "Enter — pick · Esc — close",
   "shell.palette.launch": "Launch {name}",
-  "shell.palette.openInstance": "Open {name}"
+  "shell.palette.openInstance": "Open {name}",
+  "settings.logo": "Logo",
+  "settings.logo.hint": "Window icon and brand chip; does not affect the installed exe",
+  "settings.logo.grass": "Grassy",
+  "settings.logo.copper": "Copper",
+  "settings.logo.chest": "Chest",
+  "settings.logo.honey": "Honeycomb",
+  "settings.logo.flat": "Minimal",
+  "settings.logo.custom": "Custom PNG",
+  "settings.logo.default": "default",
+  "settings.logo.customSet": "Custom logo saved"
 }
