@@ -2,7 +2,7 @@
 //!
 //! Протокол (упрощённый официальный discord-rpc): кадр = 4 байта LE opcode +
 //! 4 байта LE длина тела + JSON-тело.
-//!   opcode 0 — HANDSHAKE: `{"v":1,"clientID":"..."}`, первый кадр после
+//!   opcode 0 — HANDSHAKE: `{"v":1,"client_id":"..."}`, первый кадр после
 //!     открытия pipe;
 //!   opcode 1 — FRAME: запросы/события; нам нужен только `SET_ACTIVITY`
 //!     (ответы Discord — READY и т.п. — не читаем, для отправки не требуются).
@@ -17,7 +17,7 @@
 //! Discord Developer Portal (владелец предоставил 2026-09-28).
 
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read as _, Write as _};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// opcode HANDSHAKE — первый кадр после открытия pipe.
@@ -50,13 +50,23 @@ impl RpcConnection {
         let Some(pipe) = open_ipc_pipe()? else {
             return Ok(None);
         };
-        let conn = Self {
+        let mut conn = Self {
             pipe,
             pid,
             start_ms: unix_ms(),
             nonce_counter: AtomicU64::new(0),
         };
         conn.write_frame(OP_HANDSHAKE, &build_handshake_payload(client_id).to_string())?;
+        // Discord отвечает READY (evt) — прочитать, чтобы кадры не сдвигались.
+        let mut header = [0u8; 8];
+        conn.pipe.read_exact(&mut header)?;
+        let len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+        let mut body = vec![0u8; len.min(4096)];
+        conn.pipe.read_exact(&mut body)?;
+        tracing::info!(
+            "discord rpc: {}",
+            String::from_utf8_lossy(&body).split("\"evt\"").nth(1).unwrap_or("READY").trim_start_matches(':').trim_end_matches('}')
+        );
         Ok(Some(conn))
     }
 
@@ -64,7 +74,7 @@ impl RpcConnection {
     /// Ошибки (pipe закрыт и т.п.) логируются в warn; `Err` означает, что
     /// соединение умерло — его можно молча выбросить (presence Discord
     /// уберёт сам при закрытии pipe).
-    pub fn set_activity(&self, details: &str) -> std::io::Result<()> {
+    pub fn set_activity(&mut self, details: &str) -> std::io::Result<()> {
         let n = self.nonce_counter.fetch_add(1, Ordering::Relaxed);
         let nonce = format!("{}-{n}", self.pid);
         let payload =
@@ -73,6 +83,19 @@ impl RpcConnection {
             tracing::warn!("discord rpc: presence не обновлён: {e}");
             return Err(e);
         }
+        // Ответ Discord (opcode + данные presence): читаем для диагностики —
+        // если Discord отверг кадр, увидим причину в логе вместо тишины.
+        let mut header = [0u8; 8];
+        self.pipe.read_exact(&mut header)?;
+        let reply_len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+        let mut body = vec![0u8; reply_len.min(4096)];
+        self.pipe.read_exact(&mut body)?;
+        tracing::info!(
+            "discord rpc: ответ (opcode {}, {} байт): {}",
+            u32::from_le_bytes([header[0], header[1], header[2], header[3]]),
+            reply_len,
+            String::from_utf8_lossy(&body)
+        );
         Ok(())
     }
 
@@ -129,7 +152,7 @@ fn build_frame(opcode: u32, payload: &str) -> Vec<u8> {
 
 /// Тело HANDSHAKE (opcode 0).
 fn build_handshake_payload(client_id: &str) -> serde_json::Value {
-    serde_json::json!({ "v": 1, "clientID": client_id })
+    serde_json::json!({ "v": 1, "client_id": client_id })
 }
 
 /// Тело SET_ACTIVITY (opcode 1): статус с большим артом `minecraft`.
@@ -201,12 +224,12 @@ mod tests {
         );
     }
 
-    /// HANDSHAKE: поля v и clientID.
+    /// HANDSHAKE: поля v и client_id.
     #[test]
     fn handshake_payload_fields() {
-        let v = build_handshake_payload("1384136691173289994");
+        let v = build_handshake_payload(DISCORD_CLIENT_ID);
         assert_eq!(v["v"], 1);
-        assert_eq!(v["clientID"], "1384136691173289994");
+        assert_eq!(v["client_id"], "1554156161027014666");
         assert!(v.get("nonce").is_none(), "в handshake нет nonce");
     }
 

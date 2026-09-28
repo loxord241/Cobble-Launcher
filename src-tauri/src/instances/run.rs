@@ -774,14 +774,24 @@ pub fn launch_detached(
                 pid,
                 crate::process::discord::DISCORD_CLIENT_ID,
             ) {
-                Ok(Some(c)) => c,
-                Ok(None) => return,
+                Ok(Some(c)) => {
+                    tracing::info!("discord rpc: подключено (pid {pid})");
+                    c
+                }
+                Ok(None) => {
+                    tracing::warn!("discord rpc: pipe Discord не найден — статус не отправляется");
+                    return;
+                }
                 Err(e) => {
                     tracing::warn!("discord rpc: подключение не удалось: {e}");
                     return;
                 }
             };
-            let _ = conn.set_activity(&details);
+            let mut conn = conn;
+            match conn.set_activity(&details) {
+                Ok(()) => tracing::info!("discord rpc: статус «{details}» отправлен"),
+                Err(e) => tracing::warn!("discord rpc: set_activity: {e}"),
+            }
             // Обновление раз в минуту; игра вышла — pipe закрывается.
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(60));
