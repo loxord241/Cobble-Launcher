@@ -10,10 +10,13 @@ function safeUrl(url: string): string | null {
   return /^https?:\/\//i.test(url) ? url : null;
 }
 
-type InlineKind = "image" | "link" | "bold" | "italic" | "code";
+type InlineKind = "image-link" | "image" | "link" | "bold" | "italic" | "code";
 
 // Порядок важен: ** раньше одиночного * — иначе жирный «съедается» курсивом.
+// image-link — фирменные бейджи Modrinth `[![alt](img)](target)`: без него
+// внешний линк рисует сырой `![alt](url)` текстом вместо картинки.
 const INLINE: { re: RegExp; kind: InlineKind }[] = [
+  { re: /\[!\[([^\]]*)\]\(([^)\s]+)\)\]\(([^)\s]+)\)/, kind: "image-link" },
   { re: /!\[([^\]]*)\]\(([^)\s]+)\)/, kind: "image" },
   { re: /\[([^\]]+)\]\(([^)\s]+)\)/, kind: "link" },
   { re: /\*\*([^*]+)\*\*/, kind: "bold" },
@@ -39,7 +42,20 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
     const k = `${keyBase}-${n++}`;
     const [, inner, rawUrl] = best.match;
     const url = safeUrl(rawUrl);
-    if (best.kind === "image") {
+    if (best.kind === "image-link") {
+      // Бейдж-ссылка: картинка (m[2]) внутри ссылки (m[3]); запрещённые URL
+      // превращают конструкцию в текст — как и одиночные ссылки/картинки.
+      const img = safeUrl(best.match[2]);
+      out.push(
+        url && img ? (
+          <a key={k} href={url} target="_blank" rel="noreferrer noreferrer" className="text-accent underline">
+            <img src={img} alt={inner} loading="lazy" className="rounded" />
+          </a>
+        ) : (
+          <span key={k}>{best.match[0]}</span>
+        ),
+      );
+    } else if (best.kind === "image") {
       // Запрещённый URL — конструкция остаётся текстом, ничего не грузим.
       out.push(url ? <img key={k} src={url} alt={inner} loading="lazy" className="rounded" /> : <span key={k}>{best.match[0]}</span>);
     } else if (best.kind === "link") {
