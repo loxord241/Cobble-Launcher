@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api, onCoreEvent } from "../api/client";
+import { apiErrorText } from "../i18n";
 import type { Diagnosis, Instance, LaunchPhase, QueueState } from "../api/types";
 
 export interface LaunchStatus {
@@ -258,7 +259,8 @@ export const useInstances = create<InstancesState>((set, get) => ({
       set((s) => {
         const status = { ...s.status };
         delete status[id];
-        return { status, error: String((e as { message?: string })?.message ?? e) };
+        // B11: текст ошибки локализуется по языку UI, а не сырой из ядра.
+        return { status, error: apiErrorText(e) };
       });
       await get().load();
     }

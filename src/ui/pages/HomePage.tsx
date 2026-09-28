@@ -33,6 +33,7 @@ type RowCallbacks = {
   onLogs: () => void;
   onBackup: () => void;
   onExport: () => void;
+  onForceUnlock: () => void;
   onIconSet: () => void;
   onIconClear?: () => void;
 };
@@ -141,7 +142,7 @@ export default function HomePage({
         load: s.load,
       })),
     );
-  const { list: accounts } = useAccounts();
+  const { list: accounts, setActive } = useAccounts();
   const { settings } = useSettings();
   const [packs, setPacks] = useState<SearchHit[] | null>(null);
   const [mods, setMods] = useState<SearchHit[] | null>(null);
@@ -183,7 +184,7 @@ export default function HomePage({
       setPackInfo(t("mods.packInstalled", { name: inst.name, version: inst.mcVersion }));
       await load();
     } catch (e) {
-      setError(String((e as { message?: string })?.message ?? e));
+      setError(apiErrorText(e));
     } finally {
       setInstalling(null);
     }
@@ -210,12 +211,28 @@ export default function HomePage({
     const byId = new Map<string, RowCallbacks>();
     for (const inst of list) {
       const cb: RowCallbacks = {
-        onLaunch: () =>
-          void launch(inst.id, activeAccount?.name ?? "Player").catch((e) => setError(String(e))),
-        onStop: () => void stop(inst.id).catch((e) => setError(String(e))),
-        onOptimize: () => void optimize(inst.id).catch((e) => setError(String(e))),
-        onFolder: () => void api.instanceOpenDir(inst.id).catch((e) => setError(String(e))),
-        onDuplicate: () => void duplicate(inst.id).catch((e) => setError(String(e))),
+        // F11: у инстанса свой профиль — запускаем от него (активируем, если он
+        // ещё не активен). Профиль удалён — глобальный активный, как раньше.
+        onLaunch: () => {
+          void (async () => {
+            const perInst =
+              inst.accountId !== undefined
+                ? accounts.find((a) => a.id === inst.accountId)
+                : undefined;
+            try {
+              if (perInst && settings?.accountsActiveId !== perInst.id) {
+                await setActive(perInst.id);
+              }
+              await launch(inst.id, perInst?.name ?? activeAccount?.name ?? "Player");
+            } catch (e) {
+              setError(apiErrorText(e));
+            }
+          })();
+        },
+        onStop: () => void stop(inst.id).catch((e) => setError(apiErrorText(e))),
+        onOptimize: () => void optimize(inst.id).catch((e) => setError(apiErrorText(e))),
+        onFolder: () => void api.instanceOpenDir(inst.id).catch((e) => setError(apiErrorText(e))),
+        onDuplicate: () => void duplicate(inst.id).catch((e) => setError(apiErrorText(e))),
         onSettings: () => setSettingsInst(inst),
         onRename: () => setRenameInst(inst),
         onLogs: () => setLogsInst(inst),
@@ -223,12 +240,21 @@ export default function HomePage({
           void api
             .instanceBackup(inst.id)
             .then((r) => setNotice(t("instances.backup.done", { path: r.path })))
-            .catch((e) => setError(String(e))),
+            .catch((e) => setError(apiErrorText(e))),
         onExport: () =>
           void api
             .instanceExport(inst.id)
             .then((r) => setNotice(t("instances.export.done", { path: r.path })))
-            .catch((e) => setError(String(e))),
+            .catch((e) => setError(apiErrorText(e))),
+        // F27: снять зависшую .lock-блокировку (ядро проверяет живой процесс).
+        onForceUnlock: () =>
+          void api
+            .instanceForceUnlock(inst.id)
+            .then(() => {
+              setNotice(t("instances.forceUnlock.done"));
+              void load();
+            })
+            .catch((e) => setError(apiErrorText(e))),
         onIconSet: () => {
           void (async () => {
             try {
@@ -249,12 +275,24 @@ export default function HomePage({
           void api
             .instanceIconRemove(inst.id)
             .then(() => void load())
-            .catch((e) => setError(String(e)));
+            .catch((e) => setError(apiErrorText(e)));
       }
       byId.set(inst.id, cb);
     }
     return byId;
-  }, [list, activeAccount?.name, launch, stop, optimize, duplicate, setError, load]);
+  }, [
+    list,
+    accounts,
+    activeAccount?.name,
+    settings?.accountsActiveId,
+    launch,
+    stop,
+    optimize,
+    duplicate,
+    setActive,
+    setError,
+    load,
+  ]);
 
   return (
     <div className="mx-auto flex max-w-[980px] flex-col gap-5">
@@ -319,32 +357,44 @@ export default function HomePage({
           <div className="ml-auto flex items-center gap-2">
             {heroBusy ? (
               <button
-                onClick={() => void stop(hero.id).catch((e) => setError(String(e)))}
+                onClick={() => void stop(hero.id).catch((e) => setError(apiErrorText(e)))}
                 className="btn-primary"
               >
                 {t("play.running")}
               </button>
             ) : (
               <button
-                onClick={() =>
-                  void launch(hero.id, activeAccount?.name ?? "Player").catch((e) =>
-                    setError(String(e)),
-                  )
-                }
+                onClick={() => {
+                  // F11: у инстанса может быть свой профиль запуска — тот же
+                  // резервинг, что у карточек (rowCallbacks.onLaunch).
+                  const override = hero.accountId
+                    ? accounts.find((a) => a.id === hero.accountId)
+                    : undefined;
+                  void (async () => {
+                    try {
+                      if (override && settings?.accountsActiveId !== override.id) {
+                        await setActive(override.id);
+                      }
+                      await launch(hero.id, override?.name ?? activeAccount?.name ?? "Player");
+                    } catch (e) {
+                      setError(apiErrorText(e));
+                    }
+                  })();
+                }}
                 className="btn-primary"
               >
                 {t("play")}
               </button>
             )}
             <button
-              onClick={() => void optimize(hero.id).catch((e) => setError(String(e)))}
+              onClick={() => void optimize(hero.id).catch((e) => setError(apiErrorText(e)))}
               className="btn-ghost"
             >
               <Sparkles size={16} aria-hidden />
               {t("instances.optimize")}
             </button>
             <button
-              onClick={() => void api.instanceOpenDir(hero.id).catch((e) => setError(String(e)))}
+              onClick={() => void api.instanceOpenDir(hero.id).catch((e) => setError(apiErrorText(e)))}
               aria-label={t("instances.folder")}
               className="icon-btn"
             >
@@ -486,7 +536,7 @@ export default function HomePage({
           onConfirm={(wipe) => {
             const target = deleteInst;
             setDeleteInst(null);
-            void remove(target.id, wipe).catch((e) => setError(String(e)));
+            void remove(target.id, wipe).catch((e) => setError(apiErrorText(e)));
           }}
         />
       )}

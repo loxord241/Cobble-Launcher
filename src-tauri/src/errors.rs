@@ -57,6 +57,12 @@ pub enum LauncherError {
     #[error("zip: {0}")]
     Zip(String),
 
+    #[error("инстанс запущен: {0}")]
+    InstanceRunning(String),
+
+    #[error("режим „работать офлайн“: сеть отключена ({0})")]
+    OfflineMode(String),
+
     #[error("внутренняя ошибка: {0}")]
     Internal(String),
 }
@@ -88,6 +94,8 @@ impl LauncherError {
             LauncherError::Json(_) => "json",
             LauncherError::Http(_) => "http",
             LauncherError::Zip(_) => "zip",
+            LauncherError::InstanceRunning(_) => "instance_running",
+            LauncherError::OfflineMode(_) => "offline_mode",
             LauncherError::Internal(_) => "internal",
         }
     }
@@ -105,6 +113,12 @@ impl LauncherError {
             LauncherError::Network(_) => Some(
                 "Проверьте подключение к интернету; при необходимости настройте прокси в настройках."
                     .into(),
+            ),
+            LauncherError::InstanceRunning(_) => Some(
+                "Остановите игру этого инстанса — Windows не даёт менять занятые файлы.".into(),
+            ),
+            LauncherError::OfflineMode(_) => Some(
+                "Выключите тумблер «Работать офлайн» в титлбаре, чтобы качать из сети.".into(),
             ),
             _ => None,
         }

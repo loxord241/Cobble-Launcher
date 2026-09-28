@@ -32,13 +32,13 @@ async function main() {
 
   // 2. Поиск фильтрует реально: мусор → честное пустое состояние.
   await page.getByRole("navigation").getByRole("button", { name: /^Инстансы/ }).click();
-  const before = await page.locator(".group.grid").count();
+  const before = await page.locator('[role="button"][aria-label^="Открыть "]').count();
   await page.getByRole("textbox").first().fill("zzz-нет-такого-инстанса");
   await page.waitForTimeout(300);
   const emptyVisible = await page.getByText("Ничего не найдено").count();
   emptyVisible > 0 ? ok("поиск: мусор → пустое состояние") : fail("пустое состояние поиска не показано");
   await page.getByRole("textbox").first().fill("");
-  const after = await page.locator(".group.grid").count();
+  const after = await page.locator('[role="button"][aria-label^="Открыть "]').count();
   before === after ? ok(`поиск: очистка вернула ${before} строк`) : fail(`строки: ${before} -> ${after}`);
 
   // 3. Клавиатура: Tab до Play первой строки, Enter — запуск (или фокус).

@@ -80,12 +80,33 @@ pub fn add(paths: &crate::paths::Paths, account: Account) -> Result<Account> {
 pub fn remove(paths: &crate::paths::Paths, id: &str) -> Result<()> {
     let mut list = list(paths);
     let removed = list.iter().find(|a| a.id == id).cloned();
+    // Активный id читаем только при реальном удалении: иначе remove стал бы
+    // падать на битых settings и без причины.
+    let active_id = if removed.is_some() {
+        crate::settings::Settings::load(&paths.settings_file())?.accounts_active_id
+    } else {
+        None
+    };
+    let was_active = active_id.as_deref() == Some(id);
     list.retain(|a| a.id != id);
     save(paths, &list)?;
     // Токен из keyring тоже удалить.
     if let Some(acc) = removed {
         if let Some(rr) = &acc.refresh_ref {
             let _ = crate::auth::keyring_delete(rr);
+        }
+    }
+    // Удалённый был активным — иначе в settings остался бы висячий id и launch
+    // молча играл под «Player». Назначаем первого оставшегося (тем же
+    // set_active, что и команда account_active_set) или очищаем при пустом списке.
+    if was_active {
+        match list.first() {
+            Some(first) => set_active(paths, &first.id)?,
+            None => {
+                let mut settings = crate::settings::Settings::load(&paths.settings_file())?;
+                settings.accounts_active_id = None;
+                settings.save(&paths.settings_file())?;
+            }
         }
     }
     Ok(())
@@ -267,5 +288,62 @@ mod tests {
         )
         .unwrap();
         assert!(assert_no_plaintext_tokens(&paths).is_err());
+    }
+
+    fn offline_acc(id: &str, name: &str) -> Account {
+        Account {
+            id: id.into(),
+            kind: AccountKind::Offline,
+            name: name.into(),
+            uuid: format!("uuid-{id}"),
+            // Без keyring — тесты герметичны.
+            refresh_ref: None,
+        }
+    }
+
+    /// Удалили активный аккаунт: активным становится первый оставшийся,
+    /// иначе в settings остаётся висячий id и launch играет под «Player».
+    #[test]
+    fn remove_active_account_reassigns_to_first_remaining() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        add(&paths, offline_acc("a1", "Steve")).unwrap();
+        add(&paths, offline_acc("a2", "Alex")).unwrap();
+        set_active(&paths, "a1").unwrap();
+        remove(&paths, "a1").unwrap();
+        let active = active(&paths).expect("активный должен быть переназначен");
+        assert_eq!(active.id, "a2");
+        let settings = crate::settings::Settings::load(&paths.settings_file()).unwrap();
+        assert_eq!(settings.accounts_active_id.as_deref(), Some("a2"));
+    }
+
+    /// Удалили последний аккаунт: активного нет, id в settings очищен.
+    #[test]
+    fn remove_last_account_clears_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        add(&paths, offline_acc("a1", "Steve")).unwrap();
+        set_active(&paths, "a1").unwrap();
+        remove(&paths, "a1").unwrap();
+        assert!(active(&paths).is_none());
+        let settings = crate::settings::Settings::load(&paths.settings_file()).unwrap();
+        assert!(settings.accounts_active_id.is_none());
+    }
+
+    /// Удаление неактивного аккаунта активный не меняет.
+    #[test]
+    fn remove_non_active_account_keeps_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        add(&paths, offline_acc("a1", "Steve")).unwrap();
+        add(&paths, offline_acc("a2", "Alex")).unwrap();
+        set_active(&paths, "a2").unwrap();
+        remove(&paths, "a1").unwrap();
+        assert_eq!(active(&paths).unwrap().id, "a2");
+        let settings = crate::settings::Settings::load(&paths.settings_file()).unwrap();
+        assert_eq!(settings.accounts_active_id.as_deref(), Some("a2"));
     }
 }

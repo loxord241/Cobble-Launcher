@@ -123,6 +123,10 @@ async fn download_with_progress(
     on_progress: impl Fn(u64, u64) + Send + 'static,
 ) -> Result<Vec<u8>> {
     use futures::StreamExt;
+    // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode(url.to_string()));
+    }
     let resp = client.raw().get(url).send().await?;
     if !resp.status().is_success() {
         return Err(LauncherError::network(format!(

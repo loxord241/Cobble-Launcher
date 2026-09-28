@@ -303,6 +303,14 @@ pub async fn prepare(
             game_args.push(format!("net.neoforged:neoforge:{lv}:universal"));
         }
     }
+    // F1: быстрый запуск — сразу в мир или на сервер (MC 1.20+). Пара
+    // флаг+значение пушится в конец игровых аргументов, на старые версии
+    // флаги не попадают вовсе (иначе игра их не поймёт).
+    game_args.extend(quick_play_args(
+        &inst.mc_version,
+        inst.quick_play_world.as_deref(),
+        inst.quick_play_server.as_deref(),
+    ));
     let values = LaunchValues {
         auth_player_name: account.player_name,
         auth_uuid: account.uuid,
@@ -836,6 +844,38 @@ fn supervise_detached(
     drop(lock);
 }
 
+/// Поддерживает ли версия MC quick play (F1): `--quickPlaySingleplayer` /
+/// `--quickPlayMultiplayer` появились в 1.20. Парсим major.minor как
+/// `fallback_major`: снапшоты («24w14a»), беты («b1.7.3») и пустая строка
+/// не дают major=1 → false.
+pub fn mc_supports_quick_play(mc_version: &str) -> bool {
+    let parts: Vec<u32> = mc_version
+        .split('.')
+        .map(|p| p.split(|c: char| !c.is_ascii_digit()).next().unwrap_or("0"))
+        .map(|p| p.parse::<u32>().unwrap_or(0))
+        .collect();
+    let (major, minor) = (
+        parts.first().copied().unwrap_or(0),
+        parts.get(1).copied().unwrap_or(0),
+    );
+    major == 1 && minor >= 20
+}
+
+/// Аргументы quick play (F1): пара «флаг + значение» для MC 1.20+, на старых
+/// версиях — пусто. Если заданы обе цели, берём мир: валидация на IPC-границе
+/// уже запрещает одновременные мир+сервер, здесь просто детерминированный
+/// приоритет, чтобы никогда не ушёл битый набор аргументов.
+pub fn quick_play_args(mc_version: &str, world: Option<&str>, server: Option<&str>) -> Vec<String> {
+    if !mc_supports_quick_play(mc_version) {
+        return Vec::new();
+    }
+    match (world, server) {
+        (Some(w), _) => vec!["--quickPlaySingleplayer".into(), w.to_string()],
+        (None, Some(s)) => vec!["--quickPlayMultiplayer".into(), s.to_string()],
+        (None, None) => Vec::new(),
+    }
+}
+
 /// Fallback Java-минимумов по версии MC (спека §6.4).
 pub fn fallback_major(mc_version: &str) -> u32 {    let parts: Vec<u32> = mc_version
         .split('.')
@@ -970,5 +1010,46 @@ mod tests {
             c.disarm();
         }
         assert!(natives.join("keep.so").exists(), "успех → уборки нет");
+    }
+
+    /// F1: quick play доступен с MC 1.20 (major.minor); снапшоты/беты/старые — нет.
+    #[test]
+    fn mc_supports_quick_play_versions() {
+        assert!(!mc_supports_quick_play("1.19.4"), "1.19.4 ещё не умеет");
+        assert!(mc_supports_quick_play("1.20"), "1.20 — первая с quick play");
+        assert!(mc_supports_quick_play("1.21.5"), "1.21.5 умеет");
+        assert!(!mc_supports_quick_play("1.7.10"), "1.7.10 не умеет");
+        assert!(mc_supports_quick_play("1.20.1"), "патч-релиз 1.20.x умеет");
+        assert!(!mc_supports_quick_play("24w14a"), "снапшот не парсится как 1.x");
+        assert!(!mc_supports_quick_play("b1.7.3"), "бета не парсится");
+        assert!(!mc_supports_quick_play(""), "пустая версия — не умеет");
+    }
+
+    /// F1: пары «флаг+значение» только для 1.20+; обе цели — приоритет мира.
+    #[test]
+    fn quick_play_args_matrix() {
+        // Старая версия: ничего, даже с заданными опциями.
+        assert!(quick_play_args("1.19.4", Some("w"), Some("h:1")).is_empty());
+        assert!(quick_play_args("1.7.10", Some("w"), None).is_empty());
+        // Ничего не задано — аргументов нет.
+        assert!(quick_play_args("1.20.1", None, None).is_empty());
+        // Мир.
+        assert_eq!(
+            quick_play_args("1.20", Some("My_World"), None),
+            vec!["--quickPlaySingleplayer".to_string(), "My_World".to_string()]
+        );
+        // Сервер.
+        assert_eq!(
+            quick_play_args("1.21.5", None, Some("mc.example.com:25565")),
+            vec![
+                "--quickPlayMultiplayer".to_string(),
+                "mc.example.com:25565".to_string()
+            ]
+        );
+        // Обе заданы (валидатор это уже запрещает) — безопасный приоритет мира.
+        assert_eq!(
+            quick_play_args("1.20.1", Some("w"), Some("h:2")),
+            vec!["--quickPlaySingleplayer".to_string(), "w".to_string()]
+        );
     }
 }

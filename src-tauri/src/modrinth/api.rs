@@ -121,6 +121,10 @@ fn chunk_ids(ids: &[String]) -> Vec<&[String]> {
 /// принимает — режем кусками. Порядок ответа не контрактный: вызывающий
 /// сопоставляет по `projectId`.
 pub async fn projects_meta(client: &HttpClient, ids: &[String]) -> Result<Vec<ProjectMeta>> {
+    // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("метаданные Modrinth".into()));
+    }
     let url = format!("{API_BASE}/projects");
     let mut out: Vec<ProjectMeta> = Vec::with_capacity(ids.len());
     for chunk in chunk_ids(ids) {
@@ -149,6 +153,10 @@ pub async fn search(
     limit: u32,
     offset: u32,
 ) -> Result<SearchResult> {
+    // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("поиск Modrinth".into()));
+    }
     let mut facets: Vec<Vec<String>> = Vec::new();
     if let Some(mc) = mc_version {
         facets.push(vec![format!("versions:{mc}")]);

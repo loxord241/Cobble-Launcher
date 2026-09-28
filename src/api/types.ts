@@ -37,6 +37,12 @@ export interface Instance {
   playSeconds: number;
   launchCount: number;
   notes: string;
+  /** Быстрый запуск (MC 1.20+): имя мира в saves для --quickPlaySingleplayer. */
+  quickPlayWorld?: string;
+  /** Быстрый запуск (MC 1.20+): host:port для --quickPlayMultiplayer. */
+  quickPlayServer?: string;
+  /** Профиль для запуска именно этого инстанса (F11); нет — глобальный. */
+  accountId?: string;
 }
 
 export interface Resolution {
@@ -67,6 +73,8 @@ export interface Settings {
   uiFont: string;
   /** Акцентный цвет поверх палитры темы: "" — из темы; иначе #RRGGBB. */
   uiAccent: string;
+  /** Режим «Работать офлайн» (F16): сеть ядра отключается, запуск из кэша. */
+  workOffline: boolean;
 }
 
 export interface VersionEntry {

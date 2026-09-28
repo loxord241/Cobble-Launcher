@@ -17,7 +17,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 ## Команды (invoke)
 
-Все 47 команд `invoke_handler` (`src-tauri/src/lib.rs:104`), обработчики —
+Все 52 команды `invoke_handler` (`src-tauri/src/lib.rs:104`), обработчики —
 `src-tauri/src/commands/mod.rs`.
 
 ### Инстансы и процессы
@@ -72,6 +72,11 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `account_add_ely` | `{username, password}` | `Account` (kind `ely`; пароль не сохраняется, в keyring — refresh-токен) | invalid_input, network, http, json, internal |
 | `account_remove` | `{id}` | `{ok}` (удаляет и запись в keyring) | not_found, io, internal |
 | `account_active_set` | `{id}` | `{ok}` | not_found, io |
+| `modrinth_projects` | `{ids: string[]}` | `ProjectMeta[]` (батч /v2/projects?ids=, чанки по 100; поле `id` алиасится в projectId) | invalid_input, network, http, json |
+| `content_backfill_projects` | `{instanceId}` | `number` (сколько манифестов залечено sha1→projectId) | not_found, network, http, json |
+| `update_check` | — | `UpdateInfo` {current, latest?, url?, updateAvailable, checked, note?} (GitHub releases/latest) | network, http, json |
+| `java_recommended` | `{mcVersion}` | `number` (мажорная Java: 8/17/21, таблица как run.rs fallback_major) | — |
+| `instance_force_unlock` | `{id}` | `{ok}` (мёртвый .lock без живого PID удаляется + событие Exited; запущено → instance_running) | not_found, instance_running, io |
 | `account_skin` | `{accountId}` | `SkinInfo \| null` ({source: `ely`\|`mojang`, dataUrl} — PNG как data-URL; `null` — скина нет: offline/404. Источники allowlist: skinsystem.ely.by, textures.minecraft.net; дисковый кэш 1 ч) | not_found, invalid_input, network, http, json, internal, io |
 
 ### Диагностика, Java, настройки

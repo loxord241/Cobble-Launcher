@@ -200,6 +200,10 @@ impl VersionJson {
         url: &str,
         expected_sha1: &str,
     ) -> Result<Self> {
+        // F16: офлайн — версия не в кэше, качать нельзя: честный отказ.
+        if client.offline() {
+            return Err(LauncherError::OfflineMode(url.to_string()));
+        }
         let resp = client.raw().get(url).send().await?;
         if !resp.status().is_success() {
             return Err(LauncherError::network(format!(

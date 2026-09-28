@@ -17,7 +17,7 @@ async function main() {
   await page.waitForTimeout(600);
 
   // Проверяем, есть ли хотя бы один инстанс. Если нет, создаем тестовый инстанс.
-  const rowsCount = await page.locator(".group.grid").count();
+  const rowsCount = await page.locator('[role="button"][aria-label^="Открыть "]').count();
   if (rowsCount === 0) {
     console.log("Создаем тестовый инстанс...");
     await page.getByRole("button", { name: "Создать инстанс" }).first().click();

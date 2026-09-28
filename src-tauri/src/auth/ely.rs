@@ -32,6 +32,10 @@ pub async fn authenticate(client: &HttpClient, username: &str, password: &str) -
         #[serde(rename = "selectedProfile")]
         profile: Profile,
     }
+    // F16: офлайн-режим — вход требует сеть, честный отказ сразу.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("вход ely.by".into()));
+    }
     let resp: AuthResp = client
         .raw()
         .post(format!("{AUTHSERVER}/api/auth/authenticate"))
@@ -60,6 +64,10 @@ pub async fn authenticate(client: &HttpClient, username: &str, password: &str) -
 
 /// Обновить сессию (POST /api/auth/refresh).
 pub async fn refresh_session(client: &HttpClient, refresh_token: &str) -> Result<Session> {
+    // F16: офлайн-режим — refresh требует сеть, честный отказ сразу.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("refresh ely.by".into()));
+    }
     #[derive(Deserialize)]
     struct Profile {
         id: String,
@@ -139,6 +147,10 @@ pub async fn authlib_injector_jar(
             )
         })?;
 
+    // F16: офлайн-режим — инжектор не скачать, честный отказ сразу.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode(asset.url.clone()));
+    }
     let resp = client.raw().get(&asset.url).send().await?;
     if !resp.status().is_success() {
         return Err(LauncherError::network(format!(

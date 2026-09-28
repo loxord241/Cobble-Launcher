@@ -15,9 +15,6 @@ const SAVE_DEBOUNCE_MS = 400;
 /** Пресеты акцентного цвета (первый — сланцевый синий по умолчанию). */
 const ACCENT_PRESETS = ["#7FB2F0", "#6FBF8F", "#E8A25C", "#E06C6C", "#A78BE0"];
 
-/** Имя системы тем — подпись пункта «вернуть как в теме» (бренд, не переводится). */
-const SLATE_LABEL = "Сланец";
-
 /** Акцент текущей палитры (tokens.css) — что показать в пикере, пока кастом не задан. */
 function themeAccent(): string {
   const value = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
@@ -166,7 +163,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
                 className="h-10 rounded-lg border border-border-strong bg-card px-3 text-sm"
               >
                 {/* "" — кастом не задан, шрифт из темы («Сланец» — имя системы) */}
-                <option value="">{SLATE_LABEL}</option>
+                <option value="">{t("settings.accent.reset")}</option>
                 <option value="system">{t("settings.font.system")}</option>
                 <option value="serif">{t("settings.font.serif")}</option>
                 <option value="mono">{t("settings.font.mono")}</option>
@@ -204,7 +201,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
                   className="h-7 w-9 cursor-pointer rounded-md border border-border-strong bg-card"
                 />
                 <button onClick={() => commit({ uiAccent: "" })} className="btn-ghost btn-sm">
-                  {SLATE_LABEL}
+                  {t("settings.accent.reset")}
                 </button>
               </div>
               <span className="text-[13px] text-text-muted">{t("settings.accent.hint")}</span>

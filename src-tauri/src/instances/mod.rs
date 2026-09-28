@@ -47,6 +47,17 @@ pub struct Instance {
     #[serde(alias = "launch_count")]
     pub launch_count: u64,
     pub notes: String,
+    /// Быстрый запуск (F1, MC 1.20+): имя мира в saves для
+    /// `--quickPlaySingleplayer`. Одновременно с quick_play_server запрещено.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_play_world: Option<String>,
+    /// Быстрый запуск (F1, MC 1.20+): host:port для `--quickPlayMultiplayer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_play_server: Option<String>,
+    /// Профиль для запуска именно этого инстанса (F11); None — как в лаунчере.
+    /// Хранится только ссылка (id аккаунта), не сам профиль.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
 }
 
 impl Default for Instance {
@@ -77,6 +88,9 @@ impl Instance {
             play_seconds: 0,
             launch_count: 0,
             notes: String::new(),
+            quick_play_world: None,
+            quick_play_server: None,
+            account_id: None,
         }
     }
 }
@@ -282,7 +296,62 @@ pub fn validate_instance_settings(inst: &Instance) -> Result<()> {
             ));
         }
     }
+    // F1: quick play. Обе цели сразу запрещены — игра выбрала бы одну,
+    // а пользователь не понял бы, какая.
+    if inst.quick_play_world.is_some() && inst.quick_play_server.is_some() {
+        return Err(LauncherError::InvalidInput(
+            "быстрый запуск: нельзя задать одновременно и мир, и сервер".into(),
+        ));
+    }
+    if let Some(world) = &inst.quick_play_world {
+        if !valid_quick_play_world(world) {
+            return Err(LauncherError::InvalidInput(format!(
+                "некорректное имя мира для быстрого запуска: {world:?} (латиница/цифры/_/-, до 64)"
+            )));
+        }
+    }
+    if let Some(server) = &inst.quick_play_server {
+        if !valid_quick_play_server(server) {
+            return Err(LauncherError::InvalidInput(format!(
+                "некорректный адрес сервера для быстрого запуска: {server:?} (host[:port])"
+            )));
+        }
+    }
+    // F11: ссылка на профиль — только безопасные символы id (UUID аккаунтов
+    // вписывается). Существование проверять здесь нечего: удалённый профиль
+    // обрабатывает UI (показывает глобальный и не хранит висячую ссылку).
+    if let Some(acc) = &inst.account_id {
+        if acc.is_empty()
+            || acc.len() > 64
+            || !acc
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(LauncherError::InvalidInput(format!(
+                "некорректный id профиля в настройках инстанса: {acc}"
+            )));
+        }
+    }
     Ok(())
+}
+
+/// Имя мира для quick play: имя каталога в saves — латиница/цифры/`_`/`-`, 1–64.
+/// Регекс по образцу settings::is_hex_color (крейт regex уже в зависимостях).
+fn valid_quick_play_world(world: &str) -> bool {
+    regex::Regex::new(r"^[A-Za-z0-9_\-]{1,64}$")
+        .map(|re| re.is_match(world))
+        .unwrap_or(false)
+}
+
+/// Адрес сервера для quick play: host ([A-Za-z0-9.-]) с опциональным портом
+/// 1–5 цифр, вся строка ≤255 (лимит на host:port в аргументе игры).
+fn valid_quick_play_server(addr: &str) -> bool {
+    if addr.len() > 255 {
+        return false;
+    }
+    regex::Regex::new(r"^[A-Za-z0-9.\-]+(:[0-9]{1,5})?$")
+        .map(|re| re.is_match(addr))
+        .unwrap_or(false)
 }
 
 /// Все инстансы, отсортированные по имени. Битые instance.json пропускаются
@@ -898,5 +967,88 @@ mod tests {
         // Снимаем lock
         let _ = std::fs::remove_file(dir.join(".lock"));
         assert!(rename(&paths, &inst.id, "new-name").is_ok());
+    }
+
+    /// F1: quick play — имя мира и адрес сервера валидируются на IPC-границе,
+    /// обе цели одновременно запрещены.
+    #[test]
+    fn validate_settings_quick_play_fields() {
+        let mut inst = Instance::new("x", "1.20.1");
+        // Мир: допустимые имена (каталог в saves).
+        for world in ["NewWorld", "world_1", "a", "hardcore-", "A-b_C9"] {
+            inst.quick_play_world = Some(world.to_string());
+            assert!(validate_instance_settings(&inst).is_ok(), "мир {world:?} допустим");
+        }
+        // Мир: path traversal, кириллица, пустое, слишком длинное — отклоняются.
+        let too_long_world = "x".repeat(65);
+        let too_long_host = "h".repeat(256);
+        for world in ["../evil", "a/b", "мир", "", too_long_world.as_str()] {
+            inst.quick_play_world = Some(world.to_string());
+            let err = validate_instance_settings(&inst).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "мир {world:?} отклонён");
+        }
+        // Сервер: host и host:port.
+        for server in ["mc.example.com", "127.0.0.1", "localhost:25565", "a-b.c.d:1"] {
+            inst.quick_play_world = None;
+            inst.quick_play_server = Some(server.to_string());
+            assert!(validate_instance_settings(&inst).is_ok(), "адрес {server:?} допустим");
+        }
+        // Сервер: путь, нецифровой порт, хвост без цифр, пустое, >255 — отклоняются.
+        for server in ["host/path", "host:abc", "host:", "", "host:12a34", too_long_host.as_str()] {
+            inst.quick_play_server = Some(server.to_string());
+            let err = validate_instance_settings(&inst).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "адрес {server:?} отклонён");
+        }
+        // Обе цели сразу — InvalidInput.
+        inst.quick_play_world = Some("world".into());
+        inst.quick_play_server = Some("mc.example.com".into());
+        let err = validate_instance_settings(&inst).unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "мир+сервер вместе запрещены");
+        // Граница длины адреса: ровно 255 — допустимо (мир сброшен).
+        inst.quick_play_world = None;
+        inst.quick_play_server = Some(format!("{}:25565", "h".repeat(249)));
+        assert_eq!(inst.quick_play_server.as_ref().unwrap().len(), 255);
+        assert!(validate_instance_settings(&inst).is_ok(), "адрес длиной 255 допустим");
+    }
+
+    /// F11: ссылка на профиль — только безопасные символы id (UUID вписывается).
+    #[test]
+    fn validate_settings_account_id_charset() {
+        let mut inst = Instance::new("x", "1.20.1");
+        inst.account_id = Some("550e8400-e29b-41d4-a716-446655440000".into());
+        assert!(validate_instance_settings(&inst).is_ok(), "UUID профиля допустим");
+        let too_long_acc = "x".repeat(65);
+        for acc in ["../evil", "a/b", "", too_long_acc.as_str()] {
+            inst.account_id = Some(acc.to_string());
+            let err = validate_instance_settings(&inst).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "id профиля {acc:?} отклонён");
+        }
+        inst.account_id = None;
+        assert!(validate_instance_settings(&inst).is_ok(), "None = глобальный профиль");
+    }
+
+    /// F1/F11: новые поля сериализуются в camelCase, отсутствуют при None
+    /// (skip_serializing_if) и читаются из старых файлов без них (serde default).
+    #[test]
+    fn quick_play_and_account_fields_serde() {
+        let mut inst = Instance::new("Test", "1.20.1");
+        inst.quick_play_world = Some("World_1".into());
+        inst.account_id = Some("acc-1".into());
+        let json = serde_json::to_string(&inst).unwrap();
+        assert!(json.contains("\"quickPlayWorld\":\"World_1\""), "camelCase мир: {json}");
+        assert!(json.contains("\"accountId\":\"acc-1\""), "camelCase профиль: {json}");
+        assert!(!json.contains("quickPlayServer"), "None-сервер не сериализуется: {json}");
+
+        // Читаем обратно; старый файл без новых полей даёт None.
+        let reloaded: Instance = serde_json::from_str(&json).unwrap();
+        assert_eq!(reloaded.quick_play_world.as_deref(), Some("World_1"));
+        assert_eq!(reloaded.quick_play_server, None);
+        assert_eq!(reloaded.account_id.as_deref(), Some("acc-1"));
+
+        let old_json = r#"{"id":"old","name":"Old","mc_version":"1.19.2"}"#;
+        let legacy: Instance = serde_json::from_str(old_json).unwrap();
+        assert_eq!(legacy.quick_play_world, None, "старый файл: мир не задан");
+        assert_eq!(legacy.quick_play_server, None, "старый файл: сервер не задан");
+        assert_eq!(legacy.account_id, None, "старый файл: профиль глобальный");
     }
 }

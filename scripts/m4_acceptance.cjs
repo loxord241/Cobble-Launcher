@@ -13,6 +13,11 @@ async function main() {
   const page = contexts[0].pages()[0];
   page.setDefaultTimeout(20000);
 
+  // B2: дефолт чистой установки — en (D30); приёмки русскоязычные → ставим ru.
+  await page.evaluate(() => localStorage.setItem("lang", "ru"));
+  await page.reload({ waitUntil: "networkidle" }).catch(() => {});
+
+
   // 1. Онбординг виден?
   await page.waitForSelector("text=Добро пожаловать", { timeout: 15000 });
   await page.screenshot({ path: `${OUT}/1-onboarding-step1.png` });

@@ -1,10 +1,44 @@
-// Настройки инстанса: RAM (память), выбор Java, флаги JVM, аргументы игры.
+// Настройки инстанса: RAM (память), выбор Java, флаги JVM, аргументы игры,
+// быстрый запуск (F1), профиль для запуска (F11), пресеты JVM (F5).
 import { useEffect, useState } from "react";
 import { X, Save, Sparkles } from "lucide-react";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
 import { useModalA11y } from "../hooks/useModalA11y";
+import { useAccounts, accountKindLabelKey } from "../../state/accounts";
 import type { Instance, JavaInstall, RamGuide } from "../../api/types";
+
+/** F5: пресет ЗАМЕНЯЕТ содержимое поля флагов (пользователь может доредактировать).
+ * Флаги сверены с валидатором ядра (FORBIDDEN_JVM_SUBSTRINGS) — запрещённых нет. */
+const JVM_PRESETS: Record<string, string[]> = {
+  aikar: [
+    "-XX:+UseG1GC",
+    "-XX:+ParallelRefProcEnabled",
+    "-XX:+MaxGCPauseMillis=200",
+    "-XX:+UnlockExperimentalVMOptions",
+    "-XX:+DisableExplicitGC",
+    "-XX:G1NewSizePercent=30",
+    "-XX:G1MaxNewSizePercent=40",
+    "-XX:G1HeapRegionSize=8M",
+    "-XX:G1ReservePercent=20",
+    "-XX:G1HeapWastePercent=5",
+    "-XX:G1MixedGCCountTarget=4",
+    "-XX:InitiatingHeapOccupancyPercent=15",
+    "-XX:G1MixedGCLiveThresholdPercent=90",
+    "-XX:G1RSetUpdatingPauseTimePercent=5",
+    "-XX:SurvivorRatio=32",
+    "-XX:+PerfDisableSharedMem",
+    "-XX:MaxTenuringThreshold=1",
+  ],
+  zgc: ["-XX:+UseZGC", "-XX:+ZGenerational"],
+  lowmem: ["-XX:+UseSerialGC", "-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30"],
+};
+
+/** F1: quick play доступен с MC 1.20 (major.minor); снапшоты/беты не парсятся. */
+function mcSupportsQuickPlay(mcVersion: string): boolean {
+  const [major, minor] = mcVersion.split(".").map((p) => parseInt(p, 10));
+  return major === 1 && (minor ?? 0) >= 20;
+}
 
 export default function InstanceSettingsModal({
   instance,
@@ -20,7 +54,25 @@ export default function InstanceSettingsModal({
   const [javaList, setJavaList] = useState<JavaInstall[]>([]);
   const [javaPath, setJavaPath] = useState(instance.javaPath ?? "");
   const [jvmFlags, setJvmFlags] = useState(instance.jvmFlags.join(" "));
+  // F5: выбранный пресет (none — ничего не делает).
+  const [jvmPreset, setJvmPreset] = useState("none");
   const [gameArgs, setGameArgs] = useState(instance.gameArgsExtra.join(" "));
+  // F1: быстрый запуск.
+  const supportsQuickPlay = mcSupportsQuickPlay(instance.mcVersion);
+  const [quickPlayMode, setQuickPlayMode] = useState<"none" | "world" | "server">(() =>
+    instance.quickPlayWorld ? "world" : instance.quickPlayServer ? "server" : "none",
+  );
+  const [quickPlayWorld, setQuickPlayWorld] = useState(instance.quickPlayWorld ?? "");
+  const [quickPlayServer, setQuickPlayServer] = useState(instance.quickPlayServer ?? "");
+  // F11: профиль для запуска ("" = глобальный). Висячая ссылка (профиль удалён)
+  // не храним: показываем глобальный, при сохранении пишем undefined.
+  const { list: accounts } = useAccounts();
+  const accountExists = (id?: string) => !!id && accounts.some((a) => a.id === id);
+  const [accountId, setAccountId] = useState(() =>
+    accountExists(instance.accountId) ? (instance.accountId as string) : "",
+  );
+  // F14: рекомендуемая Java — подсказка; ошибка/нет данных → ничего не показываем.
+  const [javaRecommendedMajor, setJavaRecommendedMajor] = useState<number | null>(null);
   const [notes, setNotes] = useState(instance.notes ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,7 +82,20 @@ export default function InstanceSettingsModal({
   useEffect(() => {
     api.ramGuide().then(setRamGuide).catch(() => setRamGuide(null));
     api.javaList().then(setJavaList).catch(() => setJavaList([]));
-  }, []);
+    // F14: подсказка грузится один раз при открытии; это не данные — при ошибке
+    // чип просто не появляется.
+    api
+      .javaRecommended(instance.mcVersion)
+      .then(setJavaRecommendedMajor)
+      .catch(() => setJavaRecommendedMajor(null));
+  }, [instance.mcVersion]);
+
+  /** F5: пресет заменяет текст поля флагов; «без пресета» ничего не меняет. */
+  const applyJvmPreset = (preset: string) => {
+    setJvmPreset(preset);
+    const flags = JVM_PRESETS[preset];
+    if (flags) setJvmFlags(flags.join(" "));
+  };
 
   const totalRam = ramGuide?.totalMb ?? 16384;
   const maxRam = Math.min(totalRam, 32768);
@@ -62,6 +127,17 @@ export default function InstanceSettingsModal({
           .map((s) => s.trim())
           .filter(Boolean),
         notes: notes.trim(),
+        // F1: пустая строка/не тот режим → undefined (не храним мусор).
+        quickPlayWorld:
+          supportsQuickPlay && quickPlayMode === "world" && quickPlayWorld.trim()
+            ? quickPlayWorld.trim()
+            : undefined,
+        quickPlayServer:
+          supportsQuickPlay && quickPlayMode === "server" && quickPlayServer.trim()
+            ? quickPlayServer.trim()
+            : undefined,
+        // F11: несуществующий профиль не сохраняем — пишем undefined.
+        accountId: accountExists(accountId) ? accountId : undefined,
       };
       const res = await api.instanceSettingsSet(updated);
       onSaved(res);
@@ -167,6 +243,12 @@ export default function InstanceSettingsModal({
             <p className="mt-1 text-xs text-text-muted">
               {t("instances.settings.javaHint")}
             </p>
+            {/* F14: рекомендуемая мажорная версия Java для этой версии MC. */}
+            {javaRecommendedMajor !== null && (
+              <p className="mt-1 text-xs text-accent">
+                {t("instances.java.recommended", { major: javaRecommendedMajor })}
+              </p>
+            )}
           </div>
 
           {/* JVM Flags */}
@@ -174,6 +256,21 @@ export default function InstanceSettingsModal({
             <label htmlFor="inst-jvm-flags" className="block text-sm font-medium text-text">
               {t("instances.settings.jvmFlags")}
             </label>
+            {/* F5: пресет заменяет содержимое поля, дальше можно доредактировать. */}
+            <label htmlFor="inst-jvm-preset" className="mt-2 block text-xs text-text-muted">
+              {t("instances.jvm.presets")}
+            </label>
+            <select
+              id="inst-jvm-preset"
+              value={jvmPreset}
+              onChange={(e) => applyJvmPreset(e.target.value)}
+              className="mt-1 h-10 w-full rounded-md border border-border-app bg-bg px-3 text-sm text-text outline-none focus:border-accent"
+            >
+              <option value="none">{t("instances.jvm.preset.none")}</option>
+              <option value="aikar">{t("instances.jvm.preset.aikar")}</option>
+              <option value="zgc">{t("instances.jvm.preset.zgc")}</option>
+              <option value="lowmem">{t("instances.jvm.preset.lowmem")}</option>
+            </select>
             <textarea
               id="inst-jvm-flags"
               value={jvmFlags}
@@ -197,6 +294,75 @@ export default function InstanceSettingsModal({
               placeholder="--demo"
               className="mt-1 h-10 w-full rounded-md border border-border-app bg-bg px-3 text-sm text-text outline-none focus:border-accent"
             />
+          </div>
+
+          {/* Быстрый запуск (F1): доступен с MC 1.20. */}
+          <div>
+            <label htmlFor="inst-quickplay" className="block text-sm font-medium text-text">
+              {t("instances.quickplay.label")}
+            </label>
+            {supportsQuickPlay ? (
+              <div className="mt-1 flex flex-col gap-2">
+                <select
+                  id="inst-quickplay"
+                  value={quickPlayMode}
+                  onChange={(e) =>
+                    setQuickPlayMode(e.target.value as "none" | "world" | "server")
+                  }
+                  className="h-10 w-full rounded-md border border-border-app bg-bg px-3 text-sm text-text outline-none focus:border-accent"
+                >
+                  <option value="none">{t("instances.quickplay.none")}</option>
+                  <option value="world">{t("instances.quickplay.world")}</option>
+                  <option value="server">{t("instances.quickplay.server")}</option>
+                </select>
+                {quickPlayMode === "world" && (
+                  <input
+                    id="inst-quickplay-world"
+                    type="text"
+                    value={quickPlayWorld}
+                    onChange={(e) => setQuickPlayWorld(e.target.value)}
+                    maxLength={64}
+                    placeholder={t("instances.quickplay.worldName")}
+                    className="h-10 w-full rounded-md border border-border-app bg-bg px-3 text-sm text-text outline-none focus:border-accent"
+                  />
+                )}
+                {quickPlayMode === "server" && (
+                  <input
+                    id="inst-quickplay-server"
+                    type="text"
+                    value={quickPlayServer}
+                    onChange={(e) => setQuickPlayServer(e.target.value)}
+                    maxLength={255}
+                    placeholder={t("instances.quickplay.address")}
+                    className="h-10 w-full rounded-md border border-border-app bg-bg px-3 text-sm text-text outline-none focus:border-accent"
+                  />
+                )}
+              </div>
+            ) : (
+              <p className="mt-1 text-xs text-text-muted">
+                {t("instances.quickplay.oldVersion")}
+              </p>
+            )}
+          </div>
+
+          {/* Профиль для запуска (F11). */}
+          <div>
+            <label htmlFor="inst-account" className="block text-sm font-medium text-text">
+              {t("instances.account.launch")}
+            </label>
+            <select
+              id="inst-account"
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
+              className="mt-1 h-10 w-full rounded-md border border-border-app bg-bg px-3 text-sm text-text outline-none focus:border-accent"
+            >
+              <option value="">{t("instances.account.global")}</option>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name} ({t(accountKindLabelKey[a.kind])})
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* Notes */}

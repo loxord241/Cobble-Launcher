@@ -378,6 +378,10 @@ pub async fn install_modpack_project(
             ))
         })?;
 
+    // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode(file.url.clone()));
+    }
     let resp = client
         .raw()
         .get(&file.url)

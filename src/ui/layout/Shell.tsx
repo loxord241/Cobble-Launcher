@@ -19,6 +19,8 @@ import {
   ChevronDown,
   Check,
   UserPlus,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import { apiErrorText, t } from "../../i18n";
 import { api } from "../../api/client";
@@ -46,6 +48,9 @@ const NAV: { id: Page; icon: typeof House; label: string }[] = [
 
 const win = () => getCurrentWindow();
 
+/** F12: ник офлайн-профиля — латиница/цифры/подчёркивание, 3–16 символов. */
+const NICK_RE = /^[A-Za-z0-9_]{3,16}$/;
+
 /** Сколько живёт баннер результата drop-установки .mrpack (D5b). */
 const NOTICE_MS = 6000;
 
@@ -59,6 +64,8 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   const [query, setQuery] = useState("");
   const [version, setVersion] = useState("0.1.0");
   const [accountOpen, setAccountOpen] = useState(false);
+  // F12: черновик быстрого офлайн-ника в открытом меню профиля.
+  const [quickNick, setQuickNick] = useState("");
   const [accountsModalOpen, setAccountsModalOpen] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -75,8 +82,8 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
       clearCrashReport: s.clearCrashReport,
     })),
   );
-  const { settings, load: loadSettings } = useSettings();
-  const { list: accounts, load: loadAccounts, setActive } = useAccounts();
+  const { settings, update: updateSettings, load: loadSettings } = useSettings();
+  const { list: accounts, load: loadAccounts, setActive, addOffline } = useAccounts();
 
   const showNotice = useCallback((kind: "ok" | "error", text: string) => {
     setNotice({ kind, text });
@@ -186,6 +193,20 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     [setActive],
   );
 
+  // F12: быстрый офлайн-профиль прямо из меню чипа; успех — активируем и
+  // закрываем меню, ошибка — баннером (error) через apiErrorText.
+  const addQuickNick = () => {
+    const nick = quickNick.trim();
+    if (!NICK_RE.test(nick)) return;
+    void addOffline(nick)
+      .then((acc) => setActive(acc.id))
+      .then(() => {
+        setQuickNick("");
+        setAccountOpen(false);
+      })
+      .catch((e) => showNotice("error", apiErrorText(e)));
+  };
+
   return (
     <div
       className="flex h-screen flex-col overflow-hidden bg-bg text-text"
@@ -223,6 +244,27 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
         </div>
 
         <div data-tauri-drag-region className="flex-1" />
+
+        {/* F16: «Работать офлайн» — сеть ядра отключается, запуск из кэша.
+            Обычная кнопка в flex-ряду — под drag-region не попадает. */}
+        <button
+          role="switch"
+          aria-checked={!!settings?.workOffline}
+          aria-label={t("shell.offline")}
+          title={t("shell.offline.hint")}
+          onClick={() =>
+            void updateSettings({ workOffline: !settings?.workOffline }).catch((e) =>
+              showNotice("error", apiErrorText(e)),
+            )
+          }
+          className="icon-btn"
+        >
+          {settings?.workOffline ? (
+            <WifiOff size={16} aria-hidden />
+          ) : (
+            <Wifi size={16} aria-hidden />
+          )}
+        </button>
 
         {/* Чип аккаунта: реальный активный профиль из ядра (M8) */}
         {active ? (
@@ -283,6 +325,30 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
                     <UserPlus size={15} aria-hidden />
                     <span className="font-semibold">{t("shell.account.manage")}</span>
                   </button>
+                  {/* F12: быстрый офлайн-ник. Input внутри меню (z-50) — клики
+                      по нему не задевают закрывающий overlay (z-40). */}
+                  <div className="my-1 border-t border-border-app" />
+                  <div className="flex items-center gap-1 p-1">
+                    <input
+                      type="text"
+                      value={quickNick}
+                      onChange={(e) => setQuickNick(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") addQuickNick();
+                      }}
+                      placeholder={t("accounts.quickNick")}
+                      aria-label={t("accounts.quickNick")}
+                      className="h-8 min-w-0 flex-1 rounded-md border border-border-strong bg-bg px-2 text-sm outline-none focus:border-accent"
+                    />
+                    <button
+                      type="button"
+                      onClick={addQuickNick}
+                      disabled={!NICK_RE.test(quickNick.trim())}
+                      className="flex h-8 shrink-0 items-center rounded-md px-2 text-sm font-semibold text-accent hover:bg-surface-2 disabled:cursor-not-allowed disabled:text-text-muted/40"
+                    >
+                      {t("accounts.quickNick.add")}
+                    </button>
+                  </div>
                 </div>
               </>
             )}

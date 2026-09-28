@@ -38,6 +38,9 @@ impl AppState {
                 Arc::new(HttpClient::new(None)?)
             }
         };
+        // F16: сохранённый режим «Работать офлайн» применяется к клиенту
+        // сразу при старте (settings читаются раньше создания http).
+        http.set_offline(settings.work_offline);
         Ok(Self {
             paths,
             bus,
@@ -155,6 +158,9 @@ pub async fn instance_open_dir(state: State<'_, AppState>, id: String) -> Result
     // Без валидации id `..\..\Windows` открывал бы произвольный каталог/файл
     // через opener (A23).
     instances::valid_id(&id)?;
+    // B10: несуществующий id не должен плодить фантомные папки — сначала
+    // проверяем, что инстанс есть (`load` отдаёт NotFound).
+    instances::load(&state.paths, &id)?;
     let dir = instances::instance_dir(&state.paths, &id);
     std::fs::create_dir_all(crate::util::fs::long_path(&dir))?;
     opener::open(dir).map_err(|e| LauncherError::Internal(format!("открытие папки: {e}")))?;
@@ -179,12 +185,32 @@ pub async fn instance_settings_set(
     instances::validate_instance_settings(&instance)?;
     let paths = state.paths.clone();
     let saved = tauri::async_runtime::spawn_blocking(move || {
-        instances::save(&paths, &instance)?;
-        Ok::<_, LauncherError>(instance)
+        // B6: снапшот фронтенда устаревает (супервизор успевает дописать
+        // статистику между Get и Set) — сохраняем слиянием: с диска берём
+        // актуальный инстанс и переносим из payload только пользовательские
+        // поля. Заодно несуществующий id даёт NotFound, а не фантомный инстанс.
+        instances::update(&paths, &instance.id, |disk| merge_user_settings(disk, &instance))?;
+        instances::load(&paths, &instance.id)
     })
     .await
     .map_err(join_err)??;
     Ok(saved)
+}
+
+/// Поля настроек, редактируемые пользователем в InstanceSettingsModal (D19):
+/// только они переносятся из payload в дисковый инстанс. Служебные
+/// (schema_version, id, name, mc_version, loader*, version_id, created_at,
+/// last_played, play_seconds, launch_count, icon) остаются с диска.
+fn merge_user_settings(disk: &mut Instance, payload: &Instance) {
+    disk.ram_mb = payload.ram_mb;
+    disk.java_path = payload.java_path.clone();
+    disk.jvm_flags = payload.jvm_flags.clone();
+    disk.game_args_extra = payload.game_args_extra.clone();
+    disk.notes = payload.notes.clone();
+    // F1/F11: быстрый запуск и профиль запуска — тоже пользовательские поля.
+    disk.quick_play_world = payload.quick_play_world.clone();
+    disk.quick_play_server = payload.quick_play_server.clone();
+    disk.account_id = payload.account_id.clone();
 }
 
 /// Запуск инстанса из UI: подготовка + спавн; супервизия живёт в фоне,
@@ -258,40 +284,51 @@ pub async fn instance_launch(
     }
     .await;
 
-    // Проверяем, не был ли запуск отменён пользователем во время prepare
-    let cancelled = {
-        let launching = state.launching.lock().await;
-        !launching.contains(&inst_id_clone)
-    };
+    // B4: prepare завершён (успех или ошибка) — снимаем регистрацию движка
+    // группы, как в content_install, иначе ссылка на HttpClient висит в
+    // реестре до конца сессии. После этой точки движок больше не нужен.
+    state.engine_done(&group);
 
-    if cancelled {
-        tracing::info!("Запуск инстанса {inst_id_clone} был отменён до спавна процесса");
-        state.bus.emit(crate::events::LauncherEvent::LaunchState {
-            instance_id: inst_id_clone,
-            phase: crate::events::LaunchPhase::Exited,
-            exit_code: None,
-        });
-        return Ok(OkMsg { ok: true });
-    }
-
-    let (inst, prepared) = match res {
-        Ok(pair) => pair,
-        Err(e) => {
-            state.launching.lock().await.remove(&inst_id_clone);
+    // Проверка отмены и спавн под ОДНИМ захватом launching-мьютекса (B5):
+    // если instance_kill сработает в этом окне, он подождёт мьютекс, а после
+    // снятия увидит живой PID в .lock и убьёт процесс. Раньше проверка
+    // отпускала мьютекс до спавна — kill в зазоре не находил ни launching,
+    // ни PID, рапортовал Exited, и игра стартовала зомби.
+    let (inst, prepared) = {
+        let mut launching = state.launching.lock().await;
+        if !launching.contains(&inst_id_clone) {
+            tracing::info!("Запуск инстанса {inst_id_clone} был отменён до спавна процесса");
             state.bus.emit(crate::events::LauncherEvent::LaunchState {
                 instance_id: inst_id_clone,
                 phase: crate::events::LaunchPhase::Exited,
                 exit_code: None,
             });
-            return Err(e);
+            return Ok(OkMsg { ok: true });
+        }
+        match res {
+            Ok(pair) => pair,
+            Err(e) => {
+                launching.remove(&inst_id_clone);
+                state.bus.emit(crate::events::LauncherEvent::LaunchState {
+                    instance_id: inst_id_clone,
+                    phase: crate::events::LaunchPhase::Exited,
+                    exit_code: None,
+                });
+                return Err(e);
+            }
         }
     };
 
     // Спавн игры: дочерний процесс спавнится сразу с записью PID в .lock,
-    // супервизия читает логи в фоне. Снимаем launching только ПОСЛЕ спавна!
+    // супервизия читает логи в фоне. Снимаем launching только ПОСЛЕ спавна —
+    // guard держится захваченным через launch_detached и удаление id (B5).
     let instance_id = inst.id.clone();
-    let spawn_res = instances::run::launch_detached(&state.paths, &instance_id, prepared, &state.bus);
-    state.launching.lock().await.remove(&inst_id_clone);
+    let spawn_res = {
+        let mut launching = state.launching.lock().await;
+        let res = instances::run::launch_detached(&state.paths, &instance_id, prepared, &state.bus);
+        launching.remove(&inst_id_clone);
+        res
+    };
     spawn_res?;
     Ok(OkMsg { ok: true })
 }
@@ -373,6 +410,10 @@ pub async fn content_toggle(
     instance_id: String,
     file: String,
 ) -> Result<crate::instances::ContentEntry> {
+    // B9: переименование файлов занятой игры = Sharing Violation на Windows.
+    if instances::running_pid(&instances::instance_dir(&state.paths, &instance_id)).is_some() {
+        return Err(LauncherError::InstanceRunning(instance_id.clone()));
+    }
     let paths = state.paths.clone();
     tauri::async_runtime::spawn_blocking(move || {
         instances::content::toggle(&paths, &instance_id, &file)
@@ -388,6 +429,10 @@ pub async fn content_remove(
     instance_id: String,
     file: String,
 ) -> Result<()> {
+    // B9: удаление файлов занятой игры = Sharing Violation на Windows.
+    if instances::running_pid(&instances::instance_dir(&state.paths, &instance_id)).is_some() {
+        return Err(LauncherError::InstanceRunning(instance_id.clone()));
+    }
     let paths = state.paths.clone();
     tauri::async_runtime::spawn_blocking(move || {
         instances::content::remove(&paths, &instance_id, &file)
@@ -553,6 +598,11 @@ pub async fn instance_optimize(
     state: State<'_, AppState>,
     instance_id: String,
 ) -> Result<Vec<String>> {
+    // B9: оптимизация трогает файлы (память, Java, опции) занятой игры —
+    // на Windows это Sharing Violation; проверяем до загрузок.
+    if instances::running_pid(&instances::instance_dir(&state.paths, &instance_id)).is_some() {
+        return Err(LauncherError::InstanceRunning(instance_id.clone()));
+    }
     let inst = instances::load(&state.paths, &instance_id)?;
     let group = format!("instance:{instance_id}");
     let engine = state.engine_for(&group).await;
@@ -596,6 +646,28 @@ pub async fn instance_kill(state: State<'_, AppState>, instance_id: String) -> R
         let _ = std::fs::remove_file(crate::util::fs::long_path(&inst_dir.join(".lock")));
         state.bus.emit(crate::events::LauncherEvent::LaunchState {
             instance_id,
+            phase: crate::events::LaunchPhase::Exited,
+            exit_code: None,
+        });
+    }
+    Ok(OkMsg { ok: true })
+}
+
+/// Снять зависшую блокировку инстанса (F27): `.lock` без живого процесса.
+/// Идемпотентно: если процесса нет — снимаем и рапортуем Exited; нет и
+/// `.lock` — просто Ok. Живую игру не трогаем (InstanceRunning).
+#[tauri::command]
+pub async fn instance_force_unlock(state: State<'_, AppState>, id: String) -> Result<OkMsg> {
+    instances::valid_id(&id)?;
+    let inst_dir = instances::instance_dir(&state.paths, &id);
+    if instances::running_pid(&inst_dir).is_some() {
+        return Err(LauncherError::InstanceRunning(id));
+    }
+    let lock = crate::util::fs::long_path(&inst_dir.join(".lock"));
+    if lock.exists() {
+        std::fs::remove_file(&lock)?;
+        state.bus.emit(crate::events::LauncherEvent::LaunchState {
+            instance_id: id,
             phase: crate::events::LaunchPhase::Exited,
             exit_code: None,
         });
@@ -898,6 +970,28 @@ pub async fn loader_versions(
                 .map(|v| LoaderVersionEntry { version: v, stable: true })
                 .collect())
         }
+        "forge" => {
+            // promotions_slim.json содержит только «продвинутые» версии
+            // (recommended/latest) — все стабильные по определению. Это
+            // словарь по версиям MC (ключи `1.20.1-recommended`) со многими
+            // повторами значений: собираем уникальные и сортируем по сегментам
+            // версии, отдаём последние 30 (как у neoforge).
+            let promos = crate::loaders::forge::promotions(&http).await?;
+            let mut versions: Vec<String> = promos.into_values().collect();
+            versions.sort();
+            versions.dedup();
+            versions.sort_by_key(|v| {
+                v.split('.')
+                    .map(|p| p.parse::<u64>().unwrap_or(0))
+                    .collect::<Vec<u64>>()
+            });
+            Ok(versions
+                .into_iter()
+                .rev()
+                .take(30)
+                .map(|version| LoaderVersionEntry { version, stable: true })
+                .collect())
+        }
         other => Err(LauncherError::InvalidInput(format!(
             "неизвестный загрузчик {other}"
         ))),
@@ -944,6 +1038,15 @@ pub async fn java_install(
     crate::java::detect::inspect(&exe, "adoptium").await
 }
 
+/// Рекомендуемая мажорная Java для версии MC (F14): тонкая обёртка над
+/// таблицей `fallback_major` (instances/run.rs, спека §6.4):
+/// ≤1.16 → 8, 1.17–1.20 → 17, 1.20+ (и пост-1.x) → 21.
+#[tauri::command]
+pub async fn java_recommended(mc_version: String) -> Result<u8> {
+    // Таблица возвращает только 8/17/21 — u8 всегда достаточен.
+    Ok(crate::instances::run::fallback_major(&mc_version) as u8)
+}
+
 // ---------- настройки ----------
 
 #[tauri::command]
@@ -966,7 +1069,11 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> Res
         }
     }
     settings.save(&state.paths.settings_file())?;
+    // F16: режим «Работать офлайн» применяется к актуальному HTTP-клиенту
+    // (в т.ч. к только что созданному при смене прокси — swap уже произошёл).
+    let work_offline = settings.work_offline;
     *state.settings.write().await = settings;
+    state.http().await.set_offline(work_offline);
     Ok(OkMsg { ok: true })
 }
 
@@ -1237,6 +1344,40 @@ mod tests {
             "snake_case ушёл из контракта: {json}"
         );
         assert!(json.contains("\"note\":null"), "None приезжает как null: {json}");
+    }
+
+    /// B6: слияние настроек на сервере — из payload переносятся ТОЛЬКО
+    /// пользовательские поля; статистика супервизора (play_seconds,
+    /// launch_count, last_played), дописанная на диск после Get, не затирается
+    /// устаревшим снапшотом фронтенда.
+    #[test]
+    fn settings_set_merges_user_fields_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let mut disk = Instance::new("x", "1.20.1");
+        disk.play_seconds = 100;
+        disk.launch_count = 3;
+        disk.last_played = Some(12345);
+        instances::save(&paths, &disk).unwrap();
+
+        // Устаревший снапшот фронта: пользовательская RAM новая, статистика —
+        // старая (superвизор уже дописал свои 100 секунд).
+        let mut payload = disk.clone();
+        payload.play_seconds = 50;
+        payload.launch_count = 1;
+        payload.last_played = None;
+        payload.ram_mb = 4096;
+        payload.notes = "заметка".into();
+
+        // Тот же путь, что в команде: update под SAVE_LOCK + merge_user_settings.
+        instances::update(&paths, &payload.id, |cur| merge_user_settings(cur, &payload)).unwrap();
+        let saved = instances::load(&paths, &payload.id).unwrap();
+        assert_eq!(saved.play_seconds, 100, "статистика с диска не затёрта");
+        assert_eq!(saved.launch_count, 3, "launch_count с диска");
+        assert_eq!(saved.last_played, Some(12345), "last_played с диска");
+        assert_eq!(saved.ram_mb, 4096, "пользовательское поле перенесено");
+        assert_eq!(saved.notes, "заметка", "notes перенесены");
     }
 
     /// Реальная сеть — #[ignore], гонять на приёмке (спека §9). Пока репозиторий

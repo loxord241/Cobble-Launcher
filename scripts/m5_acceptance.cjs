@@ -10,6 +10,10 @@ async function main() {
   const page = browser.contexts()[0].pages()[0];
   page.setDefaultTimeout(20000);
 
+  // B2: дефолт чистой установки — en (D30); приёмки русскоязычные → ставим ru.
+  await page.evaluate(() => localStorage.setItem("lang", "ru"));
+  await page.reload({ waitUntil: "networkidle" }).catch(() => {});
+
   await page.waitForSelector("text=Главная", { timeout: 15000 });
   await page.screenshot({ path: `${OUT}/1-home.png` });
 

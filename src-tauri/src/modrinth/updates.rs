@@ -71,6 +71,10 @@ async fn batch_latest_versions(
     loader: Option<&str>,
     mc_version: Option<&str>,
 ) -> Result<std::collections::HashMap<String, api::Version>> {
+    // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("проверка обновлений модов".into()));
+    }
     let mut body = serde_json::Map::new();
     body.insert("hashes".to_string(), serde_json::json!(hashes));
     body.insert("algorithm".to_string(), serde_json::json!("sha1"));

@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../../api/client";
-import { t } from "../../i18n";
+import { apiErrorText, t } from "../../i18n";
 import { useModalA11y } from "../hooks/useModalA11y";
 import type { LoaderVersionEntry, VersionEntry } from "../../api/types";
 
@@ -10,6 +10,7 @@ const LOADERS = [
   { id: "none", label: "instances.loader.none" },
   { id: "fabric", label: "Fabric" },
   { id: "quilt", label: "Quilt" },
+  { id: "forge", label: "Forge" },
   { id: "neoforge", label: "NeoForge" },
 ];
 
@@ -62,14 +63,29 @@ export default function CreateInstanceDialog({
   const submit = async () => {
     setBusy(true);
     setError(null);
+    // B7: если упало удаление осиротевшего инстанса — показываем и эту ошибку
+    // тоже, рядом с основной (не прячем).
+    let deleteError: string | null = null;
     try {
       const inst = await api.instanceCreate(version, name || version);
       if (loader !== "none") {
-        await api.loaderInstall(inst.id, loader, loaderVersion || undefined);
+        try {
+          await api.loaderInstall(inst.id, loader, loaderVersion || undefined);
+        } catch (e) {
+          // B7: падение установки загрузчика оставляет на диске ванильный
+          // инстанс без загрузчика — удаляем его насовсем (wipe: true).
+          try {
+            await api.instanceDelete(inst.id, true);
+          } catch (delErr) {
+            deleteError = apiErrorText(delErr);
+          }
+          throw e;
+        }
       }
       onCreated();
     } catch (e) {
-      setError((e as { message?: string })?.message ?? String(e));
+      const main = apiErrorText(e);
+      setError(deleteError ? `${main}\n${deleteError}` : main);
     } finally {
       setBusy(false);
     }
@@ -158,7 +174,7 @@ export default function CreateInstanceDialog({
           </>
         )}
 
-        {error && <p className="mt-3 text-sm text-error" role="alert">{error}</p>}
+        {error && <p className="mt-3 whitespace-pre-line text-sm text-error" role="alert">{error}</p>}
 
         <button
           onClick={() => void submit()}

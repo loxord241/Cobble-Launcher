@@ -77,16 +77,15 @@ pub fn toggle(paths: &Paths, id: &str, file: &str) -> Result<ContentEntry> {
     let from = base.join(disk_path(file, entry.enabled));
     let to = base.join(disk_path(file, new_enabled));
     let from_long = crate::util::fs::long_path(&from);
+    let to_long = crate::util::fs::long_path(&to);
     if from_long.exists() {
-        std::fs::rename(from_long, crate::util::fs::long_path(&to))?;
-    } else if !new_enabled {
-        // Включаем, но активного файла нет: может лежать выключенным.
-        if !crate::util::fs::long_path(&to).exists() {
-            return Err(LauncherError::NotFound(from.to_string_lossy().into()));
-        }
-    } else {
+        std::fs::rename(from_long, &to_long)?;
+    } else if !to_long.exists() {
+        // Ни текущего, ни целевого файла нет — переименовывать нечего.
         return Err(LauncherError::NotFound(from.to_string_lossy().into()));
     }
+    // Иначе: файла в текущем состоянии нет, но целевой уже лежит на диске
+    // (рассинхрон) — диск уже в целевом состоянии, просто переворачиваем запись.
     entry.enabled = new_enabled;
     let updated = entry.clone();
     save_content_manifest(paths, id, &manifest)?;
@@ -361,6 +360,49 @@ mod tests {
         let e = toggle(&paths, &inst.id, "mods/a.jar").unwrap();
         assert!(e.enabled);
         assert!(long(&mc.join("mods/a.jar")).exists());
+    }
+
+    /// (а) Запись выключена, но на диске только активный файл: включение —
+    /// переворот записи, файл не трогаем (раньше здесь был ложный NotFound).
+    #[test]
+    fn toggle_enable_when_active_file_already_on_disk() {
+        let (_d, paths, inst) = setup();
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        let mut e = entry("mods/a.jar", None);
+        e.enabled = false;
+        save_content_manifest(&paths, &inst.id, &[e]).unwrap();
+        let out = toggle(&paths, &inst.id, "mods/a.jar").unwrap();
+        assert!(out.enabled);
+        assert!(long(&mc.join("mods/a.jar")).exists());
+        assert!(!long(&mc.join("mods/a.jar.disabled")).exists());
+    }
+
+    /// (б) Запись включена, активного нет, лежит .disabled: выключение сходится
+    /// к целевому состоянию без ошибки, файлы не трогаем.
+    #[test]
+    fn toggle_disable_when_disabled_file_already_on_disk() {
+        let (_d, paths, inst) = setup();
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        std::fs::remove_file(long(&mc.join("mods/a.jar"))).unwrap();
+        std::fs::write(long(&mc.join("mods/a.jar.disabled")), b"AAA").unwrap();
+        save_content_manifest(&paths, &inst.id, &[entry("mods/a.jar", None)]).unwrap();
+        let out = toggle(&paths, &inst.id, "mods/a.jar").unwrap();
+        assert!(!out.enabled);
+        assert!(long(&mc.join("mods/a.jar.disabled")).exists());
+        assert!(!long(&mc.join("mods/a.jar")).exists());
+    }
+
+    /// (в) Ни одного файла на диске (ни активного, ни .disabled) — NotFound.
+    #[test]
+    fn toggle_without_any_file_on_disk_is_not_found() {
+        let (_d, paths, inst) = setup();
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        std::fs::remove_file(long(&mc.join("mods/a.jar"))).unwrap();
+        save_content_manifest(&paths, &inst.id, &[entry("mods/a.jar", None)]).unwrap();
+        let err = toggle(&paths, &inst.id, "mods/a.jar").unwrap_err();
+        assert_eq!(err.code(), "not_found");
+        // Запись не перевёрнута.
+        assert!(load_content_manifest(&paths, &inst.id)[0].enabled);
     }
 
     #[test]

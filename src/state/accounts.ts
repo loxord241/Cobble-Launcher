@@ -49,6 +49,9 @@ export const useAccounts = create<AccountsState>((set, get) => ({
   remove: async (id: string) => {
     await api.accountRemove(id);
     await get().load();
+    // Ядро переназначает активный аккаунт при удалении активного — подтягиваем
+    // свежий accountsActiveId, иначе чип титлбара показывает удалённого.
+    await useSettings.getState().load();
   },
 }));
 

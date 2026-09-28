@@ -14,3 +14,15 @@ export async function pickImagePath(): Promise<string | null> {
   });
   return typeof picked === "string" ? picked : null;
 }
+
+/**
+ * Путь к архиву модпака (DISC-A02): Modrinth (.mrpack), CurseForge/MultiMC
+ * (.zip) или null, если пользователь отменил выбор. Ошибку диалога не глотаем.
+ */
+export async function pickArchivePath(): Promise<string | null> {
+  const picked = await open({
+    multiple: false,
+    filters: [{ name: "Modrinth/CurseForge/MultiMC архив", extensions: ["zip", "mrpack"] }],
+  });
+  return typeof picked === "string" ? picked : null;
+}

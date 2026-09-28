@@ -1,13 +1,13 @@
 // Страница инстансов «Сланца»: строки + создание/удаление + фильтр поиска + управление.
 import { useMemo, useState } from "react";
-import { Plus, SearchX, Inbox } from "lucide-react";
+import { Plus, SearchX, Inbox, Import } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useInstances } from "../../state/instances";
 import { useAccounts } from "../../state/accounts";
 import { api } from "../../api/client";
 import { useSettings } from "../../state/settings";
 import { apiErrorText, t } from "../../i18n";
-import { pickImagePath } from "../components/pickFile";
+import { pickArchivePath, pickImagePath } from "../components/pickFile";
 import InstanceCard from "../components/InstanceCard";
 import CreateInstanceDialog from "../components/CreateInstanceDialog";
 import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
@@ -30,6 +30,7 @@ type RowCallbacks = {
   onLogs: () => void;
   onBackup: () => void;
   onExport: () => void;
+  onForceUnlock: () => void;
   onIconSet: () => void;
   onIconClear?: () => void;
 };
@@ -57,7 +58,7 @@ export default function InstancesPage({
         load: s.load,
       })),
     );
-  const { list: accounts } = useAccounts();
+  const { list: accounts, setActive } = useAccounts();
   const { settings } = useSettings();
   const [creating, setCreating] = useState(false);
   const [settingsInst, setSettingsInst] = useState<Instance | null>(null);
@@ -73,18 +74,50 @@ export default function InstancesPage({
   const q = query.trim().toLowerCase();
   const visible = q ? list.filter((i) => i.name.toLowerCase().includes(q)) : list;
 
+  // DISC-A02: импорт архива модпака (.mrpack/.zip) тем же ядерным вызовом, что
+  // и drop в Shell; отмена диалога — тихо, ошибка — через apiErrorText (B11).
+  const importArchive = () => {
+    void (async () => {
+      try {
+        const path = await pickArchivePath();
+        if (!path) return; // отмена диалога
+        const inst = await api.instanceImport(path);
+        setNotice(t("instances.import.done", { name: inst.name, version: inst.mcVersion }));
+        await load();
+      } catch (e) {
+        setError(apiErrorText(e));
+      }
+    })();
+  };
+
   // D8: колбэки строк строятся один раз на список (замыкание на inst), а не
   // заново на каждый рендер — иначе memo(InstanceCard) не срабатывает.
   const rowCallbacks = useMemo(() => {
     const byId = new Map<string, RowCallbacks>();
     for (const inst of list) {
       const cb: RowCallbacks = {
-        onLaunch: () =>
-          void launch(inst.id, activeAccount?.name ?? "Player").catch((e) => setError(String(e))),
-        onStop: () => void stop(inst.id).catch((e) => setError(String(e))),
-        onOptimize: () => void optimize(inst.id).catch((e) => setError(String(e))),
-        onFolder: () => void api.instanceOpenDir(inst.id).catch((e) => setError(String(e))),
-        onDuplicate: () => void duplicate(inst.id).catch((e) => setError(String(e))),
+        // F11: у инстанса свой профиль — запускаем от него (активируем, если он
+        // ещё не активен). Профиль удалён — глобальный активный, как раньше.
+        onLaunch: () => {
+          void (async () => {
+            const perInst =
+              inst.accountId !== undefined
+                ? accounts.find((a) => a.id === inst.accountId)
+                : undefined;
+            try {
+              if (perInst && settings?.accountsActiveId !== perInst.id) {
+                await setActive(perInst.id);
+              }
+              await launch(inst.id, perInst?.name ?? activeAccount?.name ?? "Player");
+            } catch (e) {
+              setError(apiErrorText(e));
+            }
+          })();
+        },
+        onStop: () => void stop(inst.id).catch((e) => setError(apiErrorText(e))),
+        onOptimize: () => void optimize(inst.id).catch((e) => setError(apiErrorText(e))),
+        onFolder: () => void api.instanceOpenDir(inst.id).catch((e) => setError(apiErrorText(e))),
+        onDuplicate: () => void duplicate(inst.id).catch((e) => setError(apiErrorText(e))),
         onSettings: () => setSettingsInst(inst),
         onRename: () => setRenameInst(inst),
         onLogs: () => setLogsInst(inst),
@@ -92,12 +125,21 @@ export default function InstancesPage({
           void api
             .instanceBackup(inst.id)
             .then((r) => setNotice(t("instances.backup.done", { path: r.path })))
-            .catch((e) => setError(String(e))),
+            .catch((e) => setError(apiErrorText(e))),
         onExport: () =>
           void api
             .instanceExport(inst.id)
             .then((r) => setNotice(t("instances.export.done", { path: r.path })))
-            .catch((e) => setError(String(e))),
+            .catch((e) => setError(apiErrorText(e))),
+        // F27: снять зависшую .lock-блокировку (ядро проверяет живой процесс).
+        onForceUnlock: () =>
+          void api
+            .instanceForceUnlock(inst.id)
+            .then(() => {
+              setNotice(t("instances.forceUnlock.done"));
+              void load();
+            })
+            .catch((e) => setError(apiErrorText(e))),
         onIconSet: () => {
           void (async () => {
             try {
@@ -117,19 +159,35 @@ export default function InstancesPage({
           void api
             .instanceIconRemove(inst.id)
             .then(() => void load())
-            .catch((e) => setError(String(e)));
+            .catch((e) => setError(apiErrorText(e)));
       }
       byId.set(inst.id, cb);
     }
     return byId;
-  }, [list, activeAccount?.name, launch, stop, optimize, duplicate, setError, load]);
+  }, [
+    list,
+    accounts,
+    activeAccount?.name,
+    settings?.accountsActiveId,
+    launch,
+    stop,
+    optimize,
+    duplicate,
+    setActive,
+    setError,
+    load,
+  ]);
 
   return (
     <div className="mx-auto flex max-w-[980px] flex-col gap-4">
       <div className="mt-1 flex items-baseline gap-2">
         <h2 className="text-lg font-semibold tracking-tight">{t("nav.instances")}</h2>
         <span className="chip-mono">{list.length}</span>
-        <button onClick={() => setCreating(true)} className="btn-ghost btn-sm ml-auto">
+        <button onClick={importArchive} className="btn-ghost btn-sm ml-auto">
+          <Import size={16} aria-hidden />
+          {t("instances.import")}
+        </button>
+        <button onClick={() => setCreating(true)} className="btn-ghost btn-sm">
           <Plus size={16} aria-hidden />
           {t("instances.create")}
         </button>
@@ -226,7 +284,7 @@ export default function InstancesPage({
           onConfirm={(wipe) => {
             const target = deleteInst;
             setDeleteInst(null);
-            void remove(target.id, wipe).catch((e) => setError(String(e)));
+            void remove(target.id, wipe).catch((e) => setError(apiErrorText(e)));
           }}
         />
       )}

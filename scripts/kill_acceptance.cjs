@@ -6,6 +6,10 @@ async function main() {
   const page = browser.contexts()[0].pages()[0];
   page.setDefaultTimeout(60000);
 
+  // B2: дефолт чистой установки — en (D30); приёмки русскоязычные → ставим ru.
+  await page.evaluate(() => localStorage.setItem("lang", "ru"));
+  await page.reload({ waitUntil: "networkidle" }).catch(() => {});
+
   // Ждём shell (приложение уже онбордингнуто).
   await page.waitForSelector("text=Инстансы", { timeout: 20000 });
   await page.getByRole("navigation").getByRole("button", { name: /^Главная/ }).click().catch(() => {});

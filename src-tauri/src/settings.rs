@@ -58,6 +58,10 @@ pub struct Settings {
     pub ui_font: String,
     /// Акцентный цвет поверх палитры темы: "" — из темы; иначе `#RRGGBB`.
     pub ui_accent: String,
+    /// Режим «Работать офлайн» (F16): сетевые запросы ядра честно падают
+    /// сразу (offline_mode), без ожидания таймаутов; запуск — только из
+    /// уже скачанных файлов.
+    pub work_offline: bool,
 }
 
 impl Default for Settings {
@@ -82,6 +86,7 @@ impl Default for Settings {
             ui_scale: 100,
             ui_font: String::new(),
             ui_accent: String::new(),
+            work_offline: false,
         }
     }
 }
@@ -233,5 +238,19 @@ mod tests {
         assert_eq!(s.ui_font, "mono", "валидный шрифт из файла сохранён");
         // Санитизация разблокирует сохранение (иначе не переключить аккаунт).
         s.save(&p).unwrap();
+    }
+
+    #[test]
+    fn work_offline_defaults_false_and_roundtrips() {
+        // Старый файл без поля → false; после сохранения поле читается обратно.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(&p, br#"{"theme": "dark"}"#).unwrap();
+        let mut s = Settings::load(&p).unwrap();
+        assert!(!s.work_offline);
+        s.work_offline = true;
+        s.save(&p).unwrap();
+        let s2 = Settings::load(&p).unwrap();
+        assert!(s2.work_offline);
     }
 }

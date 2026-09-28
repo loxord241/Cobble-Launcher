@@ -64,6 +64,10 @@ pub async fn download_installer(
     );
     let sha_url = format!("{jar_url}.sha1");
 
+    // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("загрузчик NeoForge".into()));
+    }
     let resp = client.raw().get(&jar_url).send().await?;
     if !resp.status().is_success() {
         return Err(LauncherError::network(format!(

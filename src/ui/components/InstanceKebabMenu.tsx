@@ -14,6 +14,7 @@ import {
   Share,
   Image,
   ImageOff,
+  LockOpen,
 } from "lucide-react";
 import { t } from "../../i18n";
 import type { Instance } from "../../api/types";
@@ -28,6 +29,8 @@ export type KebabCallbacks = {
   onLogs?: () => void;
   onBackup?: () => void;
   onExport?: () => void;
+  /** F27: снять зависшую .lock-блокировку (не блокируется busy). */
+  onForceUnlock?: () => void;
   onIconSet?: () => void;
   onIconClear?: () => void;
 };
@@ -61,6 +64,7 @@ export default function InstanceKebabMenu({
     onLogs,
     onBackup,
     onExport,
+    onForceUnlock,
     onIconSet,
     onIconClear,
     onOptimize,
@@ -183,6 +187,17 @@ export default function InstanceKebabMenu({
                 onFolder();
               }}
             />
+            {/* F27: блокировка бывает именно у незапущенной игры — busy не мешает. */}
+            {onForceUnlock && (
+              <MenuItem
+                icon={LockOpen}
+                label={t("instances.forceUnlock")}
+                onClick={() => {
+                  closeMenu();
+                  onForceUnlock();
+                }}
+              />
+            )}
             <MenuItem
               icon={Copy}
               label={t("instances.duplicate")}

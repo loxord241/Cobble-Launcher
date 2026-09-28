@@ -47,6 +47,10 @@ pub async fn fetch_asset_index(
         // битый кэш — перекачаем
         let _ = std::fs::remove_file(&cache_long);
     }
+    // F16: офлайн — индекса нет в кэше, качать нельзя: честный отказ.
+    if client.offline() {
+        return Err(crate::errors::LauncherError::OfflineMode(url.to_string()));
+    }
     let resp = client.raw().get(url).send().await?;
     if !resp.status().is_success() {
         return Err(crate::errors::LauncherError::network(format!(

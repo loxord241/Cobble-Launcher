@@ -2,6 +2,8 @@
 
 use crate::errors::{LauncherError, Result};
 use reqwest::header::RETRY_AFTER;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Явный User-Agent — обязательное требование Modrinth (спека §5).
@@ -16,6 +18,8 @@ const MAX_RETRIES: u32 = 4;
 #[derive(Clone)]
 pub struct HttpClient {
     inner: reqwest::Client,
+    /// F16 «работать офлайн»: Arc — флаг общий для всех клонов клиента.
+    offline: Arc<AtomicBool>,
 }
 
 impl HttpClient {
@@ -39,7 +43,18 @@ impl HttpClient {
         }
         Ok(Self {
             inner: builder.build()?,
+            offline: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// F16: тумблер «работать офлайн». Включён — любые сетевые попытки
+    /// получают мгновенный `OfflineMode` до похода в сеть.
+    pub fn set_offline(&self, on: bool) {
+        self.offline.store(on, Ordering::Relaxed);
+    }
+
+    pub fn offline(&self) -> bool {
+        self.offline.load(Ordering::Relaxed)
     }
 
     pub fn raw(&self) -> &reqwest::Client {
@@ -48,6 +63,10 @@ impl HttpClient {
 
     /// GET JSON с повторами на 429/5xx и сетевых ошибках (backoff c jitter).
     pub async fn get_json_retry<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T> {
+        // F16: офлайн — честный отказ до любых сетевых вызовов и ретраев.
+        if self.offline() {
+            return Err(LauncherError::OfflineMode(url.into()));
+        }
         let mut attempt: u32 = 0;
         loop {
             attempt += 1;
@@ -133,5 +152,39 @@ mod tests {
             .get_json_retry("http://127.0.0.1:1/nope")
             .await;
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn offline_toggle_roundtrip() {
+        let c = HttpClient::new(None).unwrap();
+        assert!(!c.offline());
+        c.set_offline(true);
+        assert!(c.offline());
+        c.set_offline(false);
+        assert!(!c.offline());
+    }
+
+    #[test]
+    fn offline_flag_shared_between_clones() {
+        // Контракт для интегратора: set_offline из commands на общем Arc
+        // видят все клоны клиента (в т.ч. ушедшие в tokio::spawn).
+        let c = HttpClient::new(None).unwrap();
+        let c2 = c.clone();
+        c.set_offline(true);
+        assert!(c2.offline());
+        c.set_offline(false);
+        assert!(!c2.offline());
+    }
+
+    #[tokio::test]
+    async fn get_json_retry_offline_fails_before_io() {
+        let c = HttpClient::new(None).unwrap();
+        c.set_offline(true);
+        // 127.0.0.1:1 — если бы запрос ушёл в сеть, после ретраев получилась
+        // бы Http/Network-ошибка; офлайн-гейт обязан вернуть OfflineMode до IO.
+        let r: Result<serde_json::Value> = c.get_json_retry("http://127.0.0.1:1/nope").await;
+        let err = r.expect_err("офлайн должен дать ошибку");
+        assert!(matches!(err, LauncherError::OfflineMode(_)));
+        assert_eq!(err.code(), "offline_mode");
     }
 }

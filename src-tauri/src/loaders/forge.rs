@@ -49,6 +49,10 @@ pub async fn download_installer(
     if dest_long.exists() {
         return Ok(dest);
     }
+    // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("загрузчик Forge".into()));
+    }
     let full = format!("{mc}-{version}");
     let jar_url =
         format!("{MAVEN_BASE}/net/minecraftforge/forge/{full}/forge-{full}-installer.jar");

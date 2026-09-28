@@ -138,6 +138,12 @@ export const api = {
   accountActiveSet: (id: string) => invoke<{ ok: boolean }>("account_active_set", { id }),
   // Скин профиля (D34): null — скина нет (offline/404), UI показывает дефолт
   accountSkin: (accountId: string) => invoke<SkinInfo | null>("account_skin", { accountId }),
+
+  // Рекомендуемая мажорная версия Java для версии MC (F14)
+  javaRecommended: (mcVersion: string) => invoke<number>("java_recommended", { mcVersion }),
+
+  // Снять зависшую блокировку инстанса (F27): .lock без живого процесса
+  instanceForceUnlock: (id: string) => invoke<{ ok: boolean }>("instance_force_unlock", { id }),
 };
 
 /** Подписка на события ядра (dl_progress, launch_state, game_log_line, dl_queue_state, account_refresh_failed). */

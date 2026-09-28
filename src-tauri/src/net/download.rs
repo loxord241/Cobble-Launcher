@@ -240,6 +240,11 @@ impl DownloadEngine {
             if cancel.load(Ordering::SeqCst) {
                 return Err(LauncherError::Cancelled);
             }
+            // F16: офлайн — мгновенный фатальный отказ (как Cancelled: без
+            // ретраев и backoff). Уже скачанные файлы выше отдались из кэша.
+            if self.client.offline() {
+                return Err(LauncherError::OfflineMode(task.url.clone()));
+            }
             let resp = self.client.raw().get(&task.url).send().await;
             match resp {
                 Ok(r) if r.status().is_success() => {
@@ -490,5 +495,50 @@ impl DownloadEngine {
             }
         }
         Ok(added)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F16: офлайн-задача падает мгновенно, фатально — ни сети, ни ретраев.
+    /// С ретраями было бы MAX_ATTEMPTS × backoff ≈ 7+ с; здесь — миллисекунды.
+    #[tokio::test]
+    async fn offline_engine_fails_fast_without_retries() {
+        let client = Arc::new(HttpClient::new(None).unwrap());
+        client.set_offline(true);
+        let engine = DownloadEngine::new(client, 2, EventBus::default());
+
+        let tmp = std::env::temp_dir().join("mcl-f16-offline-test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let dest = tmp.join("file.bin");
+
+        let added = engine.add_tasks(vec![DownloadTask {
+            id: "t1".into(),
+            // 127.0.0.1:1 — соединение отклонилось бы мгновенно, но мы
+            // обязаны вернуть OfflineMode ещё до попытки соединения.
+            url: "http://127.0.0.1:1/file.bin".into(),
+            dest: dest.clone(),
+            sha1: None,
+            size: None,
+            group: "g".into(),
+            priority: 0,
+        }]);
+        assert_eq!(added, 1);
+
+        let started = Instant::now();
+        engine.run().await.unwrap();
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(5), "офлайн-отказ занял {elapsed:?}");
+
+        let st = engine.queue_state();
+        assert_eq!(st.failed, 1);
+        assert!(st
+            .failed_items
+            .iter()
+            .any(|(url, reason)| url.ends_with("/file.bin") && reason.contains("офлайн")));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
