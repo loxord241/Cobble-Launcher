@@ -3,7 +3,7 @@
 // данные грузятся лениво, как панель «Моды». Ошибки/уведомления показывает
 // страница (единый баннер сверху), сюда передаются колбэки.
 import { useCallback, useEffect, useState } from "react";
-import { Archive, Trash2 } from "lucide-react";
+import { Archive, Globe, Trash2 } from "lucide-react";
 import { api } from "../../../api/client";
 import { apiErrorText, currentLanguage, t } from "../../../i18n";
 import type { WorldInfo, WorldScope } from "../../../api/types";
@@ -83,7 +83,19 @@ export default function WorldsTab({
   return (
     <div className="rounded-lg border border-border-app bg-card p-3">
       {worlds === null ? null : worlds.length === 0 ? (
-        <p className="px-2 py-3 text-[13px] text-text-muted">{t("worlds.empty")}</p>
+        <div className="flex min-h-[320px] flex-col items-center justify-center gap-1 text-center">
+          <Globe size={32} aria-hidden className="text-text-muted" />
+          <p className="mt-2 font-semibold">{t("instances.worlds.emptyTitle")}</p>
+          <p className="text-[13px] text-text-muted">{t("instances.worlds.emptyHint")}</p>
+          <button
+            onClick={() =>
+              void api.instanceOpenDir(instanceId).catch((e) => setError(apiErrorText(e)))
+            }
+            className="btn-ghost btn-sm mt-3"
+          >
+            {t("instances.worlds.openFolder")}
+          </button>
+        </div>
       ) : (
         <ul className="flex flex-col gap-1">
           {worlds.map((w) => (

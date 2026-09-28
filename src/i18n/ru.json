@@ -401,7 +401,7 @@
   "home.sort.newest": "Новые",
   "home.sort.relevance": "По релевантности",
   "home.filter.loader": "Загрузчик",
-  "home.filter.any": "Любой",
+  "home.filter.any": "Любой загрузчик",
   "home.found": "Найдено проектов: {n}",
   "home.offlineHint": "Каталог недоступен офлайн — включите сеть",
   "instances.sort.label": "Сортировка",
@@ -416,5 +416,14 @@
   "mods.downloads.one": "{n} загрузка",
   "mods.downloads.few": "{n} загрузки",
   "mods.downloads.many": "{n} загрузок",
-  "mods.downloads.other": "{n} загрузки"
+  "mods.downloads.other": "{n} загрузки",
+  "instances.card.lastPlayed": "В игре: {when}",
+  "instances.card.never": "Ещё не запускался",
+  "instances.worlds.emptyTitle": "Миров пока нет",
+  "instances.worlds.emptyHint": "Сейвы появятся после первого запуска игры",
+  "instances.worlds.openFolder": "Открыть папку saves",
+  "logs.historyCount": "Прошлые логи ({n})",
+  "instances.create.errorHint": "Проверьте имя инстанса и доступ к каталогу данных",
+  "settings.resetOnboarding.desc": "Показать мастер первого запуска при следующем старте лаунчера",
+  "project.versions.open": "Открыть на Modrinth"
 }

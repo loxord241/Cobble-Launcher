@@ -16,34 +16,33 @@ async function main() {
   await page.evaluate(() => localStorage.setItem("lang", "ru"));
   await page.reload({ waitUntil: "networkidle" }).catch(() => {});
 
-  // 1. Вкладки типов контента: 4 штуки, переключение меняет выдачу.
-  await page.getByRole("navigation").getByRole("button", { name: /^Моды/ }).click();
-  await page.waitForTimeout(800);
-  const tabs = page.getByRole("tablist", { name: "Тип контента" });
-  (await tabs.getByRole("tab").count()) === 5
-    ? ok("каталог: 5 вкладок типа контента (D37: +датапаки)")
-    : fail(`вкладок типа контента ${await tabs.getByRole("tab").count()}, ожидалось 5`);
-  const firstTitle = await page.locator('.flex.flex-col.gap-2 .truncate, [role="button"][aria-label^="Открыть "] .truncate').first().textContent().catch(() => "");
-  await tabs.getByRole("tab", { name: "Шейдеры" }).click();
+  // 1. Главная-каталог (D39): табы Модпаки/Моды переключаются.
+  const homeTabs = page.getByRole("tablist").first();
+  (await homeTabs.getByRole("tab").count()) === 2
+    ? ok("главная: 2 таба каталога (Модпаки/Моды)")
+    : fail(`табов каталога ${await homeTabs.getByRole("tab").count()}, ожидалось 2`);
+  await homeTabs.getByRole("tab", { name: "Моды" }).click();
+  await page.waitForTimeout(2000);
+  (await homeTabs.getByRole("tab", { name: "Моды" }).getAttribute("aria-selected")) === "true"
+    ? ok("вкладка «Моды» переключается")
+    : fail("вкладка «Моды» не выбирается");
+  await homeTabs.getByRole("tab", { name: "Модпаки" }).click();
   await page.waitForTimeout(1500);
-  const shaderSelected = await tabs.getByRole("tab", { name: "Шейдеры" }).getAttribute("aria-selected");
-  shaderSelected === "true" ? ok("вкладка «Шейдеры» переключается") : fail(`aria-selected=${shaderSelected}`);
-  await tabs.getByRole("tab", { name: "Модпаки" }).click();
-  await page.waitForTimeout(1500);
-  ok("вкладка «Модпаки» переключается");
 
-  // 2. Панель «Установленные» открывается и честно показывает содержимое.
-  const installedBtn = page.getByRole("button", { name: /^Установленные/ });
-  (await installedBtn.count()) > 0 ? ok("кнопка «Установленные» на месте") : fail("нет кнопки «Установленные»");
-  await installedBtn.click();
-  await page.waitForTimeout(400);
-  const empty = await page.getByText("пока ничего не установлено").count();
+  // 2. Страница инстанса: «Установленные» + добавление контента (4 типа).
+  await page.getByRole("navigation").getByRole("button", { name: /^Инстансы/ }).click();
+  await page.waitForTimeout(600);
+  const irow = page.locator('[role="button"][aria-label^="Открыть "]').first();
+  await irow.locator("img").first().click({ position: { x: 10, y: 60 } });
+  await page.waitForTimeout(700);
+  await page.getByRole("tab", { name: /^Моды/ }).click();
+  await page.waitForTimeout(600);
+  (await page.getByText("Установленные").count()) >= 1
+    ? ok("инстанс: панель «Установленные» на месте")
+    : fail("нет панели «Установленные» на вкладке Моды");
   const rows = await page.locator("ul li button[role=switch]").count();
-  empty > 0 || rows > 0
-    ? ok(`панель «Установленные» открылась (${rows > 0 ? `${rows} записей` : "пусто"})`)
-    : fail("панель «Установленные» пустая и без текста");
+  ok(`список установленного: ${rows} записей`);
   if (rows > 0) {
-    // Переключатель вкл/выкл реально дергает ядро: состояние меняется.
     const sw = page.locator("button[role=switch]").first();
     const before = await sw.getAttribute("aria-checked");
     await sw.click();
@@ -53,6 +52,21 @@ async function main() {
     await page.locator("button[role=switch]").first().click();
     await page.waitForTimeout(400);
   }
+  // Добавление контента: 4 вкладки типа (моды/ресурспаки/шейдеры/датапаки).
+  await page.getByRole("button", { name: "Добавить моды" }).click();
+  await page.waitForSelector("[role='dialog']");
+  await page.waitForTimeout(2000);
+  const tabs = page.locator("[role='dialog']").first().getByRole("tablist", { name: "Тип контента" });
+  (await tabs.getByRole("tab").count()) === 4
+    ? ok("добавление: 4 вкладки типа контента")
+    : fail(`вкладок типа ${await tabs.getByRole("tab").count()}, ожидалось 4`);
+  await tabs.getByRole("tab", { name: "Шейдеры" }).click();
+  await page.waitForTimeout(1500);
+  (await tabs.getByRole("tab", { name: "Шейдеры" }).getAttribute("aria-selected")) === "true"
+    ? ok("вкладка «Шейдеры» переключается")
+    : fail("вкладка «Шейдеры» не выбирается");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(400);
 
   // 3. Бэкап (zip) через кебаб-меню инстанса: IPC + файл на диске.
   await page.getByRole("navigation").getByRole("button", { name: /^Инстансы/ }).click();

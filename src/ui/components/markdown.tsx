@@ -3,11 +3,59 @@
 // весь текст идёт через JSX-эскейпинг, сырой HTML остаётся обычным текстом.
 // URL ссылок/картинок — только http/https: javascript:/data: и прочие
 // схемы превращают конструкцию обратно в текст.
+//
+// Поддержаны reference-ссылки `[текст][1]` + определения `[1]: url` — авторы
+// Modrinth пишут ими почти каждое второе предложение; без них тело рендерится
+// сырыми скобками. Необъявленная ссылка показывается просто текстом (без
+// «[16]» в середине предложения).
 import type { ReactNode } from "react";
 
 /** Разрешены только веб-URL; относительные и не-http схемы — текстом. */
 function safeUrl(url: string): string | null {
   return /^https?:\/\//i.test(url) ? url : null;
+}
+
+/** Определение reference-ссылки: `[1]: https://…` (возможен `<url>` и title). */
+const REF_DEF_RE = /^\s{0,3}\[([^\]]+)\]:\s*<?([^>\s]+)>?\s*(?:"([^"]*)")?\s*$/;
+
+/** Собрать определения ссылок и выкинуть их строки из тела (вне ```-заборов). */
+function collectRefs(lines: string[]): { body: string[]; defs: Map<string, string> } {
+  const defs = new Map<string, string>();
+  const body: string[] = [];
+  let inFence = false;
+  for (const line of lines) {
+    if (FENCE_RE.test(line)) {
+      inFence = !inFence;
+      body.push(line);
+      continue;
+    }
+    if (!inFence) {
+      const d = line.match(REF_DEF_RE);
+      if (d) {
+        const url = safeUrl(d[2]);
+        if (url) defs.set(d[1].trim().toLowerCase(), url);
+        continue; // строка-определение в рендер не идёт
+      }
+    }
+    body.push(line);
+  }
+  return { body, defs };
+}
+
+/**
+ * `[текст][ключ]` → `[текст](url)` по определениям. Неизвестный ключ — просто
+ * текст ссылки без хвоста `[ключ]`: сырая сноска в середине предложения
+ * читаемости не добавляет.
+ */
+function resolveRefs(text: string, defs: Map<string, string>): string {
+  if (defs.size === 0) return text;
+  return text.replace(
+    /\[([^\]]+)\]\[([^\]]+)\]/g,
+    (_whole, label: string, ref: string) => {
+      const url = defs.get(ref.trim().toLowerCase());
+      return url ? `[${label}](${url})` : label;
+    },
+  );
 }
 
 type InlineKind = "image-link" | "image" | "link" | "bold" | "italic" | "code";
@@ -24,10 +72,20 @@ const INLINE: { re: RegExp; kind: InlineKind }[] = [
   { re: /`([^`]+)`/, kind: "code" },
 ];
 
+/** Строка состоит только из картинок/бейджей (для склейки их в один ряд). */
+function imageOnlyLine(line: string): boolean {
+  const t = line.trim();
+  if (!t) return true;
+  const stripped = t
+    .replace(/\[!\[[^\]]*\]\([^)\s]*\)\]\([^)\s]*\)/g, "")
+    .replace(/!\[[^\]]*\]\([^)\s]*\)/g, "");
+  return stripped.trim() === "";
+}
+
 /** Инлайн-разметка → элементы; рекурсия даёт вложенность (жирный в ссылке). */
-function renderInline(text: string, keyBase: string): ReactNode[] {
+function renderInline(text: string, keyBase: string, defs: Map<string, string>): ReactNode[] {
   const out: ReactNode[] = [];
-  let rest = text;
+  let rest = resolveRefs(text, defs);
   let n = 0;
   while (rest) {
     let best: { index: number; match: RegExpMatchArray; kind: InlineKind } | null = null;
@@ -48,8 +106,8 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
       const img = safeUrl(best.match[2]);
       out.push(
         url && img ? (
-          <a key={k} href={url} target="_blank" rel="noreferrer noreferrer" className="text-accent underline">
-            <img src={img} alt={inner} loading="lazy" className="rounded" />
+          <a key={k} href={url} target="_blank" rel="noreferrer noreferrer" className="inline-block">
+            <img src={img} alt={inner} loading="lazy" className="rounded bg-surface-2" />
           </a>
         ) : (
           <span key={k}>{best.match[0]}</span>
@@ -57,21 +115,27 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
       );
     } else if (best.kind === "image") {
       // Запрещённый URL — конструкция остаётся текстом, ничего не грузим.
-      out.push(url ? <img key={k} src={url} alt={inner} loading="lazy" className="rounded" /> : <span key={k}>{best.match[0]}</span>);
+      out.push(
+        url ? (
+          <img key={k} src={url} alt={inner} loading="lazy" className="rounded bg-surface-2" />
+        ) : (
+          <span key={k}>{best.match[0]}</span>
+        ),
+      );
     } else if (best.kind === "link") {
       out.push(
         url ? (
           <a key={k} href={url} target="_blank" rel="noreferrer noreferrer" className="text-accent underline">
-            {renderInline(inner, k)}
+            {renderInline(inner, k, defs)}
           </a>
         ) : (
           <span key={k}>{best.match[0]}</span>
         ),
       );
     } else if (best.kind === "bold") {
-      out.push(<strong key={k}>{renderInline(inner, k)}</strong>);
+      out.push(<strong key={k}>{renderInline(inner, k, defs)}</strong>);
     } else if (best.kind === "italic") {
-      out.push(<em key={k}>{renderInline(inner, k)}</em>);
+      out.push(<em key={k}>{renderInline(inner, k, defs)}</em>);
     } else {
       out.push(<code key={k} className="rounded bg-surface-2 px-1 font-mono text-[13px]">{inner}</code>);
     }
@@ -99,17 +163,33 @@ const HEADING_CLS = [
 
 /** Потоковый разбор построчно: каждый блок — свой элемент со стабильным ключом. */
 export function Markdown({ text }: { text: string }) {
-  const lines = text.split("\n");
+  const { body: lines, defs } = collectRefs(text.split("\n"));
   const blocks: ReactNode[] = [];
-  let i = 0;
+  // Подряд идущие «параграфы из одних картинок» (бейджи авторов) клеим в один
+  // горизонтальный ряд: в столбик они выглядят чужеродными кнопками.
+  let badgeRow: ReactNode[] | null = null;
   let seq = 0;
 
+  const flushBadges = () => {
+    if (badgeRow !== null) {
+      const items = badgeRow;
+      badgeRow = null;
+      blocks.push(
+        <div key={`badges-${seq++}`} className="mt-3 flex flex-wrap items-center gap-2 first:mt-0">
+          {items}
+        </div>,
+      );
+    }
+  };
+
+  let i = 0;
   while (i < lines.length) {
     const line = lines[i];
     const k = `md-${seq++}`;
 
     // Блок кода: до закрывающей решётки — дословно, без инлайн-разметки.
     if (FENCE_RE.test(line)) {
+      flushBadges();
       const buf: string[] = [];
       i++;
       while (i < lines.length && !FENCE_RE.test(lines[i])) buf.push(lines[i++]);
@@ -123,6 +203,7 @@ export function Markdown({ text }: { text: string }) {
     }
 
     if (HR_RE.test(line)) {
+      flushBadges();
       blocks.push(<hr key={k} className="mt-4 border-border-app" />);
       i++;
       continue;
@@ -130,11 +211,12 @@ export function Markdown({ text }: { text: string }) {
 
     const head = line.match(HEADING_RE);
     if (head) {
+      flushBadges();
       const lvl = head[1].length;
       const Tag = `h${lvl}` as "h1";
       blocks.push(
         <Tag key={k} className={HEADING_CLS[lvl - 1]}>
-          {renderInline(head[2], `${k}-i`)}
+          {renderInline(head[2], `${k}-i`, defs)}
         </Tag>,
       );
       i++;
@@ -144,6 +226,7 @@ export function Markdown({ text }: { text: string }) {
     // Цитата: подряд идущие строки «> …» — один blockquote; переводы строк
     // сохраняем, чтобы авторские перечисления не слипались.
     if (QUOTE_RE.test(line)) {
+      flushBadges();
       const buf: string[] = [];
       for (; i < lines.length; i++) {
         const q = lines[i].match(QUOTE_RE);
@@ -152,7 +235,7 @@ export function Markdown({ text }: { text: string }) {
       }
       blocks.push(
         <blockquote key={k} className="mt-3 whitespace-pre-wrap border-l-2 border-border-strong pl-3 text-text-muted">
-          {renderInline(buf.join("\n"), `${k}-i`)}
+          {renderInline(buf.join("\n"), `${k}-i`, defs)}
         </blockquote>,
       );
       continue;
@@ -162,6 +245,7 @@ export function Markdown({ text }: { text: string }) {
     // список (вложенность не эмулируем — Modrinth-тела её почти не используют).
     const li0 = line.match(LIST_RE);
     if (li0) {
+      flushBadges();
       const ordered = /\d/.test(li0[1]);
       const items: string[] = [];
       for (; i < lines.length; i++) {
@@ -173,7 +257,7 @@ export function Markdown({ text }: { text: string }) {
       blocks.push(
         <ListTag key={k} className={`mt-3 space-y-1 pl-5 ${ordered ? "list-decimal" : "list-disc"}`}>
           {items.map((it, idx) => (
-            <li key={`${k}-${idx}`}>{renderInline(it, `${k}-${idx}`)}</li>
+            <li key={`${k}-${idx}`}>{renderInline(it, `${k}-${idx}`, defs)}</li>
           ))}
         </ListTag>,
       );
@@ -202,12 +286,21 @@ export function Markdown({ text }: { text: string }) {
         break;
       buf.push(cur.trim());
     }
+
+    // Параграф из одних картинок/бейджей — копим в общий ряд, не в <p>.
+    if (buf.every(imageOnlyLine)) {
+      if (badgeRow === null) badgeRow = [];
+      badgeRow.push(...renderInline(buf.join(" "), `${k}-i`, defs));
+      continue;
+    }
+    flushBadges();
     blocks.push(
       <p key={k} className="mt-3 leading-relaxed first:mt-0">
-        {renderInline(buf.join(" "), `${k}-i`)}
+        {renderInline(buf.join(" "), `${k}-i`, defs)}
       </p>,
     );
   }
+  flushBadges();
 
   return <div className="text-sm leading-relaxed text-text">{blocks}</div>;
 }

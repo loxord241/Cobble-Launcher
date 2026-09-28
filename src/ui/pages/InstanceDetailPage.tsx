@@ -45,7 +45,11 @@ import WorldsTab from "../components/instance/WorldsTab";
 import ScreensTab from "../components/instance/ScreensTab";
 import ConfigsTab from "../components/instance/ConfigsTab";
 import PackArt from "../components/instance/PackArt";
-import { fileBase } from "./ModsPage";
+/** Логический путь файла контента → имя на диске (без .disabled). */
+export function fileBase(file: string): string {
+  const base = file.slice(file.lastIndexOf("/") + 1);
+  return base.endsWith(".disabled") ? base.slice(0, -".disabled".length) : base;
+}
 import type {
   ContentEntry,
   GameResourceSample,
@@ -1077,7 +1081,7 @@ function LogsPanel({
           {copied ? t("common.copied") : t("common.copy")}
         </button>
         <button
-          disabled={shareState?.kind === "busy"}
+          disabled={lines.length === 0 || shareState?.kind === "busy"}
           onClick={() => {
             setShareState({ kind: "busy", text: "" });
             api
@@ -1122,10 +1126,10 @@ function LogsPanel({
           }}
           className="flex h-9 w-full items-center gap-2 px-3 text-[13px] font-semibold hover:bg-card-hover"
         >
-          {t("logs.history")}
-          {archiveList !== null && archiveList.length > 0 && (
-            <span className="chip-mono">{archiveList.length}</span>
-          )}
+          {/* Счётчик в заголовке — только когда архив уже загружен. */}
+          {archiveList !== null
+            ? t("logs.historyCount", { n: archiveList.length })
+            : t("logs.history")}
         </button>
         {archiveOpen && (
           <div className="border-t border-border-app p-2">
@@ -1173,9 +1177,10 @@ function LogsPanel({
         className="h-[420px] overflow-y-auto rounded-md border border-border-app bg-bg p-3 font-mono text-xs leading-relaxed text-text selection:bg-accent selection:text-on-accent"
       >
         {shown.length === 0 ? (
-          <div className="text-text-muted">
+          <div className="flex h-full flex-col items-center justify-center gap-1 text-center font-ui">
+            <FileText size={28} aria-hidden className="text-text-muted" />
             <p>{t("instances.logs.empty")}</p>
-            <p className="mt-1 text-[13px]">{t("instance.logs.emptyHint")}</p>
+            <p className="text-[13px] text-text-muted">{t("instance.logs.emptyHint")}</p>
           </div>
         ) : (
           shown.map((line, idx) => (

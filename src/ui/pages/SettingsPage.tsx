@@ -223,7 +223,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.themesSection")}
         </h3>
-        <p className="mb-3 max-w-2xl text-sm text-text-muted">{t("themes.hint")}</p>
+        <p className="mb-3 text-sm text-text-muted">{t("themes.hint")}</p>
         <ThemeCards />
       </section>
 
@@ -232,7 +232,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.customizationSection")}
         </h3>
-        <div className="max-w-2xl rounded-lg border border-border-app bg-card p-4">
+        <div className="rounded-lg border border-border-app bg-card p-4">
           <Field label={t("settings.font")}>
             <div className="flex flex-col items-end gap-1">
               <select
@@ -294,7 +294,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.generalSection")}
         </h3>
-        <div className="max-w-2xl rounded-lg border border-border-app bg-card p-4">
+        <div className="rounded-lg border border-border-app bg-card p-4">
           {guide && (
             <p className="mb-3 rounded-md border border-border-app bg-surface-2 px-3 py-2 text-xs text-text-muted">
               {t("settings.ramHint", {
@@ -389,7 +389,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
 
       {/* Java Runtimes */}
       <section>
-        <div className="mb-3 flex items-center justify-between max-w-2xl">
+        <div className="mb-3 flex items-center justify-between">
           <h3 className="text-[13px] font-semibold uppercase tracking-wider text-text-muted">
             {t("settings.javaSection")}
           </h3>
@@ -402,7 +402,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
           </button>
         </div>
 
-        <div className="max-w-2xl rounded-lg border border-border-app bg-card p-4">
+        <div className="rounded-lg border border-border-app bg-card p-4">
           <div className="flex flex-col gap-2">
             {javaList.length === 0 ? (
               <p className="text-sm text-text-muted">{t("settings.noJavaFound")}</p>
@@ -460,7 +460,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.networkSection")}
         </h3>
-        <div className="max-w-2xl rounded-lg border border-border-app bg-card p-4">
+        <div className="rounded-lg border border-border-app bg-card p-4">
           <Field label={t("settings.proxy")}>
             <div className="flex items-center gap-2">
               <input
@@ -534,10 +534,13 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.dataDir")}
         </h3>
-        <div className="max-w-2xl rounded-lg border border-border-app bg-card p-4">
+        <div className="rounded-lg border border-border-app bg-card p-4">
           <Field label={t("settings.dataDir")}>
             <div className="flex items-center gap-2">
-              <code className="max-w-72 truncate rounded-md border border-border-app bg-bg px-2 py-1.5 font-mono text-xs text-text-muted">
+              <code
+                title={dataDir}
+                className="h-10 min-w-0 flex-1 truncate rounded-md border border-border-app bg-bg px-2 font-mono text-xs leading-10 text-text-muted"
+              >
                 {dataDir}
               </code>
               <button onClick={() => void api.dirOpen()} className="btn-ghost btn-sm">
@@ -546,7 +549,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
             </div>
           </Field>
 
-          <Field label={t("settings.resetOnboarding")}>
+          <Field label={t("settings.resetOnboarding.desc")}>
             <button onClick={onOnboardingReset} className="btn-ghost btn-sm">
               {t("settings.resetOnboarding")}
             </button>
@@ -559,7 +562,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.logo")}
         </h3>
-        <div className="max-w-2xl rounded-lg border border-border-app bg-card p-4">
+        <div className="rounded-lg border border-border-app bg-card p-4">
           <div className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-2">
             {(
               [
@@ -615,7 +618,16 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
                   ) : (
                     <img src={`/logos/${id}.png`} alt="" className="size-14 rounded-lg object-cover" />
                   )}
-                  <span className="text-[11px] leading-tight text-text-muted">{t(label)}</span>
+                  <span className="flex w-full items-center gap-1">
+                    <span className="text-[11px] leading-tight text-text-muted">{t(label)}</span>
+                    <span className="ml-auto grid size-5 place-items-center">
+                      {selected && (
+                        <span className="grid size-5 place-items-center rounded-full bg-accent text-on-accent">
+                          <Check size={12} aria-hidden strokeWidth={2.5} />
+                        </span>
+                      )}
+                    </span>
+                  </span>
                 </button>
               );
             })}
@@ -631,7 +643,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.storage")}
         </h3>
-        <div className="max-w-2xl rounded-lg border border-border-app bg-card p-4">
+        <div className="rounded-lg border border-border-app bg-card p-4">
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => void scanStorage()}

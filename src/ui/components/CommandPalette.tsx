@@ -9,7 +9,6 @@ import {
   FolderOpen,
   House,
   Play,
-  Puzzle,
   Settings as SettingsIcon,
   UserPlus,
 } from "lucide-react";
@@ -19,7 +18,7 @@ import { useAccounts } from "../../state/accounts";
 import { useSettings } from "../../state/settings";
 import { useModalA11y } from "../hooks/useModalA11y";
 
-type PalettePage = "home" | "instances" | "mods" | "settings";
+type PalettePage = "home" | "instances" | "settings";
 
 /** Жёсткий лимит результатов (спека F19). */
 const MAX_ITEMS = 10;
@@ -67,7 +66,6 @@ export default function CommandPalette({
       [
         ["home", House],
         ["instances", FolderOpen],
-        ["mods", Puzzle],
         ["settings", SettingsIcon],
       ] as const
     ).map(([page, icon]) => ({

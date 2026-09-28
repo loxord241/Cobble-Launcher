@@ -4,7 +4,7 @@
 // aria-label кнопок прежние («Играть — …», «Остановить — …») — приёмки живут.
 import { memo } from "react";
 import { Play, Square } from "lucide-react";
-import { t } from "../../i18n";
+import { currentLanguage, t } from "../../i18n";
 import type { Instance } from "../../api/types";
 import type { LaunchStatus } from "../../state/instances";
 import { defaultArtwork } from "../defaultArt";
@@ -84,6 +84,14 @@ function InstanceCard({
           <div className="truncate text-[12px] leading-snug text-text-muted" aria-live="polite">
             {sub}
             {statusText ? ` · ${statusText}` : ""}
+          </div>
+          {/* Критерий сортировки «По последнему запуску» должен быть виден. */}
+          <div className="truncate text-[12px] leading-snug text-text-muted">
+            {inst.lastPlayed
+              ? t("instances.card.lastPlayed", {
+                  when: new Date(inst.lastPlayed * 1000).toLocaleDateString(currentLanguage()),
+                })
+              : t("instances.card.never")}
           </div>
         </div>
         <InstanceKebabMenu inst={inst} busy={busy} callbacks={callbacks} />

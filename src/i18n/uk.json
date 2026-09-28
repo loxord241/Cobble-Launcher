@@ -401,7 +401,7 @@
   "home.sort.newest": "Нові",
   "home.sort.relevance": "За релевантністю",
   "home.filter.loader": "Завантажувач",
-  "home.filter.any": "Будь-який",
+  "home.filter.any": "Будь-який завантажувач",
   "home.found": "Знайдено проєктів: {n}",
   "home.offlineHint": "Каталог недоступний офлайн — увімкніть мережу",
   "instances.sort.label": "Сортування",
@@ -416,5 +416,14 @@
   "mods.downloads.one": "{n} завантаження",
   "mods.downloads.few": "{n} завантаження",
   "mods.downloads.many": "{n} завантажень",
-  "mods.downloads.other": "{n} завантаження"
+  "mods.downloads.other": "{n} завантаження",
+  "instances.card.lastPlayed": "У грі: {when}",
+  "instances.card.never": "Ще не запускався",
+  "instances.worlds.emptyTitle": "Світів поки немає",
+  "instances.worlds.emptyHint": "Збереження з'являться після першого запуску гри",
+  "instances.worlds.openFolder": "Відкрити папку saves",
+  "logs.historyCount": "Минулі логи ({n})",
+  "instances.create.errorHint": "Перевірте ім'я інстансу та доступ до каталогу даних",
+  "settings.resetOnboarding.desc": "Показати майстер першого запуску при наступному старті лаунчера",
+  "project.versions.open": "Відкрити на Modrinth"
 }

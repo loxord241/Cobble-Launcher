@@ -57,7 +57,7 @@ export default function UpdatesSection() {
 
   return (
     <section>
-      <div className="max-w-2xl rounded-lg border border-border-app bg-card p-4">
+      <div className="rounded-lg border border-border-app bg-card p-4">
         <div className="flex items-center justify-between gap-4">
           <div>
             <div className="text-sm font-semibold">{t("app.name")}</div>

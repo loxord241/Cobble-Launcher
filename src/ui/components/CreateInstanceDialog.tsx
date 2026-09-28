@@ -174,15 +174,26 @@ export default function CreateInstanceDialog({
           </>
         )}
 
-        {error && <p className="mt-3 whitespace-pre-line text-sm text-error" role="alert">{error}</p>}
+        {error && (
+          <div className="mt-3 text-sm text-error" role="alert">
+            {/* Сначала человеческая подсказка, сырое сообщение ОС — ниже, тише. */}
+            <p>{t("instances.create.errorHint")}</p>
+            <p className="mt-1 whitespace-pre-line text-[12px] text-text-muted">{error}</p>
+          </div>
+        )}
 
-        <button
-          onClick={() => void submit()}
-          disabled={busy || !version}
-          className="btn-primary mt-5 w-full"
-        >
-          {t("instances.create")}
-        </button>
+        <div className="mt-5 flex justify-end gap-3">
+          <button onClick={onClose} className="btn-ghost h-10 px-4 text-sm">
+            {t("common.cancel")}
+          </button>
+          <button
+            onClick={() => void submit()}
+            disabled={busy || !version}
+            className="btn-primary h-10 px-5 text-sm"
+          >
+            {t("instances.create")}
+          </button>
+        </div>
       </div>
     </div>
   );

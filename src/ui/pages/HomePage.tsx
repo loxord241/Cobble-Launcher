@@ -78,11 +78,12 @@ function CatalogRow({ hit, onOpen }: { hit: SearchHit, onOpen: () => void }) {
             {t("mods.by", { author: hit.author })}
           </span>
         </div>
-        {hit.description && (
-          <div className="mt-0.5 line-clamp-2 text-[13px] leading-snug text-text-muted">
-            {hit.description}
-          </div>
-        )}
+        {/* Описание всегда занимает две строки (min-h + line-clamp-2): без
+            этого строки каталога «прыгают» по высоте — мета-чипы съезжают.
+            Пустое описание рисуем пустым блоком той же высоты, сохраняя ритм. */}
+        <div className="mt-0.5 line-clamp-2 min-h-[2.6em] text-[13px] leading-snug text-text-muted">
+          {hit.description}
+        </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
           {/* Modrinth кладёт в categories и категории, и загрузчики —
               возможны повторы (fabric дважды), дедуплицируем. */}
@@ -224,6 +225,12 @@ export default function HomePage({ query }: { query: string }) {
 
   return (
     <div className="mx-auto flex max-w-[1100px] flex-col gap-4">
+      {/* Панель управления (заголовок+счётчик, табы, поиск+фильтры) залипает
+          сверху: скроллится main, поэтому top-0. z-10 достаточно — модалка
+          проекта рендерится с z-50 и остаётся поверх. -mx-2/px-2 не дают фону
+          обрываться по краям страницы, flex+gap-4 сохраняют прежний ритм
+          блоков (раньше их разносил gap родителя). */}
+      <div className="sticky -top-6 z-10 -mx-2 flex flex-col gap-4 bg-bg/95 px-2 pt-8 pb-3 backdrop-blur-sm">
       <div className="mt-1 flex items-baseline gap-2">
         <h2 className="text-lg font-semibold tracking-tight">{t("home.catalog.title")}</h2>
         {searched && (
@@ -293,6 +300,7 @@ export default function HomePage({ query }: { query: string }) {
           <Search size={15} aria-hidden />
           {t("mods.search")}
         </button>
+      </div>
       </div>
 
       {error && (

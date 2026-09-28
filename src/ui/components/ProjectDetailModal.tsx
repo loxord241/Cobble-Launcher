@@ -3,7 +3,8 @@
 // проекта грузим при открытии, версии — лениво при первом открытии табов
 // «Журнал»/«Версии» (кэш в состоянии на всё время жизни модалки).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Clock, Download, HardDrive, Heart, LoaderCircle, Scale, X } from "lucide-react";
+import { Clock, Download, ExternalLink, HardDrive, Heart, LoaderCircle, Scale, X } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../../api/client";
 import { apiErrorText, currentLanguage, plural, t } from "../../i18n";
 import { useModalA11y } from "../hooks/useModalA11y";
@@ -43,9 +44,28 @@ function relWhen(iso: string): string {
 function typeBadge(versionType?: string): { key: string; cls: string } | null {
   if (versionType === "release")
     return { key: "project.type.release", cls: "badge-soft accent" };
-  if (versionType === "beta") return { key: "project.type.beta", cls: "badge-soft opacity-70" };
-  if (versionType === "alpha") return { key: "project.type.alpha", cls: "badge-soft opacity-70" };
+  if (versionType === "beta") return { key: "project.type.beta", cls: "badge-soft warning" };
+  if (versionType === "alpha") return { key: "project.type.alpha", cls: "badge-soft warning" };
   return null;
+}
+
+// Changelog не рисуем одной pre-wrap «простынёй»: сырые дефисы и длинные
+// переносы падают на левый край. Маркированные строки («- »/«* ») собираем
+// в списки, пустые выбрасываем, остальное — отдельные абзацы.
+function changelogBlocks(text: string): { ul: boolean; items: string[] }[] {
+  const blocks: { ul: boolean; items: string[] }[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    const bullet = /^[-*]\s+(.+)$/.exec(line)
+    if (bullet) {
+      const last = blocks[blocks.length - 1]
+      if (last && last.ul) last.items.push(bullet[1])
+      else blocks.push({ ul: true, items: [bullet[1]] })
+    } else if (line) {
+      blocks.push({ ul: false, items: [line] })
+    }
+  }
+  return blocks
 }
 
 export default function ProjectDetailModal({
@@ -362,7 +382,9 @@ export default function ProjectDetailModal({
                       src={cover.url}
                       alt={cover.title ?? ""}
                       loading="lazy"
-                      className="h-64 w-full rounded-lg object-cover"
+                      // Естественные пропорции вместо crop: подложка — на время
+                      // загрузки и для прозрачных PNG.
+                      className="max-h-[380px] w-full rounded-lg object-contain bg-surface-2"
                     />
                   )}
                   {detail.body && <Markdown text={detail.body} />}
@@ -381,7 +403,8 @@ export default function ProjectDetailModal({
                   {changelogList.map((v) => {
                     const badge = typeBadge(v.versionType);
                     return (
-                      <div key={v.id} className="border-t border-border-app py-3 first:border-t-0">
+                      // py-4 + граница: записи журнала не должны прилипать друг к другу.
+                      <div key={v.id} className="border-t border-border-app py-4 first:border-t-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-mono text-sm font-semibold">{v.versionNumber}</span>
                           {badge && <span className={badge.cls}>{t(badge.key)}</span>}
@@ -391,9 +414,19 @@ export default function ProjectDetailModal({
                             </span>
                           )}
                         </div>
-                        <p className="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-text-muted">
-                          {v.changelog}
-                        </p>
+                        <div className="mt-1 space-y-1 text-[13px] leading-relaxed text-text-muted">
+                          {changelogBlocks(v.changelog ?? "").map((b, bi) =>
+                            b.ul ? (
+                              <ul key={bi} className="list-disc space-y-1 pl-5">
+                                {b.items.map((item, li) => (
+                                  <li key={li}>{item}</li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <p key={bi}>{b.items[0]}</p>
+                            ),
+                          )}
+                        </div>
                       </div>
                     );
                   })}
@@ -423,6 +456,12 @@ export default function ProjectDetailModal({
                         loading="lazy"
                         className="h-36 w-full object-cover transition-transform hover:scale-105"
                       />
+                      {/* Подпись под картинкой: caption приоритетнее title. */}
+                      {(g.caption || g.title) && (
+                        <span className="mt-1 block truncate text-[12px] text-text-muted">
+                          {g.caption ?? g.title}
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -470,10 +509,16 @@ export default function ProjectDetailModal({
                           key={v.id}
                           className="flex flex-wrap items-center gap-2 rounded-lg border border-border-app px-3 py-2"
                         >
-                          <span className="font-mono text-[13px] font-semibold">
+                          <span className="inline-block min-w-36 font-mono text-[13px] font-semibold">
                             {v.versionNumber}
                           </span>
-                          {badge && <span className={badge.cls}>{t(badge.key)}</span>}
+                          {/* min-w-14: колонки «версия / тип» идут ровно по всем строкам;
+                              justify-center — потому что .badge-soft это inline-flex. */}
+                          {badge && (
+                            <span className={`${badge.cls} min-w-14 justify-center text-center`}>
+                              {t(badge.key)}
+                            </span>
+                          )}
                           {gv && <span className="text-[13px] text-text-muted">{gv}</span>}
                           {v.loaders.length > 0 && (
                             <span className="badge-soft">{v.loaders.join(", ")}</span>
@@ -498,6 +543,20 @@ export default function ProjectDetailModal({
                               {t("project.versions.install", { version: v.versionNumber })}
                             </button>
                           )}
+                          {/* Ссылка на страницу версии на Modrinth — для ВСЕХ типов
+                              проекта; id берём из hit: у ModrinthVersion поля projectId нет. */}
+                          <button
+                            onClick={() =>
+                              void openUrl(
+                                `https://modrinth.com/project/${hit.project_id}/version/${v.id}`,
+                              ).catch(() => {})
+                            }
+                            aria-label={t("project.versions.open")}
+                            title={t("project.versions.open")}
+                            className="rounded p-1 text-text-muted hover:bg-surface-2 hover:text-text"
+                          >
+                            <ExternalLink size={14} aria-hidden />
+                          </button>
                         </div>
                       );
                     })

@@ -38,9 +38,9 @@ async function main() {
       await page.waitForTimeout(600);
       await page.screenshot({ path: `${OUT}/${theme}-3-create-dialog.png` });
       await page.getByRole("dialog").getByRole("button", { name: "Закрыть", exact: true }).click().catch(() => {});
-      await nav("Моды");
-      await page.waitForTimeout(400);
-      await page.screenshot({ path: `${OUT}/${theme}-4-mods.png` });
+      await nav("Главная");
+      await page.waitForTimeout(1200);
+      await page.screenshot({ path: `${OUT}/${theme}-4-home-catalog.png` });
       await nav("Настройки");
       await page.waitForTimeout(600);
       await page.screenshot({ path: `${OUT}/${theme}-5-settings-themes.png` });

@@ -77,17 +77,27 @@ async function main() {
     await page.waitForTimeout(400);
   }
 
-  // 5. Каталог: 5 вкладок (датапаки добавились).
-  await page.getByRole("navigation").getByRole("button", { name: /^Моды/ }).click();
-  await page.waitForTimeout(800);
-  const tabs = page.getByRole("tablist", { name: "Тип контента" });
+  // 5. Добавление контента (D39, вместо страницы «Моды»): 4 вкладки типа.
+  // После «Назад к списку» заново открываем страницу инстанса.
+  const irow2 = page.locator('[role="button"][aria-label^="Открыть "]').first();
+  await irow2.locator("img").first().click({ position: { x: 10, y: 60 } });
+  await page.waitForTimeout(700);
+  const modsTab2 = page.getByRole("tab", { name: /^Моды/ });
+  await modsTab2.click();
+  await page.waitForTimeout(500);
+  await page.getByRole("button", { name: "Добавить моды" }).click();
+  await page.waitForSelector("[role='dialog']");
+  await page.waitForTimeout(1500);
+  const tabs = page.locator("[role='dialog']").first().getByRole("tablist", { name: "Тип контента" });
   const nTabs = await tabs.getByRole("tab").count();
-  nTabs === 5 ? ok("каталог: 5 вкладок (датапаки добавлены)") : fail(`вкладок ${nTabs}, ожидалось 5`);
+  nTabs === 4 ? ok("добавление: 4 вкладки типа (датапаки на месте)") : fail(`вкладок ${nTabs}, ожидалось 4`);
   await tabs.getByRole("tab", { name: "Датапаки" }).click();
   await page.waitForTimeout(1200);
   (await tabs.getByRole("tab", { name: "Датапаки" }).getAttribute("aria-selected")) === "true"
     ? ok("вкладка «Датапаки» переключается")
     : fail("вкладка «Датапаки» не выбирается");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
 
   // 6. Настройки: «Дисковое пространство» + экспорт/импорт.
   await page.getByRole("navigation").getByRole("button", { name: /^Настройки/ }).click();
