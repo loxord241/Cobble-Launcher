@@ -13,10 +13,8 @@
 //! Кроссплатформенность: на не-Windows [`RpcConnection::connect`] всегда
 //! возвращает `Ok(None)` — RPC считается недоступным, это не ошибка.
 //!
-//! ВАЖНО (шаг владельца, как ключи подписи): [`DISCORD_CLIENT_ID`] — заглушка.
-//! Подставьте свой Application ID (создать бесплатно на
-//! https://discord.com/developers/applications). С чужим client_id соединение
-//! установится, но Discord молча игнорирует presence — это не ошибка лаунчера.
+//! [`DISCORD_CLIENT_ID`] — Application ID приложения «Cobble Launcher» из
+//! Discord Developer Portal (владелец предоставил 2026-09-28).
 
 use std::fs::File;
 use std::io::Write;
@@ -32,7 +30,7 @@ pub const OP_FRAME: u32 = 1;
 /// https://discord.com/developers/applications и подставить сюда настоящий
 /// Application ID. С чужим client_id Discord установит соединение, но presence
 /// молча игнорирует — это не ошибка лаунчера.
-pub const DISCORD_CLIENT_ID: &str = "1384136691173289994";
+pub const DISCORD_CLIENT_ID: &str = "1554156161027014666";
 
 /// Живое соединение с локальным IPC Discord: пишет presence, молча умирает
 /// при закрытии pipe (вызывающая сторона просто перестаёт обновлять/выбрасывает).

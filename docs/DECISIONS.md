@@ -572,9 +572,8 @@ cargo 259+10 (+31), clippy/tsc чистые. Известное: kill игры �
    InstanceRunning); вкладка «Конфиги модов» с редактором.
 5. **F26 Discord RPC** (process/discord.rs): named pipe \.\pipe\discord-ipc-*
    руками (без крейтов), HANDSHAKE+SET_ACTIVITY, поток в супервизии живёт
-   пока PID игры, тумблер в настройках. Application ID — шаг владельца
-   (discord.com/developers/applications), как ключи подписи: с заглушкой
-   Discord молча игнорирует presence.
+   пока PID игры, тумблер в настройках. Application ID получен от владельца
+   (1554156161027014666, приложение «Cobble Launcher») и подставлен.
 UI-CONTRACT: 75 команд. Приёмка parity4_features.cjs; 15 приёмок зелёные;
 cargo 298+10 (+39), clippy/tsc чистые. АУДИТ ПАРИТЕТА ЗАКРЫТ ПОЛНОСТЬЮ:
 F1–F30 все реализованы (кроме сознательных анти-фич из отчёта).
