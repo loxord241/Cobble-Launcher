@@ -25,6 +25,7 @@ import type {
   ProjectMeta,
   SearchResult,
   Settings,
+  SkinInfo,
   UpdateCheck,
   UpdateInfo,
   VersionEntry,
@@ -135,6 +136,8 @@ export const api = {
     invoke<Account>("account_add_ely", { username, password }),
   accountRemove: (id: string) => invoke<{ ok: boolean }>("account_remove", { id }),
   accountActiveSet: (id: string) => invoke<{ ok: boolean }>("account_active_set", { id }),
+  // Скин профиля (D34): null — скина нет (offline/404), UI показывает дефолт
+  accountSkin: (accountId: string) => invoke<SkinInfo | null>("account_skin", { accountId }),
 };
 
 /** Подписка на события ядра (dl_progress, launch_state, game_log_line, dl_queue_state, account_refresh_failed). */

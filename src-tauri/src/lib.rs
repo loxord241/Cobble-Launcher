@@ -178,6 +178,7 @@ pub fn run() -> tauri::Result<()> {
             commands::account_add_ely,
             commands::account_remove,
             commands::account_active_set,
+            commands::account_skin,
             commands::instance_import,
             commands::crash_analyze,
             commands::java_list,

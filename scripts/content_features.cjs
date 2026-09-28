@@ -23,7 +23,7 @@ async function main() {
   (await tabs.getByRole("tab").count()) === 4
     ? ok("каталог: 4 вкладки типа контента")
     : fail("вкладок типа контента не 4");
-  const firstTitle = await page.locator(".group.grid, .flex.flex-col.gap-2 .truncate").first().textContent().catch(() => "");
+  const firstTitle = await page.locator('.flex.flex-col.gap-2 .truncate, [role="button"][aria-label^="Открыть "] .truncate').first().textContent().catch(() => "");
   await tabs.getByRole("tab", { name: "Шейдеры" }).click();
   await page.waitForTimeout(1500);
   const shaderSelected = await tabs.getByRole("tab", { name: "Шейдеры" }).getAttribute("aria-selected");
@@ -57,7 +57,7 @@ async function main() {
   // 3. Бэкап (zip) через кебаб-меню инстанса: IPC + файл на диске.
   await page.getByRole("navigation").getByRole("button", { name: /^Инстансы/ }).click();
   await page.waitForTimeout(600);
-  const row = page.locator(".group.grid").first();
+  const row = page.locator('[role="button"][aria-label^="Открыть "]').first();
   await row.getByRole("button", { name: /Действия/ }).click();
   await page.waitForTimeout(300);
   await page.getByRole("menuitem", { name: "Бэкап (zip)" }).click();

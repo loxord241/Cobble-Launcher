@@ -8,7 +8,7 @@ import { api } from "../../api/client";
 import { useSettings } from "../../state/settings";
 import { apiErrorText, t } from "../../i18n";
 import { pickImagePath } from "../components/pickFile";
-import InstanceRow from "../components/InstanceRow";
+import InstanceCard from "../components/InstanceCard";
 import CreateInstanceDialog from "../components/CreateInstanceDialog";
 import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
@@ -74,7 +74,7 @@ export default function InstancesPage({
   const visible = q ? list.filter((i) => i.name.toLowerCase().includes(q)) : list;
 
   // D8: колбэки строк строятся один раз на список (замыкание на inst), а не
-  // заново на каждый рендер — иначе memo(InstanceRow) не срабатывает.
+  // заново на каждый рендер — иначе memo(InstanceCard) не срабатывает.
   const rowCallbacks = useMemo(() => {
     const byId = new Map<string, RowCallbacks>();
     for (const inst of list) {
@@ -165,12 +165,12 @@ export default function InstancesPage({
           </div>
         </div>
       ) : (
-        <div className="flex flex-col gap-2">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-3">
           {visible.map((inst) => {
             const callbacks = rowCallbacks.get(inst.id);
             return callbacks ? (
-              // Клик по телу строки открывает страницу инстанса; кнопки внутри
-              // строки (Play/Stop, кебаб и его меню) остаются рабочими.
+              // Клик по телу карточки открывает страницу инстанса; кнопки
+              // внутри (Play/Stop, кебаб и его меню) остаются рабочими.
               <div
                 key={inst.id}
                 role="button"
@@ -180,7 +180,7 @@ export default function InstancesPage({
                   if (rowClickOpens(e.target)) onOpenInstance(inst.id);
                 }}
                 onKeyDown={(e) => {
-                  if (e.target !== e.currentTarget) return; // Enter на кнопках строки
+                  if (e.target !== e.currentTarget) return; // Enter на кнопках карточки
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
                     onOpenInstance(inst.id);
@@ -188,7 +188,7 @@ export default function InstancesPage({
                 }}
                 className="cursor-pointer rounded-lg"
               >
-                <InstanceRow inst={inst} status={status[inst.id]} {...callbacks} />
+                <InstanceCard inst={inst} status={status[inst.id]} callbacks={callbacks} />
               </div>
             ) : null;
           })}

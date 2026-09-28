@@ -29,7 +29,7 @@ async function main() {
   //    отображение в строке и снятие — через живой UI.
   await page.getByRole("navigation").getByRole("button", { name: /^Инстансы/ }).click();
   await page.waitForTimeout(600);
-  const row = page.locator(".group.grid").first();
+  const row = page.locator('[role="button"][aria-label^="Открыть "]').first();
   const instId = await page.evaluate(async () => {
     const ids = await window.__TAURI__.core.invoke("instance_list");
     return ids[0].id;
@@ -54,7 +54,7 @@ async function main() {
     await page.waitForTimeout(800);
     await page.getByRole("navigation").getByRole("button", { name: /^Инстансы/ }).click();
     await page.waitForTimeout(600);
-    const row2 = page.locator(".group.grid").first();
+    const row2 = page.locator('[role="button"][aria-label^="Открыть "]').first();
     (await row2.locator("img[src^='data:image/png;base64,']").count()) > 0
       ? ok("иконка установлена (IPC) и видна в строке (data-URL)")
       : fail("иконка не появилась в строке");
@@ -65,8 +65,11 @@ async function main() {
   await page.waitForTimeout(300);
   await page.getByRole("menuitem", { name: "Убрать иконку" }).click();
   await page.waitForTimeout(800);
-  (await row.locator("img[src^='data:image']").count()) === 0
-    ? ok("иконка убрана — вернулась буква")
+  // D35: без своей иконки карточка показывает дефолтный арт (svg data-URL)
+  const pngGone = (await row.locator("img[src^='data:image/png;base64,']").count()) === 0;
+  const artBack = (await row.locator("img[src^='data:image/svg+xml']").count()) > 0;
+  pngGone && artBack
+    ? ok("иконка убрана — вернулся дефолтный арт")
     : fail("иконка не убралась");
 
   // 3. Статистика запусков в настройках инстанса.

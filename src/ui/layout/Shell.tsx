@@ -25,6 +25,8 @@ import { api } from "../../api/client";
 import { useInstances, unsubscribeEvents } from "../../state/instances";
 import { useSettings } from "../../state/settings";
 import { useAccounts, accountKindLabelKey } from "../../state/accounts";
+import { useSkins } from "../../state/skins";
+import { SkinHead } from "../components/SkinViews";
 import HomePage from "../pages/HomePage";
 import InstancesPage from "../pages/InstancesPage";
 import ModsPage from "../pages/ModsPage";
@@ -169,6 +171,13 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   const active =
     accounts.find((a) => a.id === settings?.accountsActiveId) ?? accounts[0] ?? null;
 
+  // Скины профилей (D34): голова персонажа в чипе титлбара и в меню профилей.
+  const skinsById = useSkins((s) => s.byId);
+  const loadSkin = useSkins((s) => s.load);
+  useEffect(() => {
+    for (const acc of accounts) void loadSkin(acc);
+  }, [accounts, loadSkin]);
+
   const pickAccount = useCallback(
     (id: string) => {
       setAccountOpen(false);
@@ -227,12 +236,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
               aria-expanded={accountOpen}
               className="flex h-10 items-center gap-2 rounded-lg px-1 hover:bg-surface-2"
             >
-              <span
-                aria-hidden
-                className="grid size-8 place-items-center rounded-md bg-accent-soft text-sm font-bold text-accent"
-              >
-                {active.name.slice(0, 1).toUpperCase()}
-              </span>
+              <SkinHead name={active.name} skin={skinsById[active.id]} size={32} />
               <span className="text-left leading-tight">
                 <span className="block text-sm font-semibold">{active.name}</span>
                 <span className="block text-xs text-text-muted">
@@ -260,6 +264,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
                       <span className="w-4">
                         {a.id === active.id && <Check size={14} aria-hidden />}
                       </span>
+                      <SkinHead name={a.name} skin={skinsById[a.id]} size={16} />
                       <span className="font-semibold">{a.name}</span>
                       <span className="ml-auto text-xs text-text-muted">
                         {t(accountKindLabelKey[a.kind])}

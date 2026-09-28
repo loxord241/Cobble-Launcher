@@ -11,7 +11,8 @@ import { useSettings } from "../../state/settings";
 import { api } from "../../api/client";
 import { apiErrorText, currentLanguage, t } from "../../i18n";
 import { pickImagePath } from "../components/pickFile";
-import InstanceRow from "../components/InstanceRow";
+import { defaultArtwork } from "../defaultArt";
+import InstanceCard from "../components/InstanceCard";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
 import LogViewerModal from "../components/LogViewerModal";
@@ -204,7 +205,7 @@ export default function HomePage({
   const heroBusy = heroStatus && heroStatus.phase !== "exited";
 
   // D8: колбэки строк строятся один раз на список (замыкание на inst), а не
-  // заново на каждый рендер — иначе memo(InstanceRow) не срабатывает.
+  // заново на каждый рендер — иначе memo(InstanceCard) не срабатывает.
   const rowCallbacks = useMemo(() => {
     const byId = new Map<string, RowCallbacks>();
     for (const inst of list) {
@@ -287,12 +288,12 @@ export default function HomePage({
             }}
             className="flex min-w-0 cursor-pointer items-center gap-4"
           >
-            <span
+            <img
+              src={hero.icon ?? defaultArtwork(hero.name)}
+              alt=""
               aria-hidden
-              className="grid size-14 place-items-center rounded-lg bg-accent-soft text-2xl font-bold text-accent"
-            >
-              {hero.name.slice(0, 1).toUpperCase()}
-            </span>
+              className="size-16 shrink-0 rounded-lg border border-border-app object-cover"
+            />
             <div className="min-w-0">
               <h1 className="truncate text-2xl font-bold leading-tight tracking-tight">
                 {hero.name}
@@ -385,32 +386,34 @@ export default function HomePage({
             </div>
           </div>
         ) : (
-          visible.map((inst) => {
-            const callbacks = rowCallbacks.get(inst.id);
-            return callbacks ? (
-              // Клик по телу строки открывает страницу инстанса; кнопки внутри
-              // строки (Play/Stop, кебаб и его меню) остаются рабочими.
-              <div
-                key={inst.id}
-                role="button"
-                tabIndex={0}
-                aria-label={t("instance.open", { name: inst.name })}
-                onClick={(e) => {
-                  if (rowClickOpens(e.target)) onOpenInstance(inst.id);
-                }}
-                onKeyDown={(e) => {
-                  if (e.target !== e.currentTarget) return; // Enter на кнопках строки
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    onOpenInstance(inst.id);
-                  }
-                }}
-                className="cursor-pointer rounded-lg"
-              >
-                <InstanceRow inst={inst} status={status[inst.id]} {...callbacks} />
-              </div>
-            ) : null;
-          })
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-3">
+            {visible.map((inst) => {
+              const callbacks = rowCallbacks.get(inst.id);
+              return callbacks ? (
+                // Клик по телу карточки открывает страницу инстанса; кнопки
+                // внутри (Play/Stop, кебаб и его меню) остаются рабочими.
+                <div
+                  key={inst.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={t("instance.open", { name: inst.name })}
+                  onClick={(e) => {
+                    if (rowClickOpens(e.target)) onOpenInstance(inst.id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.target !== e.currentTarget) return; // Enter на кнопках карточки
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onOpenInstance(inst.id);
+                    }
+                  }}
+                  className="cursor-pointer rounded-lg"
+                >
+                  <InstanceCard inst={inst} status={status[inst.id]} callbacks={callbacks} />
+                </div>
+              ) : null;
+            })}
+          </div>
         )}
       </section>
 

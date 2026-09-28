@@ -780,6 +780,21 @@ pub async fn account_active_set(state: State<'_, AppState>, id: String) -> Resul
     Ok(OkMsg { ok: true })
 }
 
+/// Скин профиля для показа в лаунчере (D34): ely.by / Mojang session server;
+/// None — скина нет (offline, 404) — UI рисует дефолт. Дисковый кэш 1 час.
+#[tauri::command]
+pub async fn account_skin(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<Option<crate::auth::skins::SkinInfo>> {
+    let accounts = crate::auth::list(&state.paths);
+    let account = accounts.into_iter().find(|a| a.id == account_id).ok_or_else(|| {
+        crate::errors::LauncherError::NotFound(format!("аккаунт {account_id}"))
+    })?;
+    let http = state.http().await;
+    crate::auth::skins::fetch_skin(&http, &state.paths, &account).await
+}
+
 // ---------- импорт и диагностика (спека §6.11, §6.10) ----------
 
 #[tauri::command]

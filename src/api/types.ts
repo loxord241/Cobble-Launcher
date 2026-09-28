@@ -10,6 +10,15 @@ export interface Account {
   refreshRef?: string;
 }
 
+/** Откуда взят скин профиля (зеркало crate::auth::skins::SkinSource). */
+export type SkinSource = "ely" | "mojang";
+
+/** Скин профиля для показа в лаунчере (D34); None — скина нет, UI рисует дефолт. */
+export interface SkinInfo {
+  source: SkinSource;
+  dataUrl: string;
+}
+
 export interface Instance {
   schemaVersion: number;
   id: string;

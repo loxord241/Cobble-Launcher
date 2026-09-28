@@ -1,8 +1,11 @@
-import { useState } from "react";
-import { X, Trash2, Globe, Shield, User, Plus, ExternalLink } from "lucide-react";
+import { useEffect, useState } from "react";
+import { X, Trash2, Globe, Shield, User, Plus, ExternalLink, RefreshCw } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAccounts, accountKindLabelKey } from "../../state/accounts";
+import { useSkins } from "../../state/skins";
 import { useSettings } from "../../state/settings";
 import { useModalA11y } from "../hooks/useModalA11y";
+import { SkinBody, SkinHead } from "./SkinViews";
 import { apiErrorText, t } from "../../i18n";
 
 type Tab = "msa" | "ely" | "offline";
@@ -11,6 +14,17 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
   const { list: accounts, setActive, remove, addOffline, addMsaBrowser, addEly } = useAccounts();
   const { settings } = useSettings();
   const [activeTab, setActiveTab] = useState<Tab>("offline");
+
+  // Скины (D34): спрашиваем по разу за сессию; «Обновить» — осознанный рефетч.
+  const skinsById = useSkins((s) => s.byId);
+  const loadSkin = useSkins((s) => s.load);
+  const refreshSkin = useSkins((s) => s.refresh);
+  const [skinBusy, setSkinBusy] = useState(false);
+  const activeAccount =
+    accounts.find((a) => a.id === (settings?.accountsActiveId ?? accounts[0]?.id)) ?? accounts[0];
+  useEffect(() => {
+    for (const acc of accounts) void loadSkin(acc);
+  }, [accounts, loadSkin]);
 
   // Офлайн форма
   const [offlineNick, setOfflineNick] = useState("");
@@ -103,7 +117,9 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex max-h-[90vh] w-[620px] max-w-full flex-col rounded-lg border border-border-app bg-card p-6 shadow-2xl">
+      {/* Персонаж+добавление выросли выше вьюпорта — контент модалки скроллится,
+          «Готово» всегда достижим (клавиатурой и мышью). */}
+      <div className="flex max-h-[90vh] w-[620px] max-w-full flex-col overflow-y-auto rounded-lg border border-border-app bg-card p-6 shadow-2xl">
         <div className="flex items-center justify-between border-b border-border-app pb-3">
           <h2 className="text-lg font-semibold text-text">{t("accounts.title")}</h2>
           <button
@@ -138,9 +154,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
                     }`}
                   >
                     <div className="flex items-center gap-3">
-                      <span className="grid size-8 place-items-center rounded-md bg-surface-2 text-sm font-bold text-accent">
-                        {acc.name.slice(0, 1).toUpperCase()}
-                      </span>
+                      <SkinHead name={acc.name} skin={skinsById[acc.id]} size={32} />
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-semibold text-text">{acc.name}</span>
@@ -179,6 +193,65 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
             )}
           </div>
         </div>
+
+        {/* Персонаж активного профиля: скин из ely.by / Mojang или честный дефолт */}
+        {activeAccount && (
+          <div className="mt-5 border-t border-border-app pt-4">
+            <div className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+              {t("accounts.character")}
+            </div>
+            <div className="mt-3 flex items-center gap-5 rounded-lg border border-border-app bg-bg p-4">
+              <SkinBody name={activeAccount.name} skin={skinsById[activeAccount.id]} />
+              <div className="flex min-w-0 flex-col gap-2">
+                <div className="truncate text-sm font-semibold text-text">
+                  {activeAccount.name}
+                </div>
+                {skinsById[activeAccount.id] === undefined ? (
+                  <div className="text-xs text-text-muted">{t("accounts.skin.loading")}</div>
+                ) : (
+                  <>
+                    <div className="text-xs text-text-muted">
+                      {skinsById[activeAccount.id]?.source === "ely"
+                        ? t("accounts.skin.source.ely")
+                        : skinsById[activeAccount.id]?.source === "mojang"
+                          ? t("accounts.skin.source.mojang")
+                          : t("accounts.skin.default")}
+                    </div>
+                    {activeAccount.kind === "ely" && (
+                      <button
+                        type="button"
+                        onClick={() => void openUrl("https://ely.by/profile/settings").catch(() => {})}
+                        className="btn-ghost h-8 w-fit gap-2 px-2.5 text-xs"
+                      >
+                        <ExternalLink size={14} aria-hidden />
+                        {t("accounts.skin.changeEly")}
+                      </button>
+                    )}
+                    {activeAccount.kind === "offline" && (
+                      <div className="max-w-[300px] text-xs leading-relaxed text-text-muted">
+                        {t("accounts.skin.offlineHint")}
+                      </div>
+                    )}
+                  </>
+                )}
+                <button
+                  type="button"
+                  disabled={skinBusy}
+                  onClick={() => {
+                    setSkinBusy(true);
+                    void refreshSkin(activeAccount)
+                      .catch((e) => setError(apiErrorText(e)))
+                      .finally(() => setSkinBusy(false));
+                  }}
+                  className="btn-ghost h-8 w-fit gap-2 px-2.5 text-xs"
+                >
+                  <RefreshCw size={14} aria-hidden />
+                  {t("accounts.skin.refresh")}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Добавление нового аккаунта */}
         <div className="mt-5 border-t border-border-app pt-4">

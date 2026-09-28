@@ -33,6 +33,7 @@ import { useAccounts } from "../../state/accounts";
 import { useInstances } from "../../state/instances";
 import { useSettings } from "../../state/settings";
 import { pickImagePath } from "../components/pickFile";
+import { defaultArtwork } from "../defaultArt";
 import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
@@ -315,20 +316,12 @@ export default function InstanceDetailPage({
 
       {/* Шапка в стиле CurseForge: иконка, имя, чипы и большая кнопка запуска. */}
       <section className="flex flex-wrap items-center gap-4 rounded-lg border border-border-app bg-card p-5">
-        {inst.icon ? (
-          <img
-            src={inst.icon}
-            alt=""
-            className="size-16 shrink-0 rounded-lg border border-border-app object-cover"
-          />
-        ) : (
-          <span
-            aria-hidden
-            className="grid size-16 shrink-0 place-items-center rounded-lg bg-accent-soft text-2xl font-bold text-accent"
-          >
-            {inst.name.slice(0, 1).toUpperCase()}
-          </span>
-        )}
+        <img
+          src={inst.icon ?? defaultArtwork(inst.name)}
+          alt=""
+          aria-hidden
+          className="size-16 shrink-0 rounded-lg border border-border-app object-cover"
+        />
 
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-2xl font-bold leading-tight tracking-tight" title={inst.name}>

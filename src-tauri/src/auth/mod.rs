@@ -4,6 +4,7 @@
 pub mod ely;
 pub mod msa;
 pub mod offline;
+pub mod skins;
 
 use crate::errors::{LauncherError, Result};
 use crate::util::fs::{atomic_write, long_path};
