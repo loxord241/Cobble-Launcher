@@ -318,5 +318,21 @@
   "settings.export": "Export settings",
   "settings.import": "Import settings",
   "settings.export.done": "Settings saved: {path}",
-  "settings.import.done": "Settings imported"
+  "settings.import.done": "Settings imported",
+  "instances.tab.screens": "Screenshots",
+  "screens.empty": "No screenshots yet — press F2 in game",
+  "screens.open": "Open screenshots folder",
+  "screens.delete": "Delete screenshot {name}",
+  "screens.copyHint": "Copy to clipboard",
+  "mods.deps.missing": "Requires: {deps}",
+  "mods.deps.providedBy": "dependency of {name}",
+  "mods.conflicts": "Possible conflict: {others}",
+  "mods.deps.disabled": "Dependency disabled: {name}",
+  "instances.safeMode.title": "The game crashed on launch ({n} times). Start in safe mode?",
+  "instances.safeMode.yes": "Safe mode",
+  "instances.safeMode.no": "Launch normally",
+  "instances.shortcut": "Desktop shortcut",
+  "instances.shortcut.done": "Shortcut created: {path}",
+  "instances.monitor.cpu": "CPU {cpu}%",
+  "instances.monitor.ram": "RAM {ram}"
 }

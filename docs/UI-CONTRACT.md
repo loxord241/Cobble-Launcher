@@ -17,7 +17,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 ## Команды (invoke)
 
-Все 62 команды `invoke_handler` (`src-tauri/src/lib.rs:104`), обработчики —
+Все 70 команд `invoke_handler` (`src-tauri/src/lib.rs:104`), обработчики —
 `src-tauri/src/commands/mod.rs`.
 
 ### Инстансы и процессы
@@ -79,6 +79,14 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `instance_worlds` | `{id}` | `WorldInfo[]` {name, lastModified, sizeBytes, hasNether, hasEnd} (каталоги saves/ с level.dat) | not_found, invalid_input |
 | `world_backup` | `{id, world}` | `ArchiveResult` (zip в backups/worlds/, DIM-1/DIM1 внутри; запущено → instance_running) | not_found, invalid_input, instance_running, io |
 | `world_delete_data` | `{id, world, scope: all\|nether\|end}` | `{ok}` (в корзину ОС, как instance_delete) | not_found, invalid_input, instance_running |
+| `instance_screens` | `{id}` | `ShotInfo[]` {name, bytes, modified, thumb? (data-URL ≤300 КБ)} | not_found, invalid_input |
+| `screenshot_delete` | `{id, name}` | `{ok}` (прямое удаление — пересоздаваемый мусор) | not_found, invalid_input |
+| `instance_screens_open` | `{id}` | `{ok}` (каталог не создаётся) | not_found, internal |
+| `content_metadata` | `{id}` | `ModMetadata[]` {file, id?, missingDeps, disabledDeps, conflicts} (из fabric/quilt.mod.json jar'ов; окружение minecraft/fabricloader/java не считается missing) | not_found, invalid_input |
+| `pack_art` | `{id, kinds[]}` | `PackArtInfo[]` {file, description?, png?} (pack.png/pack.mcmeta из zip; >300 КБ → png нет) | not_found |
+| `instance_shortcut` | `{id}` | `{path}` (.lnk на рабочем столе → mcl instance-launch --id … --no-wait) | not_found, invalid_input, internal |
+| `game_resources` | `{id}` | `GameResourceSample | null` {cpuPercent, ramBytes} (sysinfo, опрос UI 2 с) | — |
+| `instance_launch_safe` | `{id, player}` | `{ok}` (F30: сброс JVM-флагов + отключение шейдеров, затем обычный запуск) | not_found, invalid_input |
 | `instance_repair` | `{id}` | `RepairReport` {checked, redownloaded} (клиент+библиотеки+нативы+ассеты по хэшам; saves/config/mods не трогаются) | not_found, instance_running, network, http |
 | `java_test_path` | `{javaExe}` | `JavaTestInfo` {major, bits, versionLine} (java -version, таймаут 5 с) | invalid_input, timeout |
 | `log_share_mclogs` | `{id}` | `{url}` (хвост latest.log 512 КБ → redact → api.mclo.gs; офлайн → offline_mode) | not_found, network, offline_mode, http |

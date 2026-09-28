@@ -43,6 +43,8 @@ export interface Instance {
   quickPlayServer?: string;
   /** Профиль для запуска именно этого инстанса (F11); нет — глобальный. */
   accountId?: string;
+  /** Подряд упавших запусков (F30). */
+  crashCount: number;
 }
 
 export interface Resolution {
@@ -294,4 +296,41 @@ export interface UpdateInfo {
   checked: boolean;
   /** Код причины из errors.json, если версию узнать не удалось (UI переводит). */
   note?: string;
+}
+
+// ---------- Волна D37-B ----------
+
+/** Скриншот инстанса (зеркало instances::screens::ShotInfo). */
+export interface ShotInfo {
+  name: string;
+  bytes: number;
+  modified: number;
+  /** Миниатюра data-URL (ширина 320, генерируется ядром). */
+  thumb?: string;
+}
+
+/** Метаданные fabric.mod.json/quilt для зависимостей и конфликтов (F6/F9). */
+export interface ModMetadata {
+  file: string;
+  /** id мода из манифеста. */
+  id?: string;
+  /** Чего не хватает: id зависимостей, которых нет среди установленных. */
+  missingDeps: string[];
+  /** Выключенные зависимости (.disabled). */
+  disabledDeps: string[];
+  /** id модов, с которыми заявлен конфликт (breaks/conflicts). */
+  conflicts: string[];
+}
+
+/** Мониторинг ресурсов запущенной игры (F28; зеркало process::monitor). */
+export interface GameResourceSample {
+  cpuPercent: number;
+  ramBytes: number;
+}
+
+/** Обложка ресурспака/шейдера из zip (F25; зеркало instances::packart::PackArt). */
+export interface PackArtInfo {
+  file: string;
+  description?: string;
+  png?: string;
 }

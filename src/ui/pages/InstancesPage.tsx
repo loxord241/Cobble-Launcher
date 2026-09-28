@@ -32,6 +32,7 @@ type RowCallbacks = {
   onExport: () => void;
   onForceUnlock: () => void;
   onRepair: () => void;
+  onShortcut: () => void;
   onIconSet: () => void;
   onIconClear?: () => void;
 };
@@ -141,6 +142,12 @@ export default function InstancesPage({
               void load();
             })
             .catch((e) => setError(apiErrorText(e))),
+        onShortcut: () => {
+          void api
+            .instanceShortcut(inst.id)
+            .then((r) => setNotice(t("instances.shortcut.done", { path: r.path })))
+            .catch((e) => setError(apiErrorText(e)));
+        },
         // F2: проверка целостности игровых файлов (движок группы инстанса).
         onRepair: () => {
           setNotice(t("instances.repair.started"));

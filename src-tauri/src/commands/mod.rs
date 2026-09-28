@@ -1325,6 +1325,135 @@ pub async fn settings_import(
     Ok(settings)
 }
 
+/// Скриншоты инстанса (F3).
+#[tauri::command]
+pub async fn instance_screens(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<crate::instances::screens::ShotInfo>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::screens::list(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Удалить скриншот (F3).
+#[tauri::command]
+pub async fn screenshot_delete(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::screens::delete(&paths, &id, &name))
+        .await
+        .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+/// Открыть папку скриншотов (F3).
+#[tauri::command]
+pub async fn instance_screens_open(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::screens::open_folder(&paths, &id))
+        .await
+        .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+/// Метаданные модов: зависимости и конфликты (F6/F9).
+#[tauri::command]
+pub async fn content_metadata(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<crate::instances::modmeta::ModMetadata>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::modmeta::analyze_all(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Обложки ресурспаков/шейдеров из zip (F25).
+#[tauri::command]
+pub async fn pack_art(
+    state: State<'_, AppState>,
+    id: String,
+    kinds: Vec<crate::instances::ContentKind>,
+) -> Result<Vec<crate::instances::packart::PackArt>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::packart::analyze(&paths, &id, &kinds)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Ярлык запуска на рабочем столе (F4).
+#[tauri::command]
+pub async fn instance_shortcut(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ShortcutResult> {
+    let paths = state.paths.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::shortcut::create_desktop(&paths, &id)
+    })
+    .await
+    .map_err(join_err)??;
+    Ok(ShortcutResult { path })
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ShortcutResult {
+    pub path: String,
+}
+
+/// CPU/RAM запущенной игры (F28); None — игра не запущена.
+#[tauri::command]
+pub async fn game_resources(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<crate::process::monitor::GameResourceSample>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::process::sample_for_instance(&paths, &id))
+        .await
+        .map_err(join_err)
+}
+
+/// Запуск в безопасном режиме (F30): сброс JVM-флагов + отключение шейдеров.
+#[tauri::command]
+pub async fn instance_launch_safe(
+    state: State<'_, AppState>,
+    id: String,
+    player: String,
+) -> Result<OkMsg> {
+    let mut inst = instances::load(&state.paths, &id)?;
+    let launching_check = {
+        let launching = state.launching.lock().await;
+        launching.contains(&id)
+    };
+    if launching_check {
+        return Err(LauncherError::InvalidInput("запуск уже идёт".into()));
+    }
+    {
+        let launch_id = id.clone();
+        state.launching.lock().await.insert(launch_id);
+    }
+    let paths = state.paths.clone();
+    let measures = tauri::async_runtime::spawn_blocking(move || {
+        let measures = crate::instances::run::apply_safe_mode(&paths, &mut inst);
+        crate::instances::save(&paths, &inst)?;
+        Ok::<_, LauncherError>(measures)
+    })
+    .await
+    .map_err(join_err)??;
+    tracing::info!("safe mode: {measures:?}");
+    instance_launch(state, id, player).await
+}
+
 // ---------- события: мост bus → окно ----------
 
 /// Запустить пересылку событий ядра в окно (единый канал `core`).

@@ -16,6 +16,7 @@ import {
   FolderOpen,
   Image as ImageIcon,
   ImageOff,
+  MonitorSmartphone,
   MoreVertical,
   Pencil,
   Play,
@@ -40,12 +41,23 @@ import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
 import WorldsTab from "../components/instance/WorldsTab";
+import ScreensTab from "../components/instance/ScreensTab";
+import PackArt from "../components/instance/PackArt";
 import { fileBase } from "./ModsPage";
-import type { ContentEntry, LogFileInfo, ProjectMeta, SnapshotInfo, UpdateCheck } from "../../api/types";
+import type {
+  ContentEntry,
+  GameResourceSample,
+  LogFileInfo,
+  ModMetadata,
+  PackArtInfo,
+  ProjectMeta,
+  SnapshotInfo,
+  UpdateCheck,
+} from "../../api/types";
 
-type Tab = "overview" | "worlds" | "mods" | "logs";
+type Tab = "overview" | "worlds" | "screens" | "mods" | "logs";
 
-const TABS: Tab[] = ["overview", "worlds", "mods", "logs"];
+const TABS: Tab[] = ["overview", "worlds", "screens", "mods", "logs"];
 
 /** Логов этого инстанса ещё нет: стабильная ссылка для селектора стора. */
 const NO_LOGS: string[] = [];
@@ -113,6 +125,9 @@ export default function InstanceDetailPage({
   const [snapshots, setSnapshots] = useState<SnapshotInfo[] | null>(null);
   // F10: файл, который копируем в другой инстанс (модалка выбора цели).
   const [copyFor, setCopyFor] = useState<string | null>(null);
+  // F6/F9: зависимости и конфликты модов; F25: обложки паков.
+  const [modMeta, setModMeta] = useState<Record<string, ModMetadata>>({});
+  const [packArts, setPackArts] = useState<Record<string, PackArtInfo>>({});
   const kebabRef = useRef<HTMLButtonElement>(null);
   const firstItemRef = useRef<HTMLButtonElement>(null);
 
@@ -132,6 +147,19 @@ export default function InstanceDetailPage({
   const loadInstalled = useCallback(async () => {
     // Снапшоты — вторичный источник (нет их — панель просто не показывается).
     api.contentSnapshots(instanceId).then(setSnapshots).catch(() => setSnapshots(null));
+    // F6/F9: метаданные модов; F25: обложки ресурспаков/шейдеров.
+    api
+      .contentMetadata(instanceId)
+      .then((rows) =>
+        setModMeta(Object.fromEntries(rows.map((r) => [r.file, r]))),
+      )
+      .catch(() => setModMeta({}));
+    api
+      .packArt(instanceId, ["resourcepack", "shader"])
+      .then((rows) =>
+        setPackArts(Object.fromEntries(rows.map((r) => [r.file, r]))),
+      )
+      .catch(() => setPackArts({}));
     try {
       setInstalled(await api.contentInstalled(instanceId));
     } catch (e) {
@@ -491,6 +519,19 @@ export default function InstanceDetailPage({
                       void api.instanceOpenDir(instanceId).catch((e) => setError(String(e)));
                     }}
                   />
+                  {/* F4: ярлык запуска инстанса на рабочем столе. */}
+                  <MenuItem
+                    icon={MonitorSmartphone}
+                    label={t("instances.shortcut")}
+                    disabled={busy}
+                    onClick={() => {
+                      closeMenu();
+                      void api
+                        .instanceShortcut(instanceId)
+                        .then((r) => setNotice(t("instances.shortcut.done", { path: r.path })))
+                        .catch((e) => setError(apiErrorText(e)));
+                    }}
+                  />
                   {/* F2: проверка целостности игровых файлов (saves/config не трогает). */}
                   <MenuItem
                     icon={ShieldCheck}
@@ -559,7 +600,9 @@ export default function InstanceDetailPage({
               ? t("instance.tab.mods", { n: installed?.length ?? 0 })
               : id === "worlds"
                 ? t("instances.tab.worlds")
-                : t(`instance.tab.${id}`)}
+                : id === "screens"
+                  ? t("instances.tab.screens")
+                  : t(`instance.tab.${id}`)}
           </button>
         ))}
       </div>
@@ -609,6 +652,8 @@ export default function InstanceDetailPage({
         {tab === "worlds" && (
           <WorldsTab instanceId={instanceId} setError={setError} setNotice={setNotice} />
         )}
+
+        {tab === "screens" && <ScreensTab instanceId={instanceId} setError={setError} />}
 
         {tab === "mods" && (
           <>
@@ -709,7 +754,12 @@ export default function InstanceDetailPage({
                             e.enabled ? "" : "opacity-55"
                           }`}
                         >
-                          {m?.iconUrl ? (
+                          {(e.kind === "resourcepack" || e.kind === "shader") &&
+                          packArts[e.file] !== undefined ? (
+                            <PackArt art={packArts[e.file]}>
+                              <span />
+                            </PackArt>
+                          ) : m?.iconUrl ? (
                             <img
                               src={m.iconUrl}
                               alt=""
@@ -730,6 +780,39 @@ export default function InstanceDetailPage({
                             <div className="truncate font-mono text-[12px] text-text-muted" title={e.file}>
                               {e.file}
                             </div>
+                            {(() => {
+                              const mm = modMeta[e.file];
+                              if (!mm) return null;
+                              const badges: { text: string; cls: string }[] = [];
+                              if (mm.missingDeps.length > 0)
+                                badges.push({
+                                  text: t("mods.deps.missing", { deps: mm.missingDeps.join(", ") }),
+                                  cls: "border-error/50 text-error",
+                                });
+                              if (mm.conflicts.length > 0)
+                                badges.push({
+                                  text: t("mods.conflicts", { others: mm.conflicts.join(", ") }),
+                                  cls: "border-error/50 text-error",
+                                });
+                              if (mm.disabledDeps.length > 0)
+                                badges.push({
+                                  text: t("mods.deps.disabled", { name: mm.disabledDeps.join(", ") }),
+                                  cls: "border-border-strong text-text-muted",
+                                });
+                              if (badges.length === 0) return null;
+                              return (
+                                <div className="mt-0.5 flex flex-wrap gap-1">
+                                  {badges.map((b) => (
+                                    <span
+                                      key={b.text}
+                                      className={`rounded border px-1 py-px text-[10px] leading-tight ${b.cls}`}
+                                    >
+                                      {b.text}
+                                    </span>
+                                  ))}
+                                </div>
+                              );
+                            })()}
                           </div>
                           <span className="badge-soft">{t(`mods.kind.${e.kind}`)}</span>
                           <button
@@ -938,6 +1021,7 @@ function LogsPanel({
         <span className="chip-mono text-xs">
           {shown.length} {plural("instances.logs.lines", shown.length)}
         </span>
+        <ResMonitor instanceId={instanceId} />
         {/* F23: фильтр уровней (подстроки, как в LogViewerModal). */}
         {(["all", "errors", "warns"] as const).map((f) => (
           <button
@@ -1085,6 +1169,46 @@ function LogsPanel({
         )}
       </div>
     </div>
+  );
+}
+
+/** F28: CPU/RAM запущенной игры; опрос раз в 2 с, вне игры не рисуется. */
+function ResMonitor({ instanceId }: { instanceId: string }) {
+  const status = useInstances((s) => s.status[instanceId]);
+  const running = status?.phase === "running";
+  const [sample, setSample] = useState<GameResourceSample | null>(null);
+
+  useEffect(() => {
+    if (!running) {
+      setSample(null);
+      return;
+    }
+    let alive = true;
+    const tick = () => {
+      api
+        .gameResources(instanceId)
+        .then((r) => {
+          if (alive) setSample(r);
+        })
+        .catch(() => undefined);
+    };
+    tick();
+    const timer = window.setInterval(tick, 2000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [running, instanceId]);
+
+  if (!running || !sample) return null;
+  return (
+    <span className="chip-mono text-xs" aria-live="off">
+      {t("instances.monitor.cpu", { cpu: Math.round(sample.cpuPercent) })}
+      {" · "}
+      {t("instances.monitor.ram", {
+        ram: `${Math.max(1, Math.round(sample.ramBytes / 1024 / 1024))} МБ`,
+      })}
+    </span>
   );
 }
 

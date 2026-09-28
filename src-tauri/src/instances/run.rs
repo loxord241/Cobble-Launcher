@@ -802,10 +802,17 @@ fn supervise_detached(
     drop(tx);
 
     let started = std::time::Instant::now();
+    // F30: «игра дошла до запуска» — тот же маркер меню, что в
+    // supervise_to_menu. Краш ДО него считается падением запуска (инкремент
+    // crash_count); достигнутый running или нулевой выход — сброс счётчика.
+    let mut saw_running = false;
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(500)) {
             Ok((line, stream)) => {
                 write_game_line(log_file.as_mut(), bus, instance_id, &line, stream);
+                if !saw_running && line.contains("Sound engine started") {
+                    saw_running = true;
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if let Ok(Some(status)) = child.try_wait() {
@@ -821,6 +828,7 @@ fn supervise_detached(
                         inst.last_played = Some(crate::instances::now_secs());
                         inst.launch_count += 1;
                         inst.play_seconds += started.elapsed().as_secs();
+                        bump_crash_counter(inst, code, saw_running);
                     });
                     drop(lock);
                     return;
@@ -840,8 +848,60 @@ fn supervise_detached(
         inst.last_played = Some(crate::instances::now_secs());
         inst.launch_count += 1;
         inst.play_seconds += started.elapsed().as_secs();
+        bump_crash_counter(inst, exit_code, saw_running);
     });
     drop(lock);
+}
+
+/// F30: счётчик краш-лупа внутри атомарного `instances::update` (поле
+/// `crash_count` читается/пишется только здесь, в замыкании под SAVE_LOCK).
+/// Ненулевой (или неизвестный — `code()` дал None, аварийное завершение)
+/// exit-код ДО достижения running — падение запуска: насыщающий инкремент.
+/// Нулевой выход или достигнутый running — успешный запуск: сброс в 0.
+fn bump_crash_counter(inst: &mut Instance, exit_code: Option<i32>, saw_running: bool) {
+    let crashed = exit_code.is_none_or(|code| code != 0);
+    if crashed && !saw_running {
+        inst.crash_count = inst.crash_count.saturating_add(1);
+    } else {
+        inst.crash_count = 0;
+    }
+}
+
+/// F30: безопасный режим после серии падений запуска: сброс пользовательских
+/// JVM-флагов (частая причина «игра не стартует») и выключение включённых
+/// шейдеров (переименование в `.disabled` через content::toggle — ТОЛЬКО
+/// kind=Shader). Разрешение окна не трогаем: в Instance его нет, оно задаётся
+/// глобально (settings.default_resolution). Возвращает список принятых мер
+/// для показа в UI; сбой выключения отдельного шейдера не фатален (warn,
+/// запуск не блокируем). `&Paths` обязателен: content::toggle переименовывает
+/// файлы на диске инстанса. Вызывающая IPC-команда сохраняет инстанс и
+/// запускает игру обычной launch-цепочкой.
+pub(crate) fn apply_safe_mode(paths: &Paths, inst: &mut Instance) -> Vec<String> {
+    let mut actions = Vec::new();
+    if !inst.jvm_flags.is_empty() {
+        inst.jvm_flags = Vec::new();
+        actions.push("сброшены пользовательские JVM-флаги".to_string());
+    }
+    let manifest = crate::instances::load_content_manifest(paths, &inst.id);
+    for file in safe_mode_shader_targets(&manifest) {
+        match crate::instances::content::toggle(paths, &inst.id, &file) {
+            Ok(_) => actions.push(format!("выключен шейдер: {file}")),
+            Err(e) => {
+                tracing::warn!("безопасный режим {}: шейдер {file} не выключен: {e}", inst.id);
+            }
+        }
+    }
+    actions
+}
+
+/// Чистая часть безопасного режима (тестируется без диска): какие включённые
+/// шейдеры из манифеста надо выключить. Моды/ресурспаки/датапаки не трогаем.
+fn safe_mode_shader_targets(manifest: &[crate::instances::ContentEntry]) -> Vec<String> {
+    manifest
+        .iter()
+        .filter(|e| e.enabled && e.kind == crate::instances::ContentKind::Shader)
+        .map(|e| e.file.clone())
+        .collect()
 }
 
 /// Поддерживает ли версия MC quick play (F1): `--quickPlaySingleplayer` /
@@ -1051,5 +1111,126 @@ mod tests {
             quick_play_args("1.20.1", Some("w"), Some("h:2")),
             vec!["--quickPlaySingleplayer".to_string(), "w".to_string()]
         );
+    }
+
+    /// F30: таблица истинности счётчика краш-лупа. Краш до running —
+    /// инкремент (насыщающий); нулевой выход или достигнутый running — сброс;
+    /// неизвестный код (code() = None) считается аварийным выходом.
+    #[test]
+    fn bump_crash_counter_truth_table() {
+        let mut inst = Instance::new("crashy", "1.20.1");
+        assert_eq!(inst.crash_count, 0);
+        bump_crash_counter(&mut inst, Some(0), false);
+        assert_eq!(inst.crash_count, 0, "нулевой выход — не краш");
+        bump_crash_counter(&mut inst, Some(1), false);
+        assert_eq!(inst.crash_count, 1, "ненулевой выход до running — краш");
+        bump_crash_counter(&mut inst, None, false);
+        assert_eq!(inst.crash_count, 2, "нет кода завершения = аварийный выход");
+        bump_crash_counter(&mut inst, Some(-1), false);
+        assert_eq!(inst.crash_count, 3);
+        // Игра дошла до running — даже последующий краш не «падение запуска».
+        bump_crash_counter(&mut inst, Some(1), true);
+        assert_eq!(inst.crash_count, 0, "running достигнут — сброс");
+        inst.crash_count = u32::MAX;
+        bump_crash_counter(&mut inst, Some(1), false);
+        assert_eq!(inst.crash_count, u32::MAX, "насыщение без переполнения");
+    }
+
+    /// F30: чистый выбор целей безопасного режима — только включённые шейдеры;
+    /// выключенные шейдеры и прочий контент не трогаются.
+    #[test]
+    fn safe_mode_targets_only_enabled_shaders() {
+        let entry = |kind: crate::instances::ContentKind, file: &str, enabled: bool| {
+            crate::instances::ContentEntry {
+                kind,
+                file: file.into(),
+                source: crate::instances::ContentSource::Local,
+                project_id: None,
+                version_id: None,
+                sha1: None,
+                url: None,
+                enabled,
+            }
+        };
+        let manifest = vec![
+            entry(crate::instances::ContentKind::Shader, "shaderpacks/on.zip", true),
+            entry(crate::instances::ContentKind::Shader, "shaderpacks/off.zip", false),
+            entry(crate::instances::ContentKind::Mod, "mods/a.jar", true),
+            entry(crate::instances::ContentKind::ResourcePack, "resourcepacks/r.zip", true),
+            entry(crate::instances::ContentKind::Datapack, "datapacks/d.zip", true),
+        ];
+        assert_eq!(
+            safe_mode_shader_targets(&manifest),
+            vec!["shaderpacks/on.zip".to_string()],
+            "только включённые шейдеры"
+        );
+    }
+
+    fn safe_mode_paths() -> (tempfile::TempDir, crate::paths::Paths) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        (dir, paths)
+    }
+
+    /// F30: безопасный режим на реальном инстансе: JVM-флаги сброшены,
+    /// включённый шейдер переименован в `.disabled` и выключен в манифесте,
+    /// принятые меры перечислены в ответе.
+    #[test]
+    fn apply_safe_mode_clears_flags_and_disables_shader() {
+        let (_d, paths) = safe_mode_paths();
+        let mut inst = Instance::new("crashy", "1.20.1");
+        inst.jvm_flags = vec!["-Xmx4096M".into(), "-XX:+UseG1GC".into()];
+        crate::instances::save(&paths, &inst).unwrap();
+        let mc = crate::instances::minecraft_dir(&crate::instances::instance_dir(&paths, &inst.id));
+        let long = |p: &std::path::Path| crate::util::fs::long_path(p);
+        std::fs::create_dir_all(long(&mc.join("shaderpacks"))).unwrap();
+        std::fs::write(long(&mc.join("shaderpacks/bsl.zip")), b"S").unwrap();
+        let shader = crate::instances::ContentEntry {
+            kind: crate::instances::ContentKind::Shader,
+            file: "shaderpacks/bsl.zip".into(),
+            source: crate::instances::ContentSource::Local,
+            project_id: None,
+            version_id: None,
+            sha1: None,
+            url: None,
+            enabled: true,
+        };
+        crate::instances::save_content_manifest(&paths, &inst.id, &[shader]).unwrap();
+
+        let actions = apply_safe_mode(&paths, &mut inst);
+        assert!(inst.jvm_flags.is_empty(), "JVM-флаги сброшены");
+        assert!(actions.iter().any(|a| a.contains("JVM")), "мера о флагах: {actions:?}");
+        assert!(actions.iter().any(|a| a.contains("bsl.zip")), "мера о шейдере: {actions:?}");
+        let manifest = crate::instances::load_content_manifest(&paths, &inst.id);
+        assert!(!manifest[0].enabled, "запись шейдера выключена в манифесте");
+        assert!(!long(&mc.join("shaderpacks/bsl.zip")).exists(), "активный файл переименован");
+        assert!(long(&mc.join("shaderpacks/bsl.zip.disabled")).exists(), "файл в .disabled");
+    }
+
+    /// F30: файла шейдера нет на диске — toggle ошибается, ошибка глотается
+    /// с warn, паники нет; меры по флагам всё равно применяются.
+    #[test]
+    fn apply_safe_mode_tolerates_missing_shader_file() {
+        let (_d, paths) = safe_mode_paths();
+        let mut inst = Instance::new("crashy", "1.20.1");
+        inst.jvm_flags = vec!["-Xmx1024M".into()];
+        crate::instances::save(&paths, &inst).unwrap();
+        let shader = crate::instances::ContentEntry {
+            kind: crate::instances::ContentKind::Shader,
+            file: "shaderpacks/ghost.zip".into(),
+            source: crate::instances::ContentSource::Local,
+            project_id: None,
+            version_id: None,
+            sha1: None,
+            url: None,
+            enabled: true,
+        };
+        crate::instances::save_content_manifest(&paths, &inst.id, &[shader]).unwrap();
+
+        let actions = apply_safe_mode(&paths, &mut inst);
+        assert!(inst.jvm_flags.is_empty(), "флаги сброшены независимо от шейдеров");
+        assert_eq!(actions.len(), 1, "мера только о флагах: {actions:?}");
+        assert!(actions[0].contains("JVM"), "{actions:?}");
     }
 }

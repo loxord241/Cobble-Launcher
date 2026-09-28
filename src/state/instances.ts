@@ -17,6 +17,19 @@ export interface CrashReport {
   exitCode: number;
   diagnoses: Diagnosis[];
   logTail: string;
+  /** Подряд упавших запусков (F30): >=2 — модал предлагает безопасный режим. */
+  crashCount: number;
+}
+
+/**
+ * F30: crashCount читается мягко через локальный тайпгард: поле добавлено в
+ * types.ts, но от ядра/старого кэша список может прийти без него — тогда
+ * считаем крашей 0 (блок безопасного режима просто не показывается).
+ */
+type CrashCounted = Instance & { crashCount?: number };
+function crashCountOf(inst: Instance | undefined): number {
+  const counted = inst as CrashCounted | undefined;
+  return typeof counted?.crashCount === "number" ? counted.crashCount : 0;
 }
 
 interface InstancesState {
@@ -31,6 +44,8 @@ interface InstancesState {
   load: () => Promise<void>;
   subscribeEvents: () => Promise<void>;
   launch: (id: string, player: string) => Promise<void>;
+  /** F30: запуск в безопасном режиме (сброс флагов/шейдеров в ядре). */
+  launchSafe: (id: string, player: string) => Promise<void>;
   create: (mcVersion: string, name: string) => Promise<Instance>;
   rename: (id: string, name: string) => Promise<Instance>;
   saveSettings: (instance: Instance) => Promise<Instance>;
@@ -183,6 +198,11 @@ export const useInstances = create<InstancesState>((set, get) => ({
               if (status && status.phase !== "exited") return;
               const instanceLogs = get().logs[instanceId] ?? [];
               const logText = instanceLogs.join("\n");
+              // F30: crashCount ядро инкрементировало ДО события exited,
+              // load() выше уже перечитал список инстансов.
+              const crashCount = crashCountOf(
+                get().list.find((i) => i.id === instanceId),
+              );
               void api.crashAnalyze(logText).then((diagnoses) => {
                 set({
                   crashReport: {
@@ -190,6 +210,7 @@ export const useInstances = create<InstancesState>((set, get) => ({
                     exitCode,
                     diagnoses,
                     logTail: instanceLogs.slice(-50).join("\n"),
+                    crashCount,
                   },
                 });
               }).catch(() => {
@@ -199,6 +220,7 @@ export const useInstances = create<InstancesState>((set, get) => ({
                     exitCode,
                     diagnoses: [],
                     logTail: instanceLogs.slice(-50).join("\n"),
+                    crashCount,
                   },
                 });
               });
@@ -255,6 +277,29 @@ export const useInstances = create<InstancesState>((set, get) => ({
     }));
     try {
       await api.instanceLaunch(id, player);
+    } catch (e) {
+      set((s) => {
+        const status = { ...s.status };
+        delete status[id];
+        // B11: текст ошибки локализуется по языку UI, а не сырой из ядра.
+        return { status, error: apiErrorText(e) };
+      });
+      await get().load();
+    }
+  },
+  // F30: как launch, но ядро (instance_launch_safe) перед спавном применяет
+  // безопасный режим: сбрасывает JVM-флаги инстанса и выключает шейдеры.
+  launchSafe: async (id, player) => {
+    // Очистить логи перед новым запуском (в т.ч. ещё не сброшенный буфер)
+    dropBufferedLogs(id);
+    set((s) => ({
+      status: { ...s.status, [id]: { phase: "preparing" } },
+      logs: { ...s.logs, [id]: [] },
+      crashReport: s.crashReport?.instanceId === id ? null : s.crashReport,
+      error: null,
+    }));
+    try {
+      await api.instanceLaunchSafe(id, player);
     } catch (e) {
       set((s) => {
         const status = { ...s.status };

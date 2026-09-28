@@ -318,5 +318,21 @@
   "settings.export": "Експорт налаштувань",
   "settings.import": "Імпорт налаштувань",
   "settings.export.done": "Налаштування збережено: {path}",
-  "settings.import.done": "Налаштування імпортовано"
+  "settings.import.done": "Налаштування імпортовано",
+  "instances.tab.screens": "Скріншоти",
+  "screens.empty": "Скріншотів немає — натисни F2 у грі",
+  "screens.open": "Відкрити папку скріншотів",
+  "screens.delete": "Видалити скріншот {name}",
+  "screens.copyHint": "Копіювати в буфер",
+  "mods.deps.missing": "Потрібно: {deps}",
+  "mods.deps.providedBy": "залежність {name}",
+  "mods.conflicts": "Можливий конфлікт: {others}",
+  "mods.deps.disabled": "Залежність вимкнена: {name}",
+  "instances.safeMode.title": "Гра падала при запуску ({n} разів). Запустити в безпечному режимі?",
+  "instances.safeMode.yes": "Безпечний режим",
+  "instances.safeMode.no": "Запустити як завжди",
+  "instances.shortcut": "Ярлик на робочий стіл",
+  "instances.shortcut.done": "Ярлик створено: {path}",
+  "instances.monitor.cpu": "CPU {cpu}%",
+  "instances.monitor.ram": "RAM {ram}"
 }

@@ -16,7 +16,9 @@ import type {
   Account,
   ArchiveResult,
   ContentEntry,
+  ContentKind,
   Diagnosis,
+  GameResourceSample,
   RamGuide,
   CoreEvent,
   Instance,
@@ -28,7 +30,10 @@ import type {
   SearchResult,
   JavaTestInfo,
   LogFileInfo,
+  ModMetadata,
+  PackArtInfo,
   RepairReport,
+  ShotInfo,
   Settings,
   SnapshotInfo,
   SkinInfo,
@@ -180,6 +185,26 @@ export const api = {
   // Экспорт/импорт настроек (F20; секреты не вывозятся)
   settingsExport: (path: string) => invoke<{ ok: boolean }>("settings_export", { path }),
   settingsImport: (path: string) => invoke<Settings>("settings_import", { path }),
+
+  // ---------- Волна D37-B ----------
+  // Скриншоты инстанса (F3)
+  instanceScreens: (id: string) => invoke<ShotInfo[]>("instance_screens", { id }),
+  screenshotDelete: (id: string, name: string) =>
+    invoke<{ ok: boolean }>("screenshot_delete", { id, name }),
+  // Метаданные модов: зависимости/конфликты (F6/F9)
+  contentMetadata: (id: string) => invoke<ModMetadata[]>("content_metadata", { id }),
+  // Ярлык на рабочем столе (F4)
+  instanceShortcut: (id: string) => invoke<{ path: string }>("instance_shortcut", { id }),
+  // Мониторинг ресурсов запущенной игры (F28)
+  gameResources: (id: string) => invoke<GameResourceSample | null>("game_resources", { id }),
+  // Открыть папку скриншотов (F3)
+  instanceScreensOpen: (id: string) => invoke<{ ok: boolean }>("instance_screens_open", { id }),
+  // Запуск в безопасном режиме (F30): сброс JVM + отключение шейдеров
+  instanceLaunchSafe: (id: string, player: string) =>
+    invoke<{ ok: boolean }>("instance_launch_safe", { id, player }),
+  // Обложки ресурспаков/шейдеров (F25)
+  packArt: (id: string, kinds: ContentKind[]) =>
+    invoke<PackArtInfo[]>("pack_art", { id, kinds }),
 };
 
 /** Подписка на события ядра (dl_progress, launch_state, game_log_line, dl_queue_state, account_refresh_failed). */

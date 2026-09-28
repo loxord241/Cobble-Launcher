@@ -15,7 +15,9 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../../api/client";
 import { apiErrorText, t } from "../../i18n";
 import { useModalA11y } from "../hooks/useModalA11y";
-import type { CrashReport } from "../../state/instances";
+import { useInstances, type CrashReport } from "../../state/instances";
+import { useAccounts } from "../../state/accounts";
+import { useSettings } from "../../state/settings";
 
 export default function CrashReportModal({
   report,
@@ -33,6 +35,28 @@ export default function CrashReportModal({
   // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
   const dialogRef = useModalA11y(onClose);
   const copyTimer = useRef<number | null>(null);
+
+  // F30: безопасный режим предлагается после >=2 падений запуска подряд.
+  // Профиль запуска берём здесь же, как в Shell (модалка глобальная):
+  // активный из настроек, иначе первый в списке.
+  const accounts = useAccounts((s) => s.list);
+  const settings = useSettings((s) => s.settings);
+  const activeAccount =
+    accounts.find((a) => a.id === settings?.accountsActiveId) ?? accounts[0] ?? null;
+  const offerSafeMode = report.crashCount >= 2 && activeAccount !== null;
+  const [starting, setStarting] = useState(false);
+
+  /** F30: перезапуск из модалки (yes — безопасный, no — обычный). Модал
+   * закроется сам: launch/launchSafe сбрасывают crashReport этого инстанса. */
+  const startIn = (safe: boolean) => {
+    if (!activeAccount || starting) return;
+    setStarting(true);
+    const { launch, launchSafe } = useInstances.getState();
+    const start = safe
+      ? launchSafe(report.instanceId, activeAccount.name)
+      : launch(report.instanceId, activeAccount.name);
+    void start.finally(() => setStarting(false));
+  };
 
   // A56: таймер индикатора «Скопировано!» не переживает размонтирование.
   useEffect(
@@ -172,6 +196,33 @@ export default function CrashReportModal({
               </span>
             )}
             {shareError && <span className="text-error">{shareError}</span>}
+          </div>
+        )}
+        {/* F30: серия падений запуска — предложение безопасного режима
+            (ядро сбросит JVM-флаги и выключит шейдеры, затем запустит игру). */}
+        {offerSafeMode && (
+          <div className="mt-3 rounded-lg border border-accent/30 bg-accent-soft/40 p-4">
+            <p className="text-sm font-semibold text-text">
+              {t("instances.safeMode.title", { n: report.crashCount })}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                onClick={() => startIn(true)}
+                disabled={starting}
+                aria-busy={starting}
+                className="btn-primary flex h-10 items-center gap-2 px-4 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {starting && <LoaderCircle size={16} aria-hidden className="animate-spin" />}
+                {t("instances.safeMode.yes")}
+              </button>
+              <button
+                onClick={() => startIn(false)}
+                disabled={starting}
+                className="btn-ghost flex h-10 items-center gap-2 px-4 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {t("instances.safeMode.no")}
+              </button>
+            </div>
           </div>
         )}
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-border-app pt-4">

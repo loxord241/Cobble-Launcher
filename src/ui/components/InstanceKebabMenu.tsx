@@ -14,6 +14,7 @@ import {
   Share,
   Image,
   ImageOff,
+  MonitorSmartphone,
   LockOpen,
   ShieldCheck,
 } from "lucide-react";
@@ -34,6 +35,7 @@ export type KebabCallbacks = {
   onForceUnlock?: () => void;
   /** F2: проверить/починить игровые файлы (saves/mods/config не трогаются). */
   onRepair?: () => void;
+  onShortcut?: () => void;
   onIconSet?: () => void;
   onIconClear?: () => void;
 };
@@ -71,6 +73,7 @@ export default function InstanceKebabMenu({
     onRepair,
     onIconSet,
     onIconClear,
+    onShortcut,
     onOptimize,
     onFolder,
     onDuplicate,
@@ -191,6 +194,18 @@ export default function InstanceKebabMenu({
                 onFolder();
               }}
             />
+
+            {onShortcut && (
+              <MenuItem
+                icon={MonitorSmartphone}
+                label={t("instances.shortcut")}
+                disabled={busy}
+                onClick={() => {
+                  closeMenu();
+                  onShortcut();
+                }}
+              />
+            )}
             {/* F27: блокировка бывает именно у незапущенной игры — busy не мешает. */}
             {onForceUnlock && (
               <MenuItem

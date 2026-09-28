@@ -318,5 +318,21 @@
   "settings.export": "Экспорт настроек",
   "settings.import": "Импорт настроек",
   "settings.export.done": "Настройки сохранены: {path}",
-  "settings.import.done": "Настройки импортированы"
+  "settings.import.done": "Настройки импортированы",
+  "instances.tab.screens": "Скриншоты",
+  "screens.empty": "Скриншотов нет — жми F2 в игре",
+  "screens.open": "Открыть папку скриншотов",
+  "screens.delete": "Удалить скриншот {name}",
+  "screens.copyHint": "Копировать в буфер",
+  "mods.deps.missing": "Требуется: {deps}",
+  "mods.deps.providedBy": "зависимость {name}",
+  "mods.conflicts": "Возможный конфликт: {others}",
+  "mods.deps.disabled": "Зависимость выключена: {name}",
+  "instances.safeMode.title": "Игра падала при запуске ({n} раз). Запустить в безопасном режиме?",
+  "instances.safeMode.yes": "Безопасный режим",
+  "instances.safeMode.no": "Запустить как обычно",
+  "instances.shortcut": "Ярлык на рабочий стол",
+  "instances.shortcut.done": "Ярлык создан: {path}",
+  "instances.monitor.cpu": "CPU {cpu}%",
+  "instances.monitor.ram": "RAM {ram}"
 }

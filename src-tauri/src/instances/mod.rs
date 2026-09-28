@@ -3,6 +3,10 @@
 
 pub mod content;
 pub mod repair;
+pub mod screens;
+pub mod modmeta;
+pub mod packart;
+pub mod shortcut;
 pub mod snapshots;
 pub mod worlds;
 pub mod run;
@@ -61,6 +65,9 @@ pub struct Instance {
     /// Хранится только ссылка (id аккаунта), не сам профиль.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
+    /// Подряд упавших запусков (F30): !=0 инкремент, успех/0 — сброс.
+    #[serde(default)]
+    pub crash_count: u32,
 }
 
 impl Default for Instance {
@@ -94,6 +101,7 @@ impl Instance {
             quick_play_world: None,
             quick_play_server: None,
             account_id: None,
+            crash_count: 0,
         }
     }
 }
