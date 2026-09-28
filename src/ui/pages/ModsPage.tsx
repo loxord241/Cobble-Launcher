@@ -121,6 +121,7 @@ export default function ModsPage({
         target?.mcVersion,
         target?.loader,
         projectTypeOf(tab),
+        undefined,
         PAGE_SIZE,
         0,
       );
@@ -152,6 +153,7 @@ export default function ModsPage({
         target?.mcVersion,
         target?.loader,
         projectTypeOf(tab),
+        undefined,
         PAGE_SIZE,
         hits.length,
       );

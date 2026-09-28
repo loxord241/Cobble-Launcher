@@ -17,7 +17,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 ## Команды (invoke)
 
-Все 75 команд `invoke_handler` (`src-tauri/src/lib.rs:104`), обработчики —
+Все 77 команд `invoke_handler` (`src-tauri/src/lib.rs:104`), обработчики —
 `src-tauri/src/commands/mod.rs`.
 
 ### Инстансы и процессы
@@ -42,7 +42,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 | Команда | Вход | Выход | Коды ошибок |
 |---|---|---|---|
-| `modrinth_search` | `{query, mcVersion?, loader?, projectType?, limit?, offset?}` (по умолчанию limit 20, offset 0) | `SearchResult` (snake_case) | network, http, json |
+| `modrinth_search` | `{query, mcVersion?, loader?, projectType?, index?, limit?, offset?}` (index: relevance/downloads/follows/updated/newest; limit 20, offset 0) | `SearchResult` (snake_case) | network, http, json |
 | `content_install` | `{instanceId, projectId, versionId?}` | `ContentEntry[]` (обязательные зависимости ставятся рекурсивно) | network, http, version_not_found, hash_mismatch, invalid_input, io, json |
 | `content_installed` | `{instanceId}` | `ContentEntry[]` (нет манифеста → `[]`) | — |
 | `content_toggle` | `{instanceId, file}` | `ContentEntry` (на диске `x.jar` ↔ `x.jar.disabled`, логический путь в манифесте не меняется) | invalid_input (только `mods`/`resourcepacks`/`shaderpacks`, без traversal), not_found, io |
@@ -73,6 +73,8 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `account_remove` | `{id}` | `{ok}` (удаляет и запись в keyring) | not_found, io, internal |
 | `account_active_set` | `{id}` | `{ok}` | not_found, io |
 | `modrinth_projects` | `{ids: string[]}` | `ProjectMeta[]` (батч /v2/projects?ids=, чанки по 100; поле `id` алиасится в projectId) | invalid_input, network, http, json |
+| `modrinth_project` | `{idOrSlug}` | `ProjectDetail` (camelCase: тело markdown, галерея, лицензия, статистика; D39) | invalid_input, network, http, json, offline |
+| `modrinth_versions` | `{projectId}` | `ModrinthVersion[]` (camelCase, с changelog; D39) | invalid_input, network, http, json |
 | `content_backfill_projects` | `{instanceId}` | `number` (сколько манифестов залечено sha1→projectId) | not_found, network, http, json |
 | `update_check` | — | `UpdateInfo` {current, latest?, url?, updateAvailable, checked, note?} (GitHub releases/latest) | network, http, json |
 | `java_recommended` | `{mcVersion}` | `number` (мажорная Java: 8/17/21, таблица как run.rs fallback_major) | — |

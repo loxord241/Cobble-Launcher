@@ -374,12 +374,14 @@ pub async fn instance_launch(
 // ---------- контент (Modrinth, спека §6.6) ----------
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn modrinth_search(
     state: State<'_, AppState>,
     query: String,
     mc_version: Option<String>,
     loader: Option<String>,
     project_type: Option<String>,
+    index: Option<String>,
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Result<crate::modrinth::api::SearchResult> {
@@ -390,6 +392,7 @@ pub async fn modrinth_search(
         mc_version.as_deref(),
         loader.as_deref(),
         project_type.as_deref(),
+        index.as_deref(),
         limit.unwrap_or(20),
         offset.unwrap_or(0),
     )
@@ -407,6 +410,33 @@ pub async fn modrinth_projects(
     crate::modrinth::api::validate_project_ids(&ids)?;
     let http = state.http().await;
     crate::modrinth::api::projects_meta(&http, &ids).await
+}
+
+/// Страница проекта целиком (D39): тело в markdown, галерея, лицензия —
+/// окно проекта в стиле CurseForge.
+#[tauri::command]
+pub async fn modrinth_project(
+    state: State<'_, AppState>,
+    id_or_slug: String,
+) -> Result<crate::modrinth::api::ProjectDetail> {
+    let http = state.http().await;
+    crate::modrinth::api::project_detail(&http, &id_or_slug).await
+}
+
+/// Версии проекта (D39): табы «Версии» и «Журнал изменений» окна проекта.
+#[tauri::command]
+pub async fn modrinth_versions(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<crate::modrinth::api::VersionInfo>> {
+    let http = state.http().await;
+    // IPC-граница: id приходит из рендера — та же валидация, что у батча.
+    crate::modrinth::api::validate_project_ids(std::slice::from_ref(&project_id))?;
+    Ok(crate::modrinth::api::project_versions(&http, &project_id)
+        .await?
+        .into_iter()
+        .map(crate::modrinth::api::VersionInfo::from)
+        .collect())
 }
 
 #[tauri::command]

@@ -246,6 +246,60 @@ export interface ProjectMeta {
   iconUrl?: string;
 }
 
+// ---------- D39: окно проекта Modrinth (стиль CurseForge) ----------
+
+/** Картинка галереи проекта (зеркало `modrinth::api::GalleryImage`). */
+export interface GalleryImage {
+  /** Полный размер (в Modrinth API — raw_url). */
+  url: string;
+  title?: string;
+  caption?: string;
+  featured: boolean;
+}
+
+/**
+ * Страница проекта целиком (зеркало `modrinth::api::ProjectDetail`):
+ * обзор (markdown-тело), галерея, версии, лицензия, статистика.
+ */
+export interface ProjectDetail {
+  projectId: string;
+  slug: string;
+  title: string;
+  description: string;
+  /** Markdown; рендерит безопасный конвертер (без innerHTML). */
+  body: string;
+  iconUrl?: string;
+  downloads: number;
+  follows: number;
+  categories: string[];
+  gameVersions: string[];
+  loaders: string[];
+  datePublished?: string;
+  dateModified?: string;
+  license?: string;
+  gallery: GalleryImage[];
+}
+
+/** Файл версии (зеркало `modrinth::api::VersionFileInfo`). */
+export interface VersionFileInfo {
+  url: string;
+  filename: string;
+  primary: boolean;
+  size: number;
+}
+
+/** Версия проекта (зеркало `modrinth::api::VersionInfo`). */
+export interface ModrinthVersion {
+  id: string;
+  versionNumber: string;
+  versionType?: string;
+  gameVersions: string[];
+  loaders: string[];
+  changelog?: string;
+  datePublished?: string;
+  files: VersionFileInfo[];
+}
+
 export type ContentKind = "mod" | "resourcepack" | "shader" | "datapack";
 export type ContentSource = "modrinth" | "curseforge" | "local";
 

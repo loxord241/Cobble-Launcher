@@ -61,8 +61,6 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   // Открытый инстанс: пока задан — вместо страницы рендерится его страница
   // в стиле CurseForge (запрос владельца). Навигация слева закрывает её.
   const [openInstanceId, setOpenInstanceId] = useState<string | null>(null);
-  // Целевой инстанс для страницы Модов (переход «+ Найти моды» с страницы инстанса).
-  const [modsTargetId, setModsTargetId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [version, setVersion] = useState("0.1.0");
   const [accountOpen, setAccountOpen] = useState(false);
@@ -185,7 +183,6 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   const goToPage = (id: Page) => {
     setPage(id);
     setOpenInstanceId(null);
-    setModsTargetId(null);
   };
 
   const active =
@@ -487,30 +484,19 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
 
         <main className="min-h-0 overflow-y-auto p-6">
           {openInstanceId ? (
+            // Добавление модов — прямо на странице инстанса (D39), без
+            // перекидывания на страницу «Моды».
             <InstanceDetailPage
               instanceId={openInstanceId}
               onBack={() => setOpenInstanceId(null)}
-              onOpenMods={(id) => {
-                setModsTargetId(id);
-                setOpenInstanceId(null);
-                setPage("mods");
-              }}
             />
           ) : (
             <>
-              {page === "home" && (
-                <HomePage
-                  query={query}
-                  onCreate={() => setPage("instances")}
-                  onOpenInstance={setOpenInstanceId}
-                />
-              )}
+              {page === "home" && <HomePage query={query} />}
               {page === "instances" && (
                 <InstancesPage query={query} onOpenInstance={setOpenInstanceId} />
               )}
-              {page === "mods" && (
-                <ModsPage query={query} initialInstanceId={modsTargetId ?? undefined} />
-              )}
+              {page === "mods" && <ModsPage query={query} />}
               {page === "settings" && <SettingsPage onOnboardingReset={onLogout} />}
             </>
           )}

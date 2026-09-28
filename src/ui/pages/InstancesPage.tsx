@@ -6,7 +6,7 @@ import { useInstances } from "../../state/instances";
 import { useAccounts } from "../../state/accounts";
 import { api } from "../../api/client";
 import { useSettings } from "../../state/settings";
-import { apiErrorText, t } from "../../i18n";
+import { apiErrorText, currentLanguage, t } from "../../i18n";
 import { pickArchivePath, pickImagePath } from "../components/pickFile";
 import InstanceCard from "../components/InstanceCard";
 import CreateInstanceDialog from "../components/CreateInstanceDialog";
@@ -69,12 +69,28 @@ export default function InstancesPage({
   const [notice, setNotice] = useState<string | null>(null);
   // D7: честный диалог удаления — «в корзину» или «навсегда».
   const [deleteInst, setDeleteInst] = useState<Instance | null>(null);
+  // Порядок карточек; по умолчанию «по последнему запуску».
+  const [sort, setSort] = useState<"recent" | "name" | "created">("recent");
 
   const activeAccount =
     accounts.find((a) => a.id === settings?.accountsActiveId) ?? accounts[0] ?? null;
 
   const q = query.trim().toLowerCase();
-  const visible = q ? list.filter((i) => i.name.toLowerCase().includes(q)) : list;
+  const filtered = q ? list.filter((i) => i.name.toLowerCase().includes(q)) : list;
+  // Сортировка — поверх фильтра поиска; работаем на копии, чтобы не мутировать
+  // список стора (Array#sort in-place). sort стабилен, поэтому равные ключи
+  // не «прыгают» между рендерами.
+  const visible = [...filtered];
+  if (sort === "name") {
+    // localeCompare с учётом активного языка интерфейса — корректная кириллица/диакритика.
+    visible.sort((a, b) => a.name.localeCompare(b.name, currentLanguage()));
+  } else if (sort === "created") {
+    visible.sort((a, b) => b.createdAt - a.createdAt);
+  } else {
+    // recent: по lastPlayed по убыванию; у неоткрывавшихся lastPlayed нет —
+    // они уходят в конец (0 меньше любого таймстампа) в исходном порядке.
+    visible.sort((a, b) => (b.lastPlayed ?? 0) - (a.lastPlayed ?? 0));
+  }
 
   // DISC-A02: импорт архива модпака (.mrpack/.zip) тем же ядерным вызовом, что
   // и drop в Shell; отмена диалога — тихо, ошибка — через apiErrorText (B11).
@@ -204,7 +220,7 @@ export default function InstancesPage({
   return (
     <div className="mx-auto flex max-w-[980px] flex-col gap-4">
       <div className="mt-1 flex items-baseline gap-2">
-        <h2 className="text-lg font-semibold tracking-tight">{t("nav.instances")}</h2>
+        <h2 className="text-xl font-bold tracking-tight">{t("nav.instances")}</h2>
         <span className="chip-mono">{list.length}</span>
         <button onClick={importArchive} className="btn-ghost btn-sm ml-auto">
           <Import size={16} aria-hidden />
@@ -214,6 +230,16 @@ export default function InstancesPage({
           <Plus size={16} aria-hidden />
           {t("instances.create")}
         </button>
+        <select
+          value={sort}
+          onChange={(e) => setSort(e.target.value as "recent" | "name" | "created")}
+          aria-label={t("instances.sort.label")}
+          className="h-9 rounded-lg border border-border-strong bg-card px-3 text-sm"
+        >
+          <option value="recent">{t("instances.sort.recent")}</option>
+          <option value="name">{t("instances.sort.name")}</option>
+          <option value="created">{t("instances.sort.created")}</option>
+        </select>
       </div>
 
       {error && (

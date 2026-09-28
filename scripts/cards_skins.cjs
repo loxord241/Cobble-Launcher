@@ -53,13 +53,17 @@ async function main() {
     await page.getByRole("button", { name: /^Назад/ }).click();
     await page.waitForTimeout(400);
 
-    // Главная: та же сетка карточек + hero с артом.
+    // Главная (D39): каталог Modrinth — больше не инстансы (те живут здесь).
     await page.getByRole("navigation").getByRole("button", { name: /^Главная/ }).click();
-    await page.waitForTimeout(600);
-    const homeCards = await page.locator('[role="button"][aria-label^="Открыть "]').count();
-    homeCards > 0 ? ok(`главная: ${homeCards} карточек`) : fail("на главной нет карточек");
-    const heroArt = await page.locator("section img[src^='data:']").count();
-    heroArt > 0 ? ok("hero главной с артом") : fail("hero без арта");
+    await page.waitForTimeout(800);
+    const catalogHead = await page.getByRole("heading", { name: "Каталог" }).count();
+    catalogHead > 0 ? ok("главная: заголовок «Каталог»") : fail("на главной нет каталога");
+    const typeTabs = await page
+      .getByRole("tablist")
+      .first()
+      .getByRole("tab")
+      .count();
+    typeTabs >= 2 ? ok(`переключатель типа каталога (${typeTabs} таба)`) : fail("нет табов типа каталога");
   }
 
   // 2. Скины: голова персонажа в чипе титлбара + «Персонаж» в модалке аккаунтов.

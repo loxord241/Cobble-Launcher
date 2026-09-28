@@ -155,6 +155,8 @@ pub fn run() -> tauri::Result<()> {
             commands::loader_install,
             commands::modrinth_search,
             commands::modrinth_projects,
+            commands::modrinth_project,
+            commands::modrinth_versions,
             commands::content_install,
             commands::content_installed,
             commands::content_toggle,

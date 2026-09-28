@@ -37,6 +37,7 @@ import { useInstances } from "../../state/instances";
 import { useSettings } from "../../state/settings";
 import { pickImagePath } from "../components/pickFile";
 import { defaultArtwork } from "../defaultArt";
+import AddContentModal from "../components/AddContentModal";
 import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
@@ -84,12 +85,9 @@ export function rowClickOpens(target: EventTarget | null): boolean {
 export default function InstanceDetailPage({
   instanceId,
   onBack,
-  onOpenMods,
 }: {
   instanceId: string;
   onBack: () => void;
-  /** Переход на страницу Модов (+ подстановка этого инстанса целью установки). */
-  onOpenMods: (instanceId: string) => void;
 }) {
   // D8: узкие селекторы — страница не перерисовывается на каждую строку лога.
   const { list, loaded, status, launch, stop, optimize, remove, duplicate, error, setError, load } =
@@ -116,6 +114,8 @@ export default function InstanceDetailPage({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  // Поиск/установка модов в модалке прямо здесь, без перехода на страницу Модов.
+  const [addOpen, setAddOpen] = useState(false);
   const [installed, setInstalled] = useState<ContentEntry[] | null>(null);
   /** Метаданные Modrinth по projectId: название/иконка строки (CF-стиль). */
   const [meta, setMeta] = useState<Record<string, ProjectMeta>>({});
@@ -670,11 +670,11 @@ export default function InstanceDetailPage({
                 <span className="chip-mono">{installed?.length ?? 0}</span>
                 <div className="ml-auto flex flex-wrap items-center gap-2">
                   <button
-                    onClick={() => onOpenMods(instanceId)}
+                    onClick={() => setAddOpen(true)}
                     className="btn-ghost btn-sm"
                   >
                     <Plus size={14} aria-hidden />
-                    {t("instance.mods.find")}
+                    {t("addContent.open")}
                   </button>
                   <button
                     onClick={() => void checkUpdates()}
@@ -880,6 +880,15 @@ export default function InstanceDetailPage({
                   ))}
                 </ul>
               </div>
+            )}
+
+            {/* Модалка поиска/установки контента; после установки перечитываем список. */}
+            {addOpen && (
+              <AddContentModal
+                instance={inst}
+                onClose={() => setAddOpen(false)}
+                onInstalled={() => void loadInstalled()}
+              />
             )}
           </>
         )}

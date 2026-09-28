@@ -30,6 +30,8 @@ import type {
   WorldScope,
   LoaderVersionEntry,
   LogoResult,
+  ModrinthVersion,
+  ProjectDetail,
   ProjectMeta,
   SearchResult,
   JavaTestInfo,
@@ -77,6 +79,7 @@ export const api = {
     mcVersion?: string,
     loader?: string,
     projectType?: string,
+    index?: string,
     limit?: number,
     offset?: number,
   ) =>
@@ -85,11 +88,17 @@ export const api = {
       mcVersion,
       loader,
       projectType,
+      index,
       limit,
       offset,
     }),
   // Метаданные проектов батчем (иконка/название для списка установленного).
   modrinthProjects: (ids: string[]) => invoke<ProjectMeta[]>("modrinth_projects", { ids }),
+  // Страница проекта целиком (D39): тело markdown, галерея, лицензия.
+  modrinthProject: (idOrSlug: string) => invoke<ProjectDetail>("modrinth_project", { idOrSlug }),
+  // Версии проекта с changelog (D39): табы «Версии»/«Журнал изменений».
+  modrinthVersions: (projectId: string) =>
+    invoke<ModrinthVersion[]>("modrinth_versions", { projectId }),
   contentInstall: (instanceId: string, projectId: string, versionId?: string) =>
     invoke<ContentEntry[]>("content_install", { instanceId, projectId, versionId }),
   contentInstalled: (instanceId: string) =>
