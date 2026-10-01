@@ -202,7 +202,7 @@ export default function ProjectDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -213,7 +213,7 @@ export default function ProjectDetailModal({
         role="dialog"
         aria-modal="true"
         aria-label={hit.title}
-        className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-lg border border-border-app bg-card shadow-2xl"
+        className="anim-dialog-in flex max-h-[85vh] w-full max-w-3xl flex-col rounded-lg border border-border-app bg-card shadow-2xl"
       >
         {/* Шапка: иконка, название/автор/описание, инстанс + установка. */}
         <div className="flex items-start gap-3 border-b border-border-app p-5">
@@ -368,8 +368,9 @@ export default function ProjectDetailModal({
             ))}
           </div>
 
-          {/* Контент таба. */}
-          <div className="mt-3">
+          {/* Контент таба. key={tab}: при смене вкладки ремоунт переигрывает
+              anim-fade-up — контент мягко вплывает. */}
+          <div key={tab} className="anim-fade-up mt-3">
             {tab === "overview" &&
               (detailErr ? (
                 failBlock(detailErr, () => void loadDetail(), detailBusy)

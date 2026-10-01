@@ -255,6 +255,125 @@ body {
   color: var(--text);
 }
 
+/* Тактильность кнопок: лёгкое «вдавливание» при нажатии, один патч на все
+   варианты (transform композитный, клику не мешает). */
+.btn,
+.btn-primary,
+.btn-ghost,
+.btn-danger-ghost,
+.icon-btn {
+  transition:
+    color 150ms ease-out,
+    background-color 150ms ease-out,
+    border-color 150ms ease-out,
+    transform 100ms ease-out;
+}
+.btn:active:not(:disabled),
+.btn-primary:active:not(:disabled),
+.btn-ghost:active:not(:disabled),
+.btn-danger-ghost:active:not(:disabled),
+.icon-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* ── Анимации (D41): только transform/opacity — композитные свойства.
+   У каждого keyframes описан только `from`: естественное состояние элемента =
+   конечное состояние анимации, поэтому глобальный prefers-reduced-motion
+   (выше) просто оставляет элементы в готовом виде. ─────────────────────── */
+
+/* Мягкое проявление (оверлеи, иконки, контент табов). */
+@keyframes mcl-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+.anim-fade-in {
+  animation: mcl-fade-in 160ms ease-out backwards;
+}
+
+/* Вход всплывающей панели (модалки, палитра, меню): чуть ниже и уже, с
+   лёгким разгоном. cubic-bezier(0.16,1,0.3,1) — быстрый старт, мягкий доезд. */
+@keyframes mcl-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+}
+.anim-dialog-in {
+  animation: mcl-dialog-in 200ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+/* Меню от точки открытия (кебаб, дропдаун профиля) — короче и скромнее. */
+@keyframes mcl-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+.anim-menu-in {
+  animation: mcl-menu-in 140ms ease-out backwards;
+}
+
+/* Контент, вплывающий снизу: строки каталога, панели табов, баннеры. */
+@keyframes mcl-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.anim-fade-up {
+  animation: mcl-fade-up 220ms ease-out backwards;
+}
+
+/* Страница при переходе по навигации. */
+@keyframes mcl-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+.anim-page-in {
+  animation: mcl-page-in 180ms ease-out backwards;
+}
+
+/* Шаги онбординга: въезд по направлению движения (вперёд/назад). */
+@keyframes mcl-step-next {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+@keyframes mcl-step-prev {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+}
+.anim-step-next {
+  animation: mcl-step-next 200ms ease-out backwards;
+}
+.anim-step-prev {
+  animation: mcl-step-prev 200ms ease-out backwards;
+}
+
+/* Пружинная галочка выбора (темы, логотип) и «Скопировано!». */
+@keyframes mcl-pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  70% {
+    transform: scale(1.12);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.anim-pop-in {
+  animation: mcl-pop-in 220ms cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+}
+
 /* Моноширинный чип версии (как .row .ver в прототипе) */
 .chip-mono {
   font-family: var(--font-mono);

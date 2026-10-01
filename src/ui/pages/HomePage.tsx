@@ -38,11 +38,15 @@ function relativeDate(iso: string): string {
  * Клик по строке И по кнопке «Установить» не качает — обе открывают окно
  * проекта, установка живёт внутри окна (явное требование владельца).
  */
-function CatalogRow({ hit, onOpen }: { hit: SearchHit, onOpen: () => void }) {
+function CatalogRow({ hit, idx, onOpen }: { hit: SearchHit, idx: number, onOpen: () => void }) {
   return (
     <div
       role="button"
       tabIndex={0}
+      // Каскад появления: задержка по индексу с кэпом 20 строк (~440ms) —
+      // внутри каждой догруженной партии; backwards держит строку прозрачной
+      // до старта, элемент в DOM и кликабелен с первого кадра.
+      style={{ animationDelay: `${(idx % 20) * 22}ms` }}
       onClick={onOpen}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return // Enter/Space на кнопке внутри строки
@@ -51,7 +55,7 @@ function CatalogRow({ hit, onOpen }: { hit: SearchHit, onOpen: () => void }) {
           onOpen()
         }
       }}
-      className="grid min-h-[76px] cursor-pointer grid-cols-[56px_1fr_auto] items-center gap-3 rounded-lg border border-border-app bg-card px-3 py-2.5 transition-all duration-200 hover:-translate-y-px hover:border-accent/70 hover:bg-card-hover hover:shadow-lg hover:shadow-black/20"
+      className="anim-fade-up grid min-h-[76px] cursor-pointer grid-cols-[56px_1fr_auto] items-center gap-3 rounded-lg border border-border-app bg-card px-3 py-2.5 transition-all duration-200 hover:-translate-y-px hover:border-accent/70 hover:bg-card-hover hover:shadow-lg hover:shadow-black/20"
     >
       {hit.icon_url ? (
         <img
@@ -310,9 +314,24 @@ export default function HomePage({ query }: { query: string }) {
       )}
 
       {!searched ? (
-        // До первого ответа — строка загрузки (пустое состояние только после поиска).
-        <div className="flex justify-center py-10">
-          <span className="text-sm text-text-muted">{t("mods.loadingMore")}</span>
+        // До первого ответа — скелет-строки в ритме реальных строк каталога
+        // (иконка, три полоски текста, место кнопки); пустое состояние —
+        // только после поиска.
+        <div className="flex flex-col gap-2">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div
+              key={i}
+              className="grid min-h-[76px] grid-cols-[56px_1fr_auto] items-center gap-3 rounded-lg border border-border-app bg-card px-3 py-2.5"
+            >
+              <div className="size-14 rounded-lg bg-surface-2 animate-pulse" />
+              <div className="flex min-w-0 flex-col gap-2">
+                <div className="h-3 w-2/3 rounded bg-surface-2 animate-pulse" />
+                <div className="h-3 w-full rounded bg-surface-2 animate-pulse" />
+                <div className="h-3 w-1/2 rounded bg-surface-2 animate-pulse" />
+              </div>
+              <div className="h-10 w-28 rounded-lg bg-surface-2 animate-pulse" />
+            </div>
+          ))}
         </div>
       ) : visibleHits.length === 0 ? (
         // Пустое состояние: Modrinth ответил, но по запросу/фильтру ничего нет.
@@ -323,11 +342,11 @@ export default function HomePage({ query }: { query: string }) {
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {visibleHits.map((h) => (
-            <CatalogRow key={h.project_id} hit={h} onOpen={() => setDetail(h)} />
+          {visibleHits.map((h, idx) => (
+            <CatalogRow key={h.project_id} hit={h} idx={idx} onOpen={() => setDetail(h)} />
           ))}
           {hits.length < total && (
-            <div ref={sentinelRef} className="flex justify-center py-2">
+            <div ref={sentinelRef} className="anim-fade-in flex justify-center py-2">
               <button
                 onClick={() => void loadMore()}
                 disabled={loadingMore}

@@ -300,9 +300,9 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
           className="icon-btn"
         >
           {settings?.workOffline ? (
-            <WifiOff size={16} aria-hidden />
+            <WifiOff key="off" size={16} aria-hidden className="anim-fade-in" />
           ) : (
-            <Wifi size={16} aria-hidden />
+            <Wifi key="on" size={16} aria-hidden className="anim-fade-in" />
           )}
         </button>
 
@@ -325,7 +325,11 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
                   {t(accountKindLabelKey[active.kind])}
                 </span>
               </span>
-              <ChevronDown size={14} aria-hidden className="text-text-muted" />
+              <ChevronDown
+                size={14}
+                aria-hidden
+                className={`text-text-muted transition-transform ${accountOpen ? "rotate-180" : ""}`}
+              />
             </button>
             {accountOpen && (
               <>
@@ -333,7 +337,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
                 <div
                   role="menu"
                   aria-label={t("shell.account.profile")}
-                  className="absolute right-0 top-11 z-50 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
+                  className="anim-menu-in origin-top-right absolute right-0 top-11 z-50 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
                 >
                   {accounts.map((a) => (
                     <button
@@ -480,22 +484,26 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
         </nav>
 
         <main className="min-h-0 overflow-y-auto p-6">
-          {openInstanceId ? (
-            // Добавление модов — прямо на странице инстанса (D39), без
-            // перекидывания на страницу «Моды».
-            <InstanceDetailPage
-              instanceId={openInstanceId}
-              onBack={() => setOpenInstanceId(null)}
-            />
-          ) : (
-            <>
-              {page === "home" && <HomePage query={query} />}
-              {page === "instances" && (
-                <InstancesPage query={query} onOpenInstance={setOpenInstanceId} />
-              )}
-              {page === "settings" && <SettingsPage onOnboardingReset={onLogout} />}
-            </>
-          )}
+          {/* D41: смена страницы/инстанса — remount по key переигрывает вход.
+              Обычный див: main не flex, max-w держат сами страницы. */}
+          <div key={openInstanceId ?? page} className="anim-page-in">
+            {openInstanceId ? (
+              // Добавление модов — прямо на странице инстанса (D39), без
+              // перекидывания на страницу «Моды».
+              <InstanceDetailPage
+                instanceId={openInstanceId}
+                onBack={() => setOpenInstanceId(null)}
+              />
+            ) : (
+              <>
+                {page === "home" && <HomePage query={query} />}
+                {page === "instances" && (
+                  <InstancesPage query={query} onOpenInstance={setOpenInstanceId} />
+                )}
+                {page === "settings" && <SettingsPage onOnboardingReset={onLogout} />}
+              </>
+            )}
+          </div>
         </main>
       </div>
 

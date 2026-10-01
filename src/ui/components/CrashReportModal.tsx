@@ -112,7 +112,7 @@ export default function CrashReportModal({
   return (
     <div
       ref={dialogRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
       role="alertdialog"
       aria-modal="true"
       aria-label={t("crash.title")}
@@ -121,7 +121,7 @@ export default function CrashReportModal({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex max-h-[90vh] w-[640px] max-w-full flex-col rounded-lg border border-error/50 bg-card p-6 shadow-2xl">
+      <div className="anim-dialog-in flex max-h-[90vh] w-[640px] max-w-full flex-col rounded-lg border border-error/50 bg-card p-6 shadow-2xl">
         <div className="flex items-center justify-between border-b border-border-app pb-3">
           <div className="flex items-center gap-3">
             <span className="grid size-10 place-items-center rounded-lg bg-error/15 text-error">
@@ -238,7 +238,11 @@ export default function CrashReportModal({
               onClick={() => void copyLog()}
               className="btn-ghost flex h-10 items-center gap-2 px-3 text-sm"
             >
-              {copied ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+              {copied ? (
+                <Check key="copied" size={16} aria-hidden className="anim-pop-in" />
+              ) : (
+                <Copy size={16} aria-hidden />
+              )}
               {copied ? t("common.copied") : t("crash.copyReport")}
             </button>
             <button

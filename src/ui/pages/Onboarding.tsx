@@ -1,13 +1,22 @@
 // Онбординг: 3 шага — каталог → профиль → первый инстанс (спека §8).
 // Пропускаемый; «Настройки → Сбросить онбординг» возвращает сюда.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
 import { useInstances } from "../../state/instances";
 import { useSettings } from "../../state/settings";
 
+// Всего шагов мастера (индикатор прогресса и условие «Далее/Готово»).
+const TOTAL_STEPS = 3;
+
 export default function Onboarding({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(1);
+  // Направление перехода шага: сравниваем новый номер с предыдущим (D41).
+  const prevStepRef = useRef(step);
+  const direction: "next" | "back" = step >= prevStepRef.current ? "next" : "back";
+  useEffect(() => {
+    prevStepRef.current = step;
+  }, [step]);
   const [nick, setNick] = useState("Player");
   const [dataDir, setDataDir] = useState("");
   const [versions, setVersions] = useState<string[]>([]);
@@ -73,11 +82,26 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   return (
     <div className="flex h-screen items-center justify-center bg-bg text-text">
       <div className="w-[520px] rounded-lg border border-border-app bg-card p-6">
-        <p className="text-sm text-text-muted">{t("onboarding.step", { n: step })}</p>
+        <div className="flex items-center gap-2">
+          <p className="text-sm text-text-muted">{t("onboarding.step", { n: step })}</p>
+          <div className="flex justify-center gap-2">
+            {Array.from({ length: TOTAL_STEPS }, (_, i) => (
+              <span
+                key={i}
+                className={`size-2 rounded-full transition-all duration-200 ${
+                  i + 1 === step ? "bg-accent scale-110" : "bg-surface-2"
+                }`}
+              />
+            ))}
+          </div>
+        </div>
         <h1 className="mt-1 text-2xl font-semibold">{t("onboarding.welcome")}</h1>
 
         {step === 1 && (
-          <div className="mt-5">
+          <div
+            key={step}
+            className={`mt-5 ${direction === "back" ? "anim-step-prev" : "anim-step-next"}`}
+          >
             <label className="block text-sm font-medium" htmlFor="ob-lang">
               {t("onboarding.language")}
             </label>
@@ -98,7 +122,10 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
         )}
 
         {step === 2 && (
-          <div className="mt-5">
+          <div
+            key={step}
+            className={`mt-5 ${direction === "back" ? "anim-step-prev" : "anim-step-next"}`}
+          >
             <h2 className="font-semibold">{t("onboarding.account")}</h2>
             <p className="mt-2 text-sm text-text-muted">{t("onboarding.account.hint")}</p>
             <label className="mt-3 block text-sm text-text-muted" htmlFor="ob-nick">
@@ -114,7 +141,10 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
         )}
 
         {step === 3 && (
-          <div className="mt-5">
+          <div
+            key={step}
+            className={`mt-5 ${direction === "back" ? "anim-step-prev" : "anim-step-next"}`}
+          >
             <h2 className="font-semibold">{t("onboarding.instance")}</h2>
             <p className="mt-2 text-sm text-text-muted">{t("onboarding.instance.hint")}</p>
             <select
@@ -152,7 +182,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                 ←
               </button>
             )}
-            {step < 3 ? (
+            {step < TOTAL_STEPS ? (
               <button
                 onClick={() => setStep(step + 1)}
                 className="btn-primary"

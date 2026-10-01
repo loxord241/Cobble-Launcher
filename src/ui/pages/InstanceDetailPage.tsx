@@ -432,7 +432,7 @@ export default function InstanceDetailPage({
                   onKeyDown={(e) => {
                     if (e.key === "Escape") closeMenu(true);
                   }}
-                  className="absolute right-0 top-11 z-50 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
+                  className="anim-menu-in origin-top-right absolute right-0 top-11 z-50 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
                 >
                   <MenuItem
                     ref={firstItemRef}
@@ -615,10 +615,11 @@ export default function InstanceDetailPage({
       </div>
 
       <div
+        key={tab}
         role="tabpanel"
         id={`inst-panel-${tab}`}
         aria-labelledby={`inst-tab-${tab}`}
-        className="flex flex-col gap-4"
+        className="anim-fade-up flex flex-col gap-4"
       >
         {tab === "overview" && (
           <>
@@ -929,7 +930,7 @@ export default function InstanceDetailPage({
           role="dialog"
           aria-modal="true"
           aria-label={t("mods.copy.choose", { file: fileBase(copyFor) })}
-          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
+          className="anim-fade-in fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
           onClick={(e) => {
             if (e.target === e.currentTarget) setCopyFor(null);
           }}
@@ -937,7 +938,7 @@ export default function InstanceDetailPage({
             if (e.key === "Escape") setCopyFor(null);
           }}
         >
-          <div className="flex max-h-[70vh] w-[420px] max-w-full flex-col rounded-lg border border-border-app bg-card p-4 shadow-2xl">
+          <div className="anim-dialog-in flex max-h-[70vh] w-[420px] max-w-full flex-col rounded-lg border border-border-app bg-card p-4 shadow-2xl">
             <div className="text-sm font-semibold">
               {t("mods.copy.choose", { file: fileBase(copyFor) })}
             </div>

@@ -143,7 +143,7 @@ export default function AddContentModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -154,7 +154,7 @@ export default function AddContentModal({
         role="dialog"
         aria-modal="true"
         aria-label={t("addContent.title", { name: instance.name })}
-        className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg border border-border-app bg-card p-5 shadow-2xl"
+        className="anim-dialog-in flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg border border-border-app bg-card p-5 shadow-2xl"
       >
         <div className="flex items-center justify-between border-b border-border-app pb-3">
           <h2 className="truncate text-lg font-semibold text-text">

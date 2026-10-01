@@ -158,12 +158,12 @@ export default function CommandPalette({
       aria-modal="true"
       aria-label={t("shell.palette.open")}
       tabIndex={-1}
-      className="fixed inset-0 z-[60] flex items-start justify-center bg-black/70 p-4 pt-[12vh]"
+      className="anim-fade-in fixed inset-0 z-[60] flex items-start justify-center bg-black/70 p-4 pt-[12vh]"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex w-[560px] max-w-full flex-col overflow-hidden rounded-lg border border-border-strong bg-card shadow-2xl">
+      <div className="anim-dialog-in flex w-[560px] max-w-full flex-col overflow-hidden rounded-lg border border-border-strong bg-card shadow-2xl">
         {/* Combobox-паттерн ARIA: ввод + listbox с aria-activedescendant. */}
         <input
           type="text"

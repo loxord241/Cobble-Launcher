@@ -163,7 +163,7 @@ export default function LogViewerModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -174,7 +174,7 @@ export default function LogViewerModal({
         role="dialog"
         aria-modal="true"
         aria-label={t("instances.logs.title", { name: instance.name })}
-        className="flex h-[80vh] w-[860px] max-w-full flex-col rounded-lg border border-border-app bg-card p-5 shadow-2xl"
+        className="anim-dialog-in flex h-[80vh] w-[860px] max-w-full flex-col rounded-lg border border-border-app bg-card p-5 shadow-2xl"
       >
         <div className="flex items-center justify-between border-b border-border-app pb-3">
           <div className="flex items-center gap-3">
@@ -339,7 +339,11 @@ export default function LogViewerModal({
               disabled={lines.length === 0}
               className="btn-primary flex h-10 items-center gap-2 px-4 text-sm"
             >
-              {copied ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+              {copied ? (
+                <Check key="copied" size={16} aria-hidden className="anim-pop-in" />
+              ) : (
+                <Copy size={16} aria-hidden />
+              )}
               {copied ? t("common.copied") : t("common.copy")}
             </button>
           </div>

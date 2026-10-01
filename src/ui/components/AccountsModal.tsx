@@ -144,7 +144,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
   return (
     <div
       ref={dialogRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       role="dialog"
       aria-modal="true"
       aria-label={t("accounts.title")}
@@ -155,7 +155,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
     >
       {/* Персонаж+добавление выросли выше вьюпорта — контент модалки скроллится,
           «Готово» всегда достижим (клавиатурой и мышью). */}
-      <div className="flex max-h-[90vh] w-[620px] max-w-full flex-col overflow-y-auto rounded-lg border border-border-app bg-card p-6 shadow-2xl">
+      <div className="anim-dialog-in flex max-h-[90vh] w-[620px] max-w-full flex-col overflow-y-auto rounded-lg border border-border-app bg-card p-6 shadow-2xl">
         <div className="flex items-center justify-between border-b border-border-app pb-3">
           <h2 className="text-lg font-semibold text-text">{t("accounts.title")}</h2>
           <button

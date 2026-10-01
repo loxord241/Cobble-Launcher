@@ -20,7 +20,7 @@ export default function DeleteInstanceDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
+      className="anim-fade-in fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
       onClick={onCancel}
     >
       <div
@@ -29,7 +29,7 @@ export default function DeleteInstanceDialog({
         role="dialog"
         aria-modal="true"
         aria-label={t("instances.delete.title")}
-        className="w-[440px] rounded-lg border border-border-app bg-card p-5 shadow-xl"
+        className="anim-dialog-in w-[440px] rounded-lg border border-border-app bg-card p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">

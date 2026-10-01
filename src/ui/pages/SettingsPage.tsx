@@ -622,7 +622,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
                     <span className="text-[11px] leading-tight text-text-muted">{t(label)}</span>
                     <span className="ml-auto grid size-5 place-items-center">
                       {selected && (
-                        <span className="grid size-5 place-items-center rounded-full bg-accent text-on-accent">
+                        <span key="selected" className="anim-pop-in grid size-5 place-items-center rounded-full bg-accent text-on-accent">
                           <Check size={12} aria-hidden strokeWidth={2.5} />
                         </span>
                       )}

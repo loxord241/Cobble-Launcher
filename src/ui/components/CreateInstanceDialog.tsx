@@ -94,7 +94,7 @@ export default function CreateInstanceDialog({
   return (
     <div
       ref={dialogRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       role="dialog"
       aria-modal="true"
       aria-label={t("instances.create")}
@@ -103,7 +103,7 @@ export default function CreateInstanceDialog({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-[440px] rounded-lg border border-border-app bg-card p-5">
+      <div className="anim-dialog-in w-[440px] rounded-lg border border-border-app bg-card p-5">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">{t("instances.create")}</h2>
           <button onClick={onClose} aria-label={t("common.close")} className="text-text-muted hover:text-text">

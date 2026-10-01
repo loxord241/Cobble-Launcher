@@ -100,7 +100,7 @@ export default function InstanceKebabMenu({
             onKeyDown={(e) => {
               if (e.key === "Escape") closeMenu(true);
             }}
-            className="absolute right-0 top-11 z-50 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
+            className="anim-menu-in origin-top-right absolute right-0 top-11 z-50 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
           >
             {onSettings && (
               <MenuItem

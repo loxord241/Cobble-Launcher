@@ -60,7 +60,7 @@ function InstanceCard({
           <button
             onClick={callbacks.onStop}
             aria-label={`${t("instances.stop")} — ${inst.name}`}
-            className="absolute inset-0 m-auto grid size-12 place-items-center rounded-full bg-error text-on-danger shadow-lg transition-colors hover:opacity-90"
+            className="absolute inset-0 m-auto grid size-12 place-items-center rounded-full bg-error text-on-danger scale-90 shadow-lg transition-[opacity,transform,scale] duration-200 hover:opacity-90 group-hover:scale-100"
           >
             <Square size={18} aria-hidden fill="currentColor" />
           </button>
@@ -68,7 +68,7 @@ function InstanceCard({
           <button
             onClick={callbacks.onLaunch}
             aria-label={`${t("play")} — ${inst.name}`}
-            className="absolute inset-0 m-auto grid size-12 place-items-center rounded-full bg-accent text-on-accent opacity-0 shadow-lg transition-opacity duration-200 hover:bg-accent-hover group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
+            className="absolute inset-0 m-auto grid size-12 place-items-center rounded-full bg-accent text-on-accent scale-90 opacity-0 shadow-lg transition-[opacity,transform,scale] duration-200 hover:bg-accent-hover group-hover:scale-100 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
           >
             <Play size={20} aria-hidden fill="currentColor" strokeWidth={0} />
           </button>
