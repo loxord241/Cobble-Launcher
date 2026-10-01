@@ -50,7 +50,8 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
   // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
   // busy-операции закрытие не блокируют (поведение до правки: onClose без
   // guard'а) — хук получает тот же onClose, что и кнопки/оверлей.
-  const dialogRef = useModalA11y(onClose);
+  // D41: requestClose — закрытие с анимацией (для ✕ и подложки).
+  const { containerRef: dialogRef, requestClose } = useModalA11y(onClose);
 
   const handleAddOffline = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -150,7 +151,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
       aria-label={t("accounts.title")}
       tabIndex={-1}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
       {/* Персонаж+добавление выросли выше вьюпорта — контент модалки скроллится,
@@ -159,7 +160,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
         <div className="flex items-center justify-between border-b border-border-app pb-3">
           <h2 className="text-lg font-semibold text-text">{t("accounts.title")}</h2>
           <button
-            onClick={onClose}
+            onClick={requestClose}
             aria-label={t("common.close")}
             className="icon-btn text-text-muted hover:text-text"
           >
@@ -365,7 +366,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
             </button>
           </div>
 
-          <div className="mt-3">
+          <div key={activeTab} className="anim-fade-up mt-3">
             {/* Офлайн форма */}
             {activeTab === "offline" && (
               <form onSubmit={handleAddOffline} className="flex gap-2">

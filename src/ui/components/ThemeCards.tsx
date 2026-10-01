@@ -17,7 +17,19 @@ export default function ThemeCards() {
   const { update } = useSettings();
 
   const pick = (id: ThemeId) => {
-    setTheme(id);
+    // Кроссфейд через View Transitions API (дефолтный, без своего CSS):
+    // тема применяется синхронно внутри колбэка, ровно как без него, —
+    // меняется только визуальный переход. Guards: API нет (старый WebView)
+    // или пользователь просил меньше движения — применяем как раньше.
+    const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown };
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (doc.startViewTransition && !reduce) {
+      doc.startViewTransition(() => {
+        setTheme(id);
+      });
+    } else {
+      setTheme(id);
+    }
     setCurrent(id);
     // dark/light синхронизируем с ядром (settings.theme), остальные — только localStorage.
     if (id === "dark" || id === "light") void update({ theme: id }).catch(() => undefined);

@@ -93,7 +93,7 @@ export default function UpdatesSection() {
         {updateAvailable && latest && (
           <div
             role="status"
-            className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-success"
+            className="anim-fade-up mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-success"
           >
             <span className="font-mono">{info?.current || version} →</span>
             {url ? (
@@ -115,7 +115,7 @@ export default function UpdatesSection() {
         {upToDate && (
           <div
             role="status"
-            className="mt-3 flex items-center gap-2 rounded-lg border border-border-app bg-surface-2 p-3 text-sm text-text-muted"
+            className="anim-fade-up mt-3 flex items-center gap-2 rounded-lg border border-border-app bg-surface-2 p-3 text-sm text-text-muted"
           >
             <Check size={14} aria-hidden className="text-success" />
             <span>{t("updates.upToDate")}</span>
@@ -127,7 +127,7 @@ export default function UpdatesSection() {
         {couldNotCheck && (
           <div
             role="status"
-            className="mt-3 rounded-lg border border-border-app bg-surface-2 p-3 text-sm text-text-muted"
+            className="anim-fade-up mt-3 rounded-lg border border-border-app bg-surface-2 p-3 text-sm text-text-muted"
           >
             {noteText}
           </div>

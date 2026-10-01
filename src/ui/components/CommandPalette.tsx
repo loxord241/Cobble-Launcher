@@ -49,7 +49,10 @@ export default function CommandPalette({
   const [activeIndex, setActiveIndex] = useState(0);
   // A33: Escape закрывает, Tab зациклен внутри диалога, стартовый фокус —
   // в поле ввода, после закрытия фокус возвращается на триггер.
-  const dialogRef = useModalA11y(onClose, { initialFocus: "input" });
+  // D41: requestClose — закрытие с анимацией (для подложки).
+  const { containerRef: dialogRef, requestClose } = useModalA11y(onClose, {
+    initialFocus: "input",
+  });
 
   const list = useInstances((s) => s.list);
   const status = useInstances((s) => s.status);
@@ -160,7 +163,7 @@ export default function CommandPalette({
       tabIndex={-1}
       className="anim-fade-in fixed inset-0 z-[60] flex items-start justify-center bg-black/70 p-4 pt-[12vh]"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
       <div className="anim-dialog-in flex w-[560px] max-w-full flex-col overflow-hidden rounded-lg border border-border-strong bg-card shadow-2xl">
@@ -208,7 +211,7 @@ export default function CommandPalette({
                 // preventDefault: клик не уводит фокус из поля ввода.
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => runItem(it)}
-                className={`flex h-10 cursor-pointer items-center gap-3 rounded-md px-3 text-sm ${
+                className={`flex h-10 cursor-pointer items-center gap-3 rounded-md px-3 text-sm transition-colors duration-100 ${
                   i === idx
                     ? "bg-accent-soft text-text"
                     : "text-text-muted hover:bg-surface-2 hover:text-text"

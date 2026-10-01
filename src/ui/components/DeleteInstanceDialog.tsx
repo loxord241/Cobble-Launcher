@@ -16,15 +16,16 @@ export default function DeleteInstanceDialog({
   onConfirm: (wipe: boolean) => void;
 }) {
   // A33/A5.4: Escape, ловушка фокуса и возврат фокуса на кебаб-триггер.
-  const dialogRef = useModalA11y(onCancel);
+  // D41: requestClose — закрытие с анимацией (для ✕ и подложки).
+  const { containerRef, requestClose } = useModalA11y(onCancel);
 
   return (
     <div
       className="anim-fade-in fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-      onClick={onCancel}
+      onClick={requestClose}
     >
       <div
-        ref={dialogRef}
+        ref={containerRef}
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
@@ -35,7 +36,7 @@ export default function DeleteInstanceDialog({
         <div className="flex items-start justify-between gap-3">
           <h3 className="text-[15px] font-semibold">{t("instances.delete.title")}</h3>
           <button
-            onClick={onCancel}
+            onClick={requestClose}
             aria-label={t("common.close")}
             className="icon-btn text-text-muted"
           >

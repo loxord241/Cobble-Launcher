@@ -147,6 +147,8 @@ export default function HomePage({ query }: { query: string }) {
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<SearchHit | null>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
+  const stuckRef = useRef<HTMLDivElement>(null)
+  const [stuck, setStuck] = useState(false)
 
   const doSearch = async () => {
     setBusy(true)
@@ -221,6 +223,20 @@ export default function HomePage({ query }: { query: string }) {
     return () => io.disconnect()
   }, [loadMore])
 
+  // Тень залипшей панели: маркер 0-высоты перед sticky-панелью уходит из
+  // видимости main в момент залипания — observer переключает .sticky-fade.on.
+  useEffect(() => {
+    const el = stuckRef.current
+    if (!el) return
+    const root = el.closest("main")
+    const io = new IntersectionObserver(
+      (entries) => setStuck(!entries.some((e) => e.isIntersecting)),
+      { root, threshold: 0 },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [])
+
   // Глобальный поиск из титлбара фильтрует результаты по подстроке.
   const q = query.trim().toLowerCase()
   const visibleHits = hits.filter(
@@ -229,6 +245,10 @@ export default function HomePage({ query }: { query: string }) {
 
   return (
     <div className="mx-auto flex max-w-[1100px] flex-col gap-4">
+      {/* Маркер залипания sticky-панели: 0-высоты, невидим; когда панель
+          прилипает к верху main, маркер покидает viewport — это ловит
+          IntersectionObserver выше. */}
+      <div ref={stuckRef} aria-hidden />
       {/* Панель управления (заголовок+счётчик, табы, поиск+фильтры) залипает
           сверху: скроллится main, поэтому top-0. z-10 достаточно — модалка
           проекта рендерится с z-50 и остаётся поверх. -mx-2/px-2 не дают фону
@@ -305,6 +325,9 @@ export default function HomePage({ query }: { query: string }) {
           {t("mods.search")}
         </button>
       </div>
+      {/* Тень под панелью — только когда панель реально залипла (.sticky-fade
+          в tokens.css: absolute, opacity 0 → 1 через класс .on). */}
+      <div aria-hidden className={`sticky-fade ${stuck ? "on" : ""}`} />
       </div>
 
       {error && (

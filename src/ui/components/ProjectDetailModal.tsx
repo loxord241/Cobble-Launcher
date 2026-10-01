@@ -2,7 +2,7 @@
 // категорий, статистика и табы «Обзор / Журнал / Галерея / Версии». Тело
 // проекта грузим при открытии, версии — лениво при первом открытии табов
 // «Журнал»/«Версии» (кэш в состоянии на всё время жизни модалки).
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Clock, Download, ExternalLink, HardDrive, Heart, LoaderCircle, Scale, X } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../../api/client";
@@ -93,11 +93,21 @@ export default function ProjectDetailModal({
   const isPack = hit.project_type === "modpack";
   const isMod = hit.project_type === "mod";
 
-  // Escape при открытом зуме закрывает только зум; реф — потому что хук
-  // ставит keydown-слушатель один раз на всё время жизни модалки.
-  const zoomRef = useRef(zoom);
-  zoomRef.current = zoom;
-  const dialogRef = useModalA11y(() => (zoomRef.current ? setZoom(null) : onClose()));
+  // Escape при открытом зуме закрывает только зум. Слушатель висит на window
+  // в capture-фазе — она срабатывает РАНЬШЕ keydown-слушателя хука (document,
+  // capture), и stopPropagation не даёт хуку пометить модалку закрывающейся
+  // (anim-closing с pointer-events:none), когда закрылся лишь зум.
+  useEffect(() => {
+    if (!zoom) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setZoom(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [zoom]);
+  const { containerRef: dialogRef, requestClose } = useModalA11y(onClose);
 
   const loadDetail = useCallback(async () => {
     setDetailBusy(true);
@@ -204,7 +214,7 @@ export default function ProjectDetailModal({
     <div
       className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
       <div
@@ -262,7 +272,7 @@ export default function ProjectDetailModal({
               onClick={() => void install()}
               disabled={busy || (!isPack && !targetId)}
               aria-busy={busy}
-              className="btn-primary h-9"
+              className={`btn-primary h-9 ${busy ? "anim-pulse-soft" : ""}`}
             >
               {busy ? (
                 <LoaderCircle size={15} aria-hidden className="animate-spin" />
@@ -272,7 +282,7 @@ export default function ProjectDetailModal({
               {busy ? t("project.installing") : t("project.install")}
             </button>
             <button
-              onClick={onClose}
+              onClick={requestClose}
               aria-label={t("common.close")}
               className="icon-btn text-text-muted hover:text-text"
             >
@@ -576,7 +586,7 @@ export default function ProjectDetailModal({
             <img
               src={zoom.url}
               alt={zoom.title ?? ""}
-              className="max-h-[80vh] max-w-full rounded-lg object-contain"
+              className="anim-zoom-in max-h-[80vh] max-w-full rounded-lg object-contain"
             />
             {zoom.caption && (
               <p className="max-w-2xl text-center text-[13px] text-white/80">{zoom.caption}</p>

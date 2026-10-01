@@ -17,7 +17,10 @@ export default function RenameInstanceModal({
   const [error, setError] = useState<string | null>(null);
   const { rename } = useInstances();
   // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
-  const dialogRef = useModalA11y(onClose, { initialFocus: "#rename-input" });
+  // D41: requestClose — закрытие с анимацией (для ✕ и подложки).
+  const { containerRef: dialogRef, requestClose } = useModalA11y(onClose, {
+    initialFocus: "#rename-input",
+  });
 
   const submit = async () => {
     const trimmed = name.trim();
@@ -46,14 +49,14 @@ export default function RenameInstanceModal({
       aria-label={t("instances.rename.title")}
       tabIndex={-1}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
       <div className="anim-dialog-in w-[420px] rounded-lg border border-border-app bg-card p-5 shadow-xl">
         <div className="flex items-center justify-between border-b border-border-app pb-3">
           <h2 className="text-lg font-semibold text-text">{t("instances.rename.title")}</h2>
           <button
-            onClick={onClose}
+            onClick={requestClose}
             aria-label={t("common.close")}
             className="icon-btn text-text-muted hover:text-text"
           >

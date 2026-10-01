@@ -243,12 +243,12 @@ export default function InstancesPage({
       </div>
 
       {error && (
-        <p className="rounded-lg border border-error/40 bg-error/10 p-3 text-sm text-error" role="alert">
+        <p className="anim-slide-down rounded-lg border border-error/40 bg-error/10 p-3 text-sm text-error" role="alert">
           {error}
         </p>
       )}
       {notice && (
-        <div className="rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-success">
+        <div className="anim-slide-down rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-success">
           {notice}
         </div>
       )}

@@ -81,7 +81,8 @@ export default function InstanceSettingsModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
-  const dialogRef = useModalA11y(onClose);
+  // D41: requestClose — закрытие с анимацией (для ✕ и подложки).
+  const { containerRef: dialogRef, requestClose } = useModalA11y(onClose);
 
   useEffect(() => {
     api.ramGuide().then(setRamGuide).catch(() => setRamGuide(null));
@@ -185,7 +186,7 @@ export default function InstanceSettingsModal({
       aria-label={t("instances.settings.title", { name: instance.name })}
       tabIndex={-1}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
       <div className="anim-dialog-in max-h-[90vh] w-[520px] overflow-y-auto rounded-lg border border-border-app bg-card p-6 shadow-xl">
@@ -194,7 +195,7 @@ export default function InstanceSettingsModal({
             {t("instances.settings.title", { name: instance.name })}
           </h2>
           <button
-            onClick={onClose}
+            onClick={requestClose}
             aria-label={t("common.close")}
             className="icon-btn text-text-muted hover:text-text"
           >

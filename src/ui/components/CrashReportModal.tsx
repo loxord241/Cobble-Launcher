@@ -33,7 +33,8 @@ export default function CrashReportModal({
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareError, setShareError] = useState<string | null>(null);
   // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
-  const dialogRef = useModalA11y(onClose);
+  // D41: requestClose — закрытие с анимацией (для ✕ и подложки).
+  const { containerRef: dialogRef, requestClose } = useModalA11y(onClose);
   const copyTimer = useRef<number | null>(null);
 
   // F30: безопасный режим предлагается после >=2 падений запуска подряд.
@@ -118,7 +119,7 @@ export default function CrashReportModal({
       aria-label={t("crash.title")}
       tabIndex={-1}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
       <div className="anim-dialog-in flex max-h-[90vh] w-[640px] max-w-full flex-col rounded-lg border border-error/50 bg-card p-6 shadow-2xl">
@@ -135,7 +136,7 @@ export default function CrashReportModal({
             </div>
           </div>
           <button
-            onClick={onClose}
+            onClick={requestClose}
             aria-label={t("common.close")}
             className="icon-btn text-text-muted hover:text-text"
           >

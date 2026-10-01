@@ -437,7 +437,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
       {notice && (
         <div
           role={notice.kind === "error" ? "alert" : "status"}
-          className={`mx-3 mt-3 rounded-lg border p-3 text-sm ${
+          className={`anim-slide-down mx-3 mt-3 rounded-lg border p-3 text-sm ${
             notice.kind === "error"
               ? "border-error/40 bg-error/10 text-error"
               : "border-success/40 bg-success/10 text-success"
@@ -466,7 +466,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
               {page === id && (
                 <span
                   aria-hidden
-                  className="absolute -left-3 top-2 bottom-2 w-[3px] rounded-r bg-accent"
+                  className="anim-fade-in absolute -left-3 top-2 bottom-2 w-[3px] rounded-r bg-accent"
                 />
               )}
               <Icon size={18} aria-hidden />

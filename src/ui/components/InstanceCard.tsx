@@ -32,9 +32,15 @@ function InstanceCard({
       ? t("play.downloading", { done: status?.doneFiles ?? 0, total: status?.totalFiles ?? 0 })
       : phase === "running"
         ? t("play.running")
-        : phase === "preparing" || phase === "launching"
-          ? t("play.preparing")
-          : null;
+          : phase === "preparing" || phase === "launching"
+            ? t("play.preparing")
+            : null;
+
+  // Полоса прогресса скачивания: доля файлов; вне фазы downloading — полосы нет.
+  const downloadProgress =
+    phase === "downloading" && (status?.totalFiles ?? 0) > 0
+      ? Math.min((status?.doneFiles ?? 0) / (status?.totalFiles ?? 0), 1)
+      : null;
 
   const sub = inst.loader
     ? `${inst.loader} ${inst.loaderVersion ?? ""}`
@@ -82,9 +88,25 @@ function InstanceCard({
             {inst.name}
           </div>
           <div className="truncate text-[12px] leading-snug text-text-muted" aria-live="polite">
+            {phase === "running" && (
+              // Декоративная точка «игра идёт»: текст aria-live достаточен.
+              <span
+                aria-hidden
+                className="mr-1.5 inline-block size-1.5 rounded-full bg-accent align-middle anim-dot-pulse"
+              />
+            )}
             {sub}
             {statusText ? ` · ${statusText}` : ""}
           </div>
+          {/* Прогресс скачивания: заполнение через scaleX (композитно, токен). */}
+          {downloadProgress !== null && (
+            <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-surface-2">
+              <div
+                className="h-full rounded-full bg-accent anim-progress-fill"
+                style={{ transform: `scaleX(${downloadProgress})` }}
+              />
+            </div>
+          )}
           {/* Критерий сортировки «По последнему запуску» должен быть виден. */}
           <div className="truncate text-[12px] leading-snug text-text-muted">
             {inst.lastPlayed

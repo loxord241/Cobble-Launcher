@@ -52,19 +52,27 @@ async function main() {
   await sleep(1500);
   await main.evaluate((m) => m.scrollTo(0, 0));
   await sleep(1200);
-  // 3. Окно проекта: вход модалки
+  // 3. Окно проекта: вход модалки, табы, зум галереи
   await page.getByRole("button", { name: /^Установить — / }).first().click();
-  await sleep(3000);
-  // 4. Табы: fade-up контента
+  await sleep(2500);
   const dlg = page.locator("[role='dialog']").first();
   await dlg.getByRole("tab", { name: "Журнал изменений" }).click();
-  await sleep(1600);
+  await sleep(1400);
   await dlg.getByRole("tab", { name: "Галерея" }).click();
-  await sleep(1600);
+  await sleep(1400);
+  await dlg.locator(".grid img").first().click();
+  await sleep(1500); // зум: anim-zoom-in
+  await page.keyboard.press("Escape"); // Escape закрывает только зум
+  await sleep(900);
   await dlg.getByRole("tab", { name: "Версии" }).click();
-  await sleep(1600);
+  await sleep(1400);
+  // 4. Закрытие модалки — анимация выхода, затем повторный вход
   await page.keyboard.press("Escape");
-  await sleep(1200);
+  await sleep(1000);
+  await page.getByRole("button", { name: /^Установить — / }).first().click();
+  await sleep(2200);
+  await page.keyboard.press("Escape");
+  await sleep(1000);
   // 5. Переход на Инстансы + hover карточки (Play-оверлей)
   await page.getByRole("navigation").getByRole("button", { name: /^Инстансы/ }).click();
   await sleep(1800);
@@ -105,7 +113,10 @@ async function main() {
   await offline.click();
   await sleep(1100);
   await offline.click();
-  await sleep(1500);
+  await sleep(1000);
+  // Финал: вернуть тёмную тему (сценарий оставляет выбранной последнюю кликнутую).
+  await page.locator('button[aria-pressed="false"]', { hasText: "Тёмная" }).first().click();
+  await sleep(1200);
 
   await cdp.send("Page.stopScreencast").catch(() => {});
   await browser.close();

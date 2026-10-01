@@ -47,7 +47,8 @@ export default function LogViewerModal({
   const containerRef = useRef<HTMLDivElement>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // A33: Escape + ловушка фокуса + возврат фокуса на кебаб-триггер.
-  const dialogRef = useModalA11y(onClose);
+  // D41: requestClose — закрытие с анимацией (для ✕ и подложки).
+  const { containerRef: dialogRef, requestClose } = useModalA11y(onClose);
 
   // A31: живой поток — только логи этой сессии инстанса. Системный
   // launcher.log лаунчера под игровой лог не подмешиваем — пусто значит пусто.
@@ -165,7 +166,7 @@ export default function LogViewerModal({
     <div
       className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
       <div
@@ -187,7 +188,7 @@ export default function LogViewerModal({
             </span>
           </div>
           <button
-            onClick={onClose}
+            onClick={requestClose}
             aria-label={t("common.close")}
             className="icon-btn text-text-muted hover:text-text"
           >

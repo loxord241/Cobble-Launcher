@@ -218,8 +218,10 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
         </p>
       )}
 
-      {/* Темы: карточки как в CurseForge, применяются мгновенно */}
-      <section>
+      {/* Темы: карточки как в CurseForge, применяются мгновенно.
+          Каскад секций (anim-fade-up): задержка = номер секции * 40 мс,
+          кэп 200 мс (Math.min(idx, 5)) — хвост не тормозит приёмку. */}
+      <section className="anim-fade-up" style={{ animationDelay: "0ms" }}>
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.themesSection")}
         </h3>
@@ -228,7 +230,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
       </section>
 
       {/* Кастомизация: шрифт и акцент поверх палитры выбранной темы */}
-      <section>
+      <section className="anim-fade-up" style={{ animationDelay: "40ms" }}>
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.customizationSection")}
         </h3>
@@ -290,7 +292,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
       </section>
 
       {/* Общие: реальные настройки из ядра */}
-      <section>
+      <section className="anim-fade-up" style={{ animationDelay: "80ms" }}>
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.generalSection")}
         </h3>
@@ -388,7 +390,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
       </section>
 
       {/* Java Runtimes */}
-      <section>
+      <section className="anim-fade-up" style={{ animationDelay: "120ms" }}>
         <div className="mb-3 flex items-center justify-between">
           <h3 className="text-[13px] font-semibold uppercase tracking-wider text-text-muted">
             {t("settings.javaSection")}
@@ -456,7 +458,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
       </section>
 
       {/* Сеть и Прокси */}
-      <section>
+      <section className="anim-fade-up" style={{ animationDelay: "160ms" }}>
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.networkSection")}
         </h3>
@@ -530,7 +532,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
       </section>
 
       {/* Данные */}
-      <section>
+      <section className="anim-fade-up" style={{ animationDelay: "200ms" }}>
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.dataDir")}
         </h3>
@@ -558,7 +560,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
       </section>
 
       {/* D38: выбор логотипа лаунчера (иконка окна + бренд-чип). */}
-      <section>
+      <section className="anim-fade-up" style={{ animationDelay: "200ms" }}>
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.logo")}
         </h3>
@@ -639,7 +641,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
       <UpdatesSection />
 
       {/* Дисковое пространство (F18) и экспорт/импорт настроек (F20) */}
-      <section>
+      <section className="anim-fade-up" style={{ animationDelay: "200ms" }}>
         <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
           {t("settings.storage")}
         </h3>

@@ -48,7 +48,8 @@ export default function AddContentModal({
   const scrollRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   // A33: Escape + ловушка фокуса + возврат фокуса на кнопку-триггер.
-  const dialogRef = useModalA11y(onClose);
+  // D41: requestClose — закрытие с анимацией (для ✕ и подложки).
+  const { containerRef: dialogRef, requestClose } = useModalA11y(onClose);
 
   const doSearch = async () => {
     setBusy(true);
@@ -145,7 +146,7 @@ export default function AddContentModal({
     <div
       className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
       <div
@@ -161,7 +162,7 @@ export default function AddContentModal({
             {t("addContent.title", { name: instance.name })}
           </h2>
           <button
-            onClick={onClose}
+            onClick={requestClose}
             aria-label={t("common.close")}
             className="icon-btn text-text-muted hover:text-text"
           >
@@ -271,7 +272,7 @@ export default function AddContentModal({
                     onClick={() => void install(h.project_id)}
                     disabled={installing !== null}
                     aria-busy={installing === h.project_id}
-                    className="btn-primary btn-sm"
+                    className={`btn-primary btn-sm${installing === h.project_id ? " anim-pulse-soft" : ""}`}
                     aria-label={`${t("mods.installInto")} — ${h.title}`}
                   >
                     {installing === h.project_id ? (
