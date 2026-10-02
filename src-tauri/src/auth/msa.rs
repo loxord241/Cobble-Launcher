@@ -35,6 +35,11 @@ fn default_expires() -> u64 {
 }
 
 pub async fn device_code_start(client: &HttpClient, azure_client_id: &str) -> Result<DeviceCodeStart> {
+    // F16/A61: офлайн-режим — вход требует сеть, честный отказ сразу
+    // (как в ely.rs/custom.rs), а не висяк до сетевого таймаута.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("вход Microsoft".into()));
+    }
     let resp: DeviceCodeStart = client
         .raw()
         .post(format!("{AUTH_BASE}/devicecode"))
@@ -74,6 +79,10 @@ pub async fn device_code_poll(
     azure_client_id: &str,
     device_code: &str,
 ) -> Result<Option<Session>> {
+    // F16/A61: опрос токена — тоже сеть; офлайн отталкиваем до IO.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("device-code MSA".into()));
+    }
     let resp = client
         .raw()
         .post(format!("{AUTH_BASE}/token"))
@@ -112,6 +121,11 @@ pub async fn refresh_session(
     refresh_token: &str,
     azure_client_id: &str,
 ) -> Result<Session> {
+    // F16/A61: авто-refresh зовётся при старте и запуске игры — в офлайне
+    // обязан отказать мгновенно, иначе запуск висит до connect-таймаута.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("refresh MSA".into()));
+    }
     // client_id передаёт вызывающий — из ФАКТИЧЕСКОГО корня данных,
     // а не default_root (ломалось при кастомном каталоге, D4).
     let resp = client
@@ -426,6 +440,10 @@ pub async fn finish_web_login(
     code: &str,
     port: u16,
 ) -> Result<Session> {
+    // F16/A61: обмен кода на токены — сеть; офлайн-гейт до IO.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("вход Microsoft (web)".into()));
+    }
     let redirect = format!("http://localhost:{port}");
     let resp = client
         .raw()
@@ -503,5 +521,34 @@ mod tests {
             extract_code("GET /?code=xyz&state=x HTTP/1.1"),
             Some("xyz".into())
         );
+    }
+
+    /// A61/F16: все публичные входы MSA гейтятся офлайном до любых сетевых
+    /// вызовов (сеть = 127.0.0.1:1; если бы запрос ушёл, ошибка была бы
+    /// Http/Network, а не OfflineMode).
+    #[tokio::test]
+    async fn msa_entries_offline_fail_before_io() {
+        let client = HttpClient::new(None).unwrap();
+        client.set_offline(true);
+
+        let err = device_code_start(&client, "client-id")
+            .await
+            .expect_err("device_code_start должен отказать офлайн");
+        assert!(matches!(err, LauncherError::OfflineMode(_)));
+
+        let err = device_code_poll(&client, "client-id", "dc")
+            .await
+            .expect_err("device_code_poll должен отказать офлайн");
+        assert!(matches!(err, LauncherError::OfflineMode(_)));
+
+        let err = refresh_session(&client, "refresh", "client-id")
+            .await
+            .expect_err("refresh_session должен отказать офлайн");
+        assert!(matches!(err, LauncherError::OfflineMode(_)));
+
+        let err = finish_web_login(&client, "client-id", "code", 12345)
+            .await
+            .expect_err("finish_web_login должен отказать офлайн");
+        assert!(matches!(err, LauncherError::OfflineMode(_)));
     }
 }

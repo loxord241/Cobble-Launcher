@@ -9,6 +9,23 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
 
+  build: {
+    rolldownOptions: {
+      output: {
+        // Реакт-ядро отдельно от кода приложения: стартовый чанк меньше
+        // лимита 500 КБ, vendor не перекачивается при правках UI.
+        codeSplitting: {
+          groups: [
+            {
+              name: "react-vendor",
+              test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+            },
+          ],
+        },
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

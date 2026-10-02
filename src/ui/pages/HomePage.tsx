@@ -2,12 +2,15 @@
 // (модпаки/моды), поиск, сортировка, фильтр загрузчика, бесконечный скролл
 // строк. Клик по строке/кнопке «Установить» открывает окно проекта —
 // установка происходит внутри окна. Инстансы живут на странице «Инстансы».
-import { useCallback, useEffect, useRef, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { Download, Search, SearchX } from "lucide-react"
 import { api } from "../../api/client"
 import { apiErrorText, currentLanguage, plural, t } from "../../i18n"
-import ProjectDetailModal from "../components/ProjectDetailModal"
 import type { SearchHit } from "../../api/types"
+
+// Самый тяжёлый лист каталога (4 таба + галерея + markdown) грузится только
+// при первом открытии окна проекта — стартовый чанк меньше.
+const ProjectDetailModal = lazy(() => import("../components/ProjectDetailModal"))
 
 const PAGE_SIZE = 20
 
@@ -382,7 +385,11 @@ export default function HomePage({ query }: { query: string }) {
         </div>
       )}
 
-      {detail && <ProjectDetailModal hit={detail} onClose={() => setDetail(null)} />}
+      {detail && (
+        <Suspense fallback={null}>
+          <ProjectDetailModal hit={detail} onClose={() => setDetail(null)} />
+        </Suspense>
+      )}
     </div>
   )
 }
