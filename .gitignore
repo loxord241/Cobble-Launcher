@@ -34,33 +34,7 @@ src-tauri/target/
 secrets/
 scripts/keys/
 
-# Внутренние рабочие документы (промпты оркестатора и приёмок) — не публикуются
-AUDIT_PROMPT.md
-ORCHESTRATOR_PROMPT.md
-SLATE_APPLY_PROMPT.md
-UI_EXPLORATION_PROMPT.md
-AGENT_PROMPT.md
-DISCOVERY_PROMPT.md
-DISCOVERY_REPORT.md
-FULL_AUDIT_PROMPT.md
-FULL_AUDIT_REPORT.md
-PARITY_AUDIT_PROMPT.md
-PARITY_AUDIT_REPORT.md
+# Локальные артефакты приёмок (скриншоты, кадры записи)
 shots/
 ui-apply-shots/
 docs/anim-frames/
-
-# Внутренняя кухня и артефакты (файлы остаются локально, в гит не попадают) —
-# чистим перед публичным репо (запрос владельца, 2026-10-02)
-.agents/
-agents/
-ui-explorations/
-brag-output/
-brag-output-*/
-src/assets/hero/
-AUDIT.md
-docs/m0-window-proof.png
-docs/kill-acceptance/
-docs/m4-acceptance/
-docs/m5-acceptance/
-docs/m6-acceptance/
