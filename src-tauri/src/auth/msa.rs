@@ -249,9 +249,10 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         // 403 = Azure-приложению не выдано разрешение на Minecraft API
-        // (новым приложениям нужна заявка Mojang — вики, раздел про Azure).
+        // (официальная процедура — форма aka.ms/mce-reviewappid, статья
+        // help.minecraft.net/hc/en-us/articles/16254801392141).
         let hint = if status.as_u16() == 403 {
-            " (Azure-приложению не выдан доступ к Minecraft API — нужна заявка Mojang на использование api.minecraftservices.com)"
+            " (Azure-приложению не выдан доступ к Minecraft API — подайте заявку по форме aka.ms/mce-reviewappid, одобрение занимает время)"
         } else if status.as_u16() == 401 {
             " (частая причина — у аккаунта нет Minecraft: Java Edition)"
         } else {
