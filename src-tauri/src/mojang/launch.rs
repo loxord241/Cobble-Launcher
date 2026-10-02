@@ -214,7 +214,7 @@ mod tests {
             game_assets: None,
             natives_directory: PathBuf::from("/root/bin/1.20.1"),
             launcher_name: "mc-launcher-v2".into(),
-            launcher_version: "0.1.0".into(),
+            launcher_version: "0.2.0".into(),
             classpath: "/a.jar;/b.jar".into(),
             library_directory: PathBuf::from("/root/store/libraries"),
             resolution: Some((1280, 720)),

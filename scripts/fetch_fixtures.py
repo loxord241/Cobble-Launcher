@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "src-tauri" / "tests" / "fixtures"
-UA = "mc-launcher-v2/0.1.0 (github:owner/mc-launcher-v2)"
+UA = "mc-launcher-v2/0.2.0 (github:loxord241/Cobble-Launcher)"
 MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 
 
