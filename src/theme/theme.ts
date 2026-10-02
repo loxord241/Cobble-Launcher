@@ -1,6 +1,6 @@
 /*
  * theme.ts — система тем «Сланец»: тема = CSS-переменные на <html data-theme="…">.
- * Идентификаторы и палитры 1-в-1 из ui-explorations/slate-pro.html.
+ * Идентификаторы и палитры — из исторического HTML-прототипа «Сланца».
  * Приоритет источника: ?theme= в URL > localStorage > dark (спека фазы A).
  */
 export type ThemeId = "dark" | "light" | "cb-dark" | "cb-light" | "mc";
