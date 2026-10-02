@@ -49,3 +49,18 @@ PARITY_AUDIT_REPORT.md
 shots/
 ui-apply-shots/
 docs/anim-frames/
+
+# Внутренняя кухня и артефакты (файлы остаются локально, в гит не попадают) —
+# чистим перед публичным репо (запрос владельца, 2026-10-02)
+.agents/
+agents/
+ui-explorations/
+brag-output/
+brag-output-*/
+src/assets/hero/
+AUDIT.md
+docs/m0-window-proof.png
+docs/kill-acceptance/
+docs/m4-acceptance/
+docs/m5-acceptance/
+docs/m6-acceptance/

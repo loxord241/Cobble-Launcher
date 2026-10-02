@@ -1,6 +1,7 @@
 // Приёмка волны 2: иконки инстансов (set/clear через кебаб-меню),
 // статистика запусков в настройках инстанса, масштаб интерфейса.
 /* eslint-disable */
+const path = require("path");
 const { chromium } = require("playwright-core");
 const fs = require("fs");
 
@@ -22,7 +23,7 @@ async function main() {
   await page.evaluate(() => localStorage.setItem("lang", "ru"));
   await page.reload({ waitUntil: "networkidle" }).catch(() => {});
 
-  const iconPath = "C:/Users/Admin/AppData/Local/Temp/mcl-test-icon.png";
+  const iconPath = path.join(require("os").tmpdir(), "mcl-test-icon.png");
   fs.writeFileSync(iconPath, PNG_1PX);
 
   // 1. Иконка: установка через IPC (нативный диалог автоматизировать нельзя),
