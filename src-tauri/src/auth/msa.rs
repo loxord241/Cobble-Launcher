@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 const AUTH_BASE: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
 const XBL_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
-const MC_LOGIN_URL: &str = "https://api.minecraftservices.com/minecraft/loginWithXbox";
+const MC_LOGIN_URL: &str = "https://api.minecraftservices.com/authentication/login_with_xbox";
 const MC_PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profile";
 const SCOPE: &str = "XboxLive.signin offline_access";
 
@@ -166,6 +166,9 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
     let xbl: XblResp = client
         .raw()
         .post(XBL_URL)
+        // Вики (Microsoft authentication): эти эндпоинты «ругаются», если нет
+        // Content-Type: application/json (даёт .json()) и Accept.
+        .header("Accept", "application/json")
         .json(&serde_json::json!({
             "Properties": {
                 "AuthMethod": "RPS",
@@ -194,6 +197,7 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
     let resp = client
         .raw()
         .post(XSTS_URL)
+        .header("Accept", "application/json")
         .json(&serde_json::json!({
             "Properties": {
                 "SandboxId": "RETAIL",
@@ -224,55 +228,10 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
     let xsts_token = xsts.token;
     let uhs = xsts.claims["xui"][0]["uhs"].as_str().map(String::from)
         .unwrap_or(uhs);
-    // 2c. Кто вошёл: второй XSTS с RP http://xboxlive.com — в его claims есть gtg.
-    match client
-        .raw()
-        .post(XSTS_URL)
-        .json(&serde_json::json!({
-            "Properties": {"SandboxId": "RETAIL", "UserTokens": [xbl.token]},
-            "RelyingParty": "http://xboxlive.com",
-            "TokenType": "JWT"
-        }))
-        .send()
-        .await
-    {
-        Ok(r) => match r.json::<serde_json::Value>().await {
-            Ok(v) => println!(
-                "Вошли как (Xbox): {} (xid {})",
-                v["DisplayClaims"]["xui"][0]["gtg"],
-                v["DisplayClaims"]["xui"][0]["xid"]
-            ),
-            Err(e) => println!("xboxlive-RP: parse fail: {e}"),
-        },
-        Err(e) => println!("xboxlive-RP: request fail: {e}"),
-    }
 
-    // 2b. Геймертег вошедшего аккаунта (best effort) — чтобы было видно, КТО вошёл.
-    let gamertag: Option<String> = (|| async {
-        let r = client
-            .raw()
-            .get("https://profile.xboxlive.com/users/me/profile/settings?settings=Gamertag")
-            .bearer_auth(&xsts_token)
-            .header("x-xbl-contract-version", "2")
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .ok()?;
-        r.json::<serde_json::Value>().await.ok().and_then(|v| {
-            v["profileUsers"][0]["settings"]
-                .as_array()?
-                .iter()
-                .find(|s| s["id"] == "Gamertag")
-                .and_then(|s| s["value"].as_str())
-                .map(String::from)
-        })
-    })()
-    .await;
-    if let Some(gt) = &gamertag {
-        println!("Вошли как (Xbox): {gt}");
-    }
-
-    // 3. loginWithXbox
+    // 3. login_with_xbox (актуальный эндпоинт /authentication/login_with_xbox —
+    // старый /minecraft/loginWithXbox для кастомных Azure-приложений отвечает
+    // 401 {"path":...}; канон — вики «Microsoft authentication» + все лаунчеры).
     #[derive(Deserialize)]
     struct McLogin {
         access_token: String,
@@ -280,6 +239,7 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
     let resp = client
         .raw()
         .post(MC_LOGIN_URL)
+        .header("Accept", "application/json")
         .json(&serde_json::json!({
             "identityToken": format!("XBL3.0 x={uhs};{xsts_token}")
         }))
@@ -288,8 +248,17 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        // 403 = Azure-приложению не выдано разрешение на Minecraft API
+        // (новым приложениям нужна заявка Mojang — вики, раздел про Azure).
+        let hint = if status.as_u16() == 403 {
+            " (Azure-приложению не выдан доступ к Minecraft API — нужна заявка Mojang на использование api.minecraftservices.com)"
+        } else if status.as_u16() == 401 {
+            " (частая причина — у аккаунта нет Minecraft: Java Edition)"
+        } else {
+            ""
+        };
         return Err(LauncherError::network(format!(
-            "loginWithXbox: HTTP {status}, тело ответа: {body} (частая причина — у аккаунта нет Minecraft: Java Edition)"
+            "login_with_xbox: HTTP {status}, тело ответа: {body}{hint}"
         )));
     }
     let mc: McLogin = resp.json().await?;
@@ -305,6 +274,7 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
         .raw()
         .get(MC_PROFILE_URL)
         .bearer_auth(&mc.access_token)
+        .header("Accept", "application/json")
         .send()
         .await?
         .error_for_status()

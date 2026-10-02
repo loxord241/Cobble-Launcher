@@ -551,3 +551,11 @@
 - scripts/hero_shots.cjs уехал в локальный exclude (внутренняя кухня).
 - cargo 310+9, clippy/tsc чистые; приёмки catalog_d39, cards_skins,
   ui_checks, scroll_test зелёные.
+
+## 2026-10-02 (позже) — Багфикс MSA-входа (D44)
+
+- Живой вход Microsoft падал 401 на легатном /minecraft/loginWithXbox —
+  перешли на каноничный /authentication/login_with_xbox, добавили Accept
+  на все вызовы цепочки, убрали два нестандартных Xbox-вызова, ошибки
+  401/403 теперь различимы (лицензия vs одобрение Azure-приложения).
+- cargo 310+9, clippy/tsc чистые.

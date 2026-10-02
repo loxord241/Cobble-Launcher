@@ -691,3 +691,23 @@ m5, scroll_test, cards_skins, ui_checks); tsc чистый.
 Верификация: cargo 310+9 (новый гейт-тест msa_entries_offline_fail_before_io),
 clippy -D warnings и tsc чистые; живые приёмки catalog_d39 (модалка грузится
 лениво — табы/журнал/версии/Escape), cards_skins, ui_checks, scroll_test.
+
+## D44. Починка MSA-входа: актуальный эндпоинт + каноничная цепочка (2026-10-02)
+
+Владелец поймал 401 на живом входе: XBL и XSTS проходили, а финальный вызов
+отвечал `{"path":"/minecraft/loginWithXbox"}` без деталей. Причина: лаунчер
+ходил на ЛЕГАТНЫЙ `/minecraft/loginWithXbox`, который для кастомных
+Azure-приложений (client_id владельца — саморегистрация) больше не принимает
+вход; задокументированный канон (вики «Microsoft authentication», все живые
+лаунчеры) — `POST /authentication/login_with_xbox`. Заодно цепочка приведена
+к канону:
+- `Accept: application/json` на XBL/XSTS/login_with_xbox/profile (вики прямо
+  требует оба заголовка, иначе эндпоинты «ругаются»);
+- удалены два нестандартных best-effort вызова посреди цепочки (второй XSTS
+  с RP http://xboxlive.com ради gamertag в println и profile.xboxlive.com) —
+  их нет ни в вики, ни в лаунчерах, только лишние круги и шум;
+- ошибка 403 теперь объясняется честно: у Azure-приложения нет разрешения
+  Mojang на api.minecraftservices.com (нужна заявка), 401 — подсказка про
+  отсутствие лицензии.
+Гейты офлайна (D43) не тронуты. Верификация: cargo 310+9, clippy/tsc; живой
+ретрай входа — на владельце (нужен его браузер).
