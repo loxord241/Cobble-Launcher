@@ -578,8 +578,7 @@ async fn cmd_launch(
     // пропускаются мгновенно (resume, спека §4.4).
     engine.add_tasks(tasks);
     engine.run().await?;
-    engine.persist_queue(&paths.queue_file())?;
-    progress_task.abort();
+        progress_task.abort();
     let _ = std::io::stderr().write_all(b"\n");
     let st = engine.queue_state();
     if st.failed > 0 {

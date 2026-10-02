@@ -164,7 +164,7 @@ DeviceCodeStart { device_code, user_code, verification_uri, interval, expires_in
 
 | Событие | Payload |
 |---|---|
-| `dl_progress` | `{event:"dl_progress", doneFiles, totalFiles, doneBytes, totalBytes, bytesPerSec, etaSecs?}` |
+| `dl_progress` | `{event:"dl_progress", group, doneFiles, totalFiles, doneBytes, totalBytes, bytesPerSec, etaSecs?}` — `group` = `instance:{id}` \| `mrpack:{...}` (D18) |
 | `dl_queue_state` | `{event:"dl_queue_state", pending, downloading, done, failed, cancelled, failedItems}` |
 | `launch_state` | `{event:"launch_state", instanceId, phase:"preparing"\|"downloading"\|"launching"\|"running"\|"exited", exitCode?}` |
 | `game_log_line` | `{event:"game_log_line", instanceId, line, stream:"stdout"\|"stderr"}` |

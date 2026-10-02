@@ -140,8 +140,7 @@ pub async fn repair_instance(
     let before = engine.queue_state();
     engine.add_tasks(tasks);
     engine.run().await?;
-    engine.persist_queue(&paths.queue_file())?;
-    let after = engine.queue_state();
+        let after = engine.queue_state();
 
     let checked = queue_total(&after).saturating_sub(queue_total(&before));
     let redownloaded = after.done.saturating_sub(before.done);

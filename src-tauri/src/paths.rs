@@ -102,11 +102,6 @@ impl Paths {
         self.root.join("accounts.json")
     }
 
-    /// Недокачанная очередь загрузок (спека §4.4).
-    pub fn queue_file(&self) -> PathBuf {
-        self.store_dir().join("queue.json")
-    }
-
     /// Инстансы (M2+).
     pub fn instances_dir(&self) -> PathBuf {
         self.root.join("instances")
@@ -158,7 +153,6 @@ mod tests {
     fn subdirs_are_under_root() {
         let p = Paths::new(PathBuf::from(r"C:\data\mcl"));
         assert!(p.libraries_store().starts_with(p.store_dir()));
-        assert!(p.queue_file().starts_with(p.store_dir()));
         assert_eq!(
             p.assets_virtual("legacy"),
             PathBuf::from(r"C:\data\mcl\assets\virtual\legacy")

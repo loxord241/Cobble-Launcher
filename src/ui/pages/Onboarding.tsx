@@ -2,7 +2,7 @@
 // Пропускаемый; «Настройки → Сбросить онбординг» возвращает сюда.
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api/client";
-import { t } from "../../i18n";
+import { apiErrorText, t } from "../../i18n";
 import { useInstances } from "../../state/instances";
 import { useSettings } from "../../state/settings";
 
@@ -34,7 +34,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
         setVersions(vs.map((v) => v.id));
         setVersion(vs[0]?.id ?? "");
       })
-      .catch((e) => setError(e.message ?? String(e)));
+      .catch((e) => setError(apiErrorText(e)));
   }, []);
 
   const finish = async () => {
@@ -57,7 +57,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
       }
       onDone();
     } catch (e) {
-      setError((e as { message?: string })?.message ?? String(e));
+      setError(apiErrorText(e));
     } finally {
       setBusy(false);
     }
@@ -71,7 +71,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
       await update({ onboardingDone: true });
       onDone();
     } catch (e) {
-      setError((e as { message?: string })?.message ?? String(e));
+      setError(apiErrorText(e));
     } finally {
       setBusy(false);
     }

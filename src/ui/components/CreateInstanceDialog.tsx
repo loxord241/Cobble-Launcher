@@ -46,7 +46,7 @@ export default function CreateInstanceDialog({
         setVersions(vs);
         setVersion(vs[0]?.id ?? "");
       })
-      .catch((e) => setError(e.message ?? String(e)));
+      .catch((e) => setError(apiErrorText(e)));
   }, [showSnapshots, showOld]);
 
   useEffect(() => {

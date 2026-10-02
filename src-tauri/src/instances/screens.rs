@@ -128,7 +128,7 @@ pub fn open_folder(paths: &Paths, instance_id: &str) -> Result<()> {
             "скриншоты инстанса {instance_id}"
         )));
     }
-    opener::open(dir).map_err(|e| LauncherError::Internal(format!("открытие папки: {e}")))?;
+    tauri_plugin_opener::open_path(dir, None::<&str>).map_err(|e| LauncherError::Internal(format!("открытие папки: {e}")))?;
     Ok(())
 }
 

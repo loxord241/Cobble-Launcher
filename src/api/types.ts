@@ -159,8 +159,10 @@ export interface ErrorPayload {
   hint?: string;
 }
 
+/** D18: группа задач (`instance:{id}` / `mrpack:{...}`) — владелец прогресса. */
 export interface DlProgressEvent {
   event: "dl_progress";
+  group: string;
   doneFiles: number;
   totalFiles: number;
   doneBytes: number;

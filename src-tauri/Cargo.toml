@@ -43,7 +43,7 @@ flate2 = "1.1"
 rand = "0.10.3"
 clap = { version = "4.6.7", features = ["derive"] }
 md-5 = "0.11.0"
-opener = "0.8.5"
+# opener crate снят (D29): open_path/open_url из tauri-plugin-opener
 tracing-appender = "0.2.5"
 sysinfo = "0.39.6"
 base64 = "0.23.1"

@@ -163,11 +163,8 @@ pub async fn prepare(
 
     // Движок — на план этого запуска: дедуп работает внутри плана, а уже
     // скачанные валидные файлы пропускаются мгновенно (сверка хэша на диске).
-    // Восстановление прерванной очереди (queue.json) — отдельный UI-поток (M4+):
-    // старые Failed-задачи не должны блокировать новые запуски.
     engine.add_tasks(tasks);
     engine.run().await?;
-    engine.persist_queue(&paths.queue_file())?;
     let st = engine.queue_state();
     if st.failed > 0 {
         for (url, reason) in &st.failed_items {

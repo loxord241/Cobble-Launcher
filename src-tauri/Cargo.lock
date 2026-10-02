@@ -498,17 +498,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bstr"
-version = "1.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
-dependencies = [
- "memchr",
- "regex-automata",
- "serde_core",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2661,7 +2650,6 @@ dependencies = [
  "hex",
  "keyring",
  "md-5",
- "opener",
  "rand",
  "regex",
  "reqwest",
@@ -2826,15 +2814,6 @@ name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
-
-[[package]]
-name = "normpath"
-version = "1.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b11ce00d2594068e8a27c9146fdc5cf9f3ac38eb42c7cd34d05fea618873ac9f"
-dependencies = [
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "ntapi"
@@ -3205,17 +3184,6 @@ dependencies = [
  "dunce",
  "is-wsl",
  "libc",
-]
-
-[[package]]
-name = "opener"
-version = "0.8.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2b03ff07a220d0d0ec9a1f0f238951b7967a5a2e96aefcd21a117b1083415e9"
-dependencies = [
- "bstr",
- "normpath",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

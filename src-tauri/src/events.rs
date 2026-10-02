@@ -25,6 +25,9 @@ pub enum LogStream {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DlProgress {
+    /// D18: группа задач (`instance:{id}` / `mrpack:{...}`) — UI привязывает
+    /// прогресс к конкретному инстансу, а не к первому попавшемуся.
+    pub group: String,
     pub done_files: u64,
     pub total_files: u64,
     pub done_bytes: u64,
@@ -115,6 +118,7 @@ mod tests {
         assert!(json.contains("\"exitCode\":0"));
 
         let dl = LauncherEvent::DlProgress(DlProgress {
+            group: "instance:inst-1".into(),
             done_files: 5,
             total_files: 10,
             done_bytes: 1024,
@@ -124,6 +128,7 @@ mod tests {
         });
         let dl_json = serde_json::to_string(&dl).unwrap();
         assert!(dl_json.contains("\"event\":\"dl_progress\""));
+        assert!(dl_json.contains("\"group\":\"instance:inst-1\""));
         assert!(dl_json.contains("\"doneFiles\":5"));
         assert!(dl_json.contains("\"totalFiles\":10"));
         assert!(dl_json.contains("\"doneBytes\":1024"));

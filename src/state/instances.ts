@@ -128,7 +128,6 @@ function dropBufferedLogs(instanceId: string) {
 // D18: прогресс загрузки принадлежит инстансу, чей launch_state перешёл в
 // downloading. В DlProgress (src/api/types.ts) нет instance_id, поэтому
 // опираемся на фазу запуска, а не на «первый попавшийся» статус.
-let downloadOwnerId: string | null = null;
 
 export const useInstances = create<InstancesState>((set, get) => ({
   list: [],
@@ -172,9 +171,6 @@ export const useInstances = create<InstancesState>((set, get) => ({
     const unlisten = await onCoreEvent((event) => {
       if (event.event === "launch_state") {
         const { instanceId, phase, exitCode } = event;
-        // D18: владелец прогресса — тот, кто реально начал скачивание.
-        if (phase === "downloading") downloadOwnerId = instanceId;
-        else if (downloadOwnerId === instanceId) downloadOwnerId = null;
 
         set((s) => ({
           status: {
@@ -234,14 +230,13 @@ export const useInstances = create<InstancesState>((set, get) => ({
         // UI-панели под него пока нет — данные честно храним в сторе.
         set({ queueState: event });
       } else if (event.event === "dl_progress") {
-        const id = downloadOwnerId;
-        if (!id) return;
+        // D18: владелец прогресса — группа задач из события (`instance:{id}`),
+        // а не первый попавшийся запуск: при двух параллельных установках
+        // прогресс раньше писался в чужой инстанс. mrpack:* пока без UI-панели.
+        if (!event.group.startsWith("instance:")) return;
+        const id = event.group.slice("instance:".length);
         const current = get().status[id];
-        if (!current) {
-          // Инстанс пропал из статусов (остановлен/удалён) — писать некуда.
-          downloadOwnerId = null;
-          return;
-        }
+        if (!current) return;
         if (current.phase !== "downloading" && current.phase !== "preparing") return;
         set((s) => ({
           status: {

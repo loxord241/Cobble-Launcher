@@ -217,8 +217,7 @@ pub async fn install_mrpack(
     //    успеха (D12), иначе сбой оставил бы «пустой рабочий» инстанс.
     engine.add_tasks(tasks);
     engine.run().await?;
-    engine.persist_queue(&paths.queue_file())?;
-    let st = engine.queue_state();
+        let st = engine.queue_state();
     if st.failed > 0 {
         rollback_instance(paths, &inst.id);
         return Err(LauncherError::network(format!(

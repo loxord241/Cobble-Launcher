@@ -383,7 +383,7 @@ export default function InstanceDetailPage({
         <div className="flex items-center gap-2">
           {busy ? (
             <button
-              onClick={() => void stop(instanceId).catch((e) => setError(String(e)))}
+              onClick={() => void stop(instanceId).catch((e) => setError(apiErrorText(e)))}
               aria-label={t("instance.stop", { name: inst.name })}
               className="flex h-12 min-w-[168px] items-center justify-center gap-2 rounded-lg bg-error px-6 text-[15px] font-semibold transition-colors hover:opacity-90"
             >
@@ -394,7 +394,7 @@ export default function InstanceDetailPage({
             <button
               onClick={() =>
                 void launch(instanceId, activeAccount?.name ?? "Player").catch((e) =>
-                  setError(String(e)),
+                  setError(apiErrorText(e)),
                 )
               }
               aria-label={t("instance.play", { name: inst.name })}
@@ -406,7 +406,7 @@ export default function InstanceDetailPage({
           )}
 
           <button
-            onClick={() => void optimize(instanceId).catch((e) => setError(String(e)))}
+            onClick={() => void optimize(instanceId).catch((e) => setError(apiErrorText(e)))}
             className="btn-ghost"
           >
             <Sparkles size={16} aria-hidden />
@@ -469,7 +469,7 @@ export default function InstanceDetailPage({
                       void api
                         .instanceBackup(instanceId)
                         .then((r) => setNotice(t("instances.backup.done", { path: r.path })))
-                        .catch((e) => setError(String(e)));
+                        .catch((e) => setError(apiErrorText(e)));
                     }}
                   />
                   <MenuItem
@@ -481,7 +481,7 @@ export default function InstanceDetailPage({
                       void api
                         .instanceExport(instanceId)
                         .then((r) => setNotice(t("instances.export.done", { path: r.path })))
-                        .catch((e) => setError(String(e)));
+                        .catch((e) => setError(apiErrorText(e)));
                     }}
                   />
                   <MenuItem
@@ -512,7 +512,7 @@ export default function InstanceDetailPage({
                         void api
                           .instanceIconRemove(instanceId)
                           .then(() => void load())
-                          .catch((e) => setError(String(e)));
+                          .catch((e) => setError(apiErrorText(e)));
                       }}
                     />
                   )}
@@ -521,7 +521,7 @@ export default function InstanceDetailPage({
                     label={t("instances.folder")}
                     onClick={() => {
                       closeMenu();
-                      void api.instanceOpenDir(instanceId).catch((e) => setError(String(e)));
+                      void api.instanceOpenDir(instanceId).catch((e) => setError(apiErrorText(e)));
                     }}
                   />
                   {/* F4: ярлык запуска инстанса на рабочем столе. */}
@@ -564,7 +564,7 @@ export default function InstanceDetailPage({
                     disabled={busy}
                     onClick={() => {
                       closeMenu();
-                      void duplicate(instanceId).catch((e) => setError(String(e)));
+                      void duplicate(instanceId).catch((e) => setError(apiErrorText(e)));
                     }}
                   />
                   <MenuItem
@@ -919,7 +919,7 @@ export default function InstanceDetailPage({
           onConfirm={(wipe) => {
             setDeleteOpen(false);
             // Страницу закроет авто-возврат: список придёт из ядра без инстанса.
-            void remove(instanceId, wipe).catch((e) => setError(String(e)));
+            void remove(instanceId, wipe).catch((e) => setError(apiErrorText(e)));
           }}
         />
       )}

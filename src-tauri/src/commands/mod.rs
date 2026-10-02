@@ -172,7 +172,7 @@ pub async fn instance_open_dir(state: State<'_, AppState>, id: String) -> Result
     instances::load(&state.paths, &id)?;
     let dir = instances::instance_dir(&state.paths, &id);
     std::fs::create_dir_all(crate::util::fs::long_path(&dir))?;
-    opener::open(dir).map_err(|e| LauncherError::Internal(format!("открытие папки: {e}")))?;
+    tauri_plugin_opener::open_path(dir, None::<&str>).map_err(|e| LauncherError::Internal(format!("открытие папки: {e}")))?;
     Ok(OkMsg { ok: true })
 }
 
@@ -817,7 +817,7 @@ pub async fn account_add_msa_browser(
         .port();
 
     let auth_url = crate::auth::msa::authorize_url(&client_id, port);
-    opener::open(&auth_url)
+    tauri_plugin_opener::open_url(auth_url, None::<&str>)
         .map_err(|e| LauncherError::Internal(format!("не удалось открыть браузер: {e}")))?;
 
     let code = tokio::time::timeout(
@@ -1712,13 +1712,10 @@ pub async fn logs_tail(state: State<'_, AppState>, lines: u32) -> Result<String>
 
 #[tauri::command]
 pub async fn dir_open(state: State<'_, AppState>) -> Result<OkMsg> {
-    opener::open(state.paths.root().clone())
+    tauri_plugin_opener::open_path(state.paths.root().clone(), None::<&str>)
         .map_err(|e| LauncherError::Internal(format!("открытие папки: {e}")))?;
     Ok(OkMsg { ok: true })
 }
-
-#[allow(unused_imports)]
-use opener as _opener_reexport;
 
 // ---------- проверка обновлений лаунчера ----------
 

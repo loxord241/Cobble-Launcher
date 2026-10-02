@@ -433,6 +433,19 @@ impl DownloadEngine {
             last = Instant::now();
             last_bytes = now_bytes;
 
+            // D18: событие прогресса несёт группу задач — UI привязывает его
+            // к конкретному инстансу (`instance:{id}`), раньше при двух
+            // параллельных установках прогресс прилипал к первому попавшемуся.
+            // Движок в приложении создаётся по группе (engine_for), так что
+            // группа здесь одна; для гипотетической смеси шлём по событию на
+            // каждую группу с агрегатами движка.
+            let groups: Vec<String> = {
+                let guard = self.rt.tasks.lock().unwrap();
+                let mut g: Vec<String> = guard.iter().map(|e| e.task.group.clone()).collect();
+                g.sort();
+                g.dedup();
+                g
+            };
             let (pending, downloading, done, failed, cancelled, total_bytes) = {
                 let guard = self.rt.tasks.lock().unwrap();
                 let mut total_bytes = 0u64;
@@ -455,14 +468,17 @@ impl DownloadEngine {
             } else {
                 None
             };
-            self.bus.emit(LauncherEvent::DlProgress(DlProgress {
-                done_files: self.rt.done_files.load(Ordering::Relaxed),
-                total_files: pending + downloading + done + failed + cancelled,
-                done_bytes,
-                total_bytes,
-                bytes_per_sec: speed,
-                eta_secs: eta,
-            }));
+            for group in groups {
+                self.bus.emit(LauncherEvent::DlProgress(DlProgress {
+                    group: group.clone(),
+                    done_files: self.rt.done_files.load(Ordering::Relaxed),
+                    total_files: pending + downloading + done + failed + cancelled,
+                    done_bytes,
+                    total_bytes,
+                    bytes_per_sec: speed,
+                    eta_secs: eta,
+                }));
+            }
         }
     }
 
@@ -532,54 +548,6 @@ impl DownloadEngine {
         n
     }
 
-    /// Сохранить недокачанную очередь атомарно в `store/queue.json` (спека §4.4).
-    pub fn persist_queue(&self, path: &Path) -> Result<()> {
-        let guard = self.rt.tasks.lock().unwrap();
-        let unfinished: Vec<TaskEntry> = guard
-            .iter()
-            .filter(|e| !matches!(e.state, TaskState::Done))
-            .cloned()
-            .collect();
-        drop(guard);
-        let data = serde_json::to_vec_pretty(&unfinished)?;
-        crate::util::fs::atomic_write(path, &data)
-    }
-
-    /// Загрузить очередь после рестарта: валидные на диске файлы → Done.
-    pub fn load_queue(&self, path: &Path) -> Result<usize> {
-        let long = long_path(path);
-        if !long.exists() {
-            return Ok(0);
-        }
-        let data = std::fs::read(&long)?;
-        let entries: Vec<TaskEntry> = serde_json::from_slice(&data)?;
-        let mut guard = self.rt.tasks.lock().unwrap();
-        let mut added = 0;
-        for mut e in entries {
-            if e.state == TaskState::Done {
-                continue;
-            }
-            if e.task.dest.exists() {
-                let valid = match &e.task.sha1 {
-                    Some(sha) => sha1_file(&e.task.dest).map(|a| &a == sha).unwrap_or(false),
-                    None => true,
-                };
-                e.state = if valid {
-                    TaskState::Done
-                } else {
-                    TaskState::Pending
-                };
-            } else {
-                e.state = TaskState::Pending;
-            }
-            e.attempts = 0;
-            if !guard.iter().any(|x| x.task.dest == e.task.dest) {
-                guard.push(e);
-                added += 1;
-            }
-        }
-        Ok(added)
-    }
 }
 
 #[cfg(test)]

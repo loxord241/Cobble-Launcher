@@ -235,47 +235,6 @@ async fn existing_valid_file_skips_download() {
 }
 
 #[tokio::test]
-async fn queue_persists_and_resumes() {
-    let dir = tempfile::tempdir().unwrap();
-    let qpath = dir.path().join("queue.json");
-    let dest = dir.path().join("f.bin");
-    std::fs::write(&dest, GOOD).unwrap();
-
-    let engine1 = engine_with(Arc::new(HttpClient::new(None).unwrap()));
-    engine1.add_tasks(vec![task(
-        "t1",
-        "http://127.0.0.1:1/nope".into(),
-        dest.clone(),
-        Some(sha1_of(GOOD)),
-    )]);
-    engine1.run().await.unwrap(); // файл валиден → done
-    engine1.persist_queue(&qpath).unwrap();
-
-    // «Рестарт»: новый движок загружает очередь; done-задачи не пишутся,
-    // валидные на диске файлы сразу Done.
-    let engine2 = engine_with(Arc::new(HttpClient::new(None).unwrap()));
-    let loaded = engine2.load_queue(&qpath).unwrap();
-    assert_eq!(loaded, 0, "валидный файл → задача помечена Done и не пишется в очередь");
-
-    // А если файла нет — задача вернётся Pending и будет докачана при run.
-    let dest2 = dir.path().join("g.bin");
-    let engine3 = engine_with(Arc::new(HttpClient::new(None).unwrap()));
-    engine3.add_tasks(vec![task(
-        "t2",
-        "http://127.0.0.1:1/nope2".into(),
-        dest2.clone(),
-        None,
-    )]);
-    engine3.persist_queue(&qpath).unwrap();
-    drop(engine3);
-    let engine4 = engine_with(Arc::new(HttpClient::new(None).unwrap()));
-    assert_eq!(engine4.load_queue(&qpath).unwrap(), 1);
-    // Файл появится (нет хэша → любой ответ сойдёт? нет — сервера нет → failed)
-    let _ = engine4.run().await;
-    assert_eq!(engine4.queue_state().failed, 1, "недоступный сервер → failed");
-}
-
-#[tokio::test]
 async fn cancel_group_stops_and_cleans_parts() {
     use futures::StreamExt as _;
     let app = axum::Router::new().route(
