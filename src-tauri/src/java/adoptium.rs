@@ -74,16 +74,25 @@ pub async fn install_jre(
         )));
     };
 
-    // 2. Скачать zip (обязательная проверка SHA256 — спека §3).
-    let zip_data = download_with_progress(client, &binary.package.link, &binary.package, on_progress)
-        .await?;
+    // 2. Скачать zip потоком во временный файл (D25: целиком в память JRE
+    // не берём), SHA256 — обязательная проверка (спека §3).
+    let zip_path = runtime_dir.join(format!(".jdk{major}.zip.part"));
+    let zip_long = long_path(&zip_path);
+    if let Err(e) =
+        download_to_file(client, &binary.package.link, &binary.package, &zip_path, on_progress).await
+    {
+        let _ = std::fs::remove_file(&zip_long);
+        return Err(e);
+    }
 
     // 3. Распаковать во временную папку, перенести внутренний каталог.
     let staging = runtime_dir.join(format!(".jdk{major}-staging"));
     let staging_long = long_path(&staging);
     let _ = std::fs::remove_dir_all(&staging_long);
     std::fs::create_dir_all(&staging_long)?;
-    let extracted = crate::util::zip::extract_zip(std::io::Cursor::new(&zip_data), &staging, |_| {})?;
+    let extracted =
+        crate::util::zip::extract_zip(std::fs::File::open(&zip_long)?, &staging, |_| {})?;
+    let _ = std::fs::remove_file(&zip_long);
     let _ = std::fs::remove_dir_all(long_path(&target));
     // Внутренний каталог вида `jdk-25.0.2+10-jre` — единственный в staging.
     let mut inner: Option<PathBuf> = None;
@@ -116,13 +125,16 @@ pub async fn install_jre(
     Ok(java_exe)
 }
 
-async fn download_with_progress(
+async fn download_to_file(
     client: &HttpClient,
     url: &str,
     pkg: &AdoptiumPackage,
+    dest: &std::path::Path,
     on_progress: impl Fn(u64, u64) + Send + 'static,
-) -> Result<Vec<u8>> {
+) -> Result<()> {
     use futures::StreamExt;
+    use sha2::Digest;
+    use std::io::Write as _;
     // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
     if client.offline() {
         return Err(LauncherError::OfflineMode(url.to_string()));
@@ -135,20 +147,22 @@ async fn download_with_progress(
         )));
     }
     let expected_size = pkg.size.unwrap_or(0);
-    let mut data = Vec::with_capacity(expected_size as usize);
+    let mut hasher = sha2::Sha256::new();
+    let mut out = std::fs::File::create(dest)?;
+    let mut done: u64 = 0;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
-        data.extend_from_slice(&chunk);
-        on_progress(data.len() as u64, expected_size);
+        hasher.update(&chunk);
+        out.write_all(&chunk)?;
+        done += chunk.len() as u64;
+        on_progress(done, expected_size);
     }
+    out.flush()?;
 
     if let Some(checksum) = &pkg.checksum {
         // Adoptium даёт sha256 в metadata — сверяем (по спеке можно было бы
         // ограничиться размером, но хэш честнее).
-        let mut hasher = sha2::Sha256::new();
-        use sha2::Digest;
-        hasher.update(&data);
         let actual = hex::encode(hasher.finalize());
         let expected = checksum.trim().to_lowercase();
         if actual != expected {
@@ -163,13 +177,12 @@ async fn download_with_progress(
                 });
             }
         }
-    } else if expected_size > 0 && data.len() as u64 != expected_size {
+    } else if expected_size > 0 && done != expected_size {
         return Err(LauncherError::network(format!(
-            "размер JRE {} != ожидаемого {expected_size}",
-            data.len()
+            "размер JRE {done} != ожидаемого {expected_size}"
         )));
     }
-    Ok(data)
+    Ok(())
 }
 
 #[cfg(test)]

@@ -388,21 +388,44 @@ pub async fn install_modpack_project(
         .send()
         .await?
         .error_for_status()?;
-    let bytes = resp.bytes().await?;
+
+    // D25: архив модпака бывает 500 МБ+ — качаем потоком в temp-файл и
+    // целиком в память не берём; sha1 считаем по готовому файлу (sha1_file).
+    let tmp_dir = std::env::temp_dir().join("mc-launcher-v2");
+    std::fs::create_dir_all(crate::util::fs::long_path(&tmp_dir))?;
+    let tmp_path = crate::util::fs::long_path(&tmp_dir.join(&file.filename));
+    let wrote = async {
+        use futures::StreamExt;
+        use std::io::Write as _;
+        let mut stream = resp.bytes_stream();
+        let mut out = std::fs::File::create(&tmp_path)?;
+        let mut total: u64 = 0;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            out.write_all(&chunk)?;
+            total += chunk.len() as u64;
+        }
+        out.flush()?;
+        if total == 0 {
+            return Err(LauncherError::network(format!("пустой ответ для {}", file.url)));
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(e) = wrote {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
     if let Some(sha) = file.hashes.get("sha1") {
-        let actual = crate::util::fs::sha1_bytes(&bytes);
+        let actual = crate::util::fs::sha1_file(&tmp_path)?;
         if !actual.eq_ignore_ascii_case(sha) {
+            let _ = std::fs::remove_file(&tmp_path);
             return Err(LauncherError::InvalidInput(format!(
                 "sha1 не сошёлся для {}: ждали {sha}, получили {actual}",
                 file.filename
             )));
         }
     }
-
-    let tmp_dir = std::env::temp_dir().join("mc-launcher-v2");
-    std::fs::create_dir_all(crate::util::fs::long_path(&tmp_dir))?;
-    let tmp_path = crate::util::fs::long_path(&tmp_dir.join(&file.filename));
-    std::fs::write(&tmp_path, &bytes)?;
 
     let result =
         install_mrpack(paths, settings, engine, client, group, &tmp_path, name_override).await;

@@ -110,9 +110,12 @@ export function errorText(e: ErrorPayload): string {
   const localized = entry ? (entry[current as keyof ErrorEntry] ?? entry.en ?? entry.ru) : undefined;
   // «Сеть» без деталей бесполезна: реальная причина (статус/тело ответа
   // Microsoft) приходит в message — показываем её (жалоба владельца 2026-09-27).
+  // Когда причина есть, вместо длинной обёртки с советом берём короткую
+  // network_detail («Проблема с сетью: <причина>»), иначе текст задваивался.
+  const short = errorDict.network_detail?.[current as keyof ErrorEntry];
   const base =
     e.code === "network" && e.message && e.message !== e.code
-      ? `${localized ?? e.code}: ${e.message}`
+      ? `${short ?? localized ?? e.code}: ${e.message}`
       : (localized ?? e.message);
   return e.hint ? `${base}. ${e.hint}` : base;
 }

@@ -110,10 +110,8 @@ impl LauncherError {
             LauncherError::JavaNotFound(_) => Some(
                 "Установите Java автоматически в настройках или укажите путь вручную.".into(),
             ),
-            LauncherError::Network(_) => Some(
-                "Проверьте подключение к интернету; при необходимости настройте прокси в настройках."
-                    .into(),
-            ),
+            // Network без хинта: UI локализует «Проверьте подключение…» сам
+            // (errors.json → errorText), раньше совет дублировался дважды.
             LauncherError::InstanceRunning(_) => Some(
                 "Остановите игру этого инстанса — Windows не даёт менять занятые файлы.".into(),
             ),
@@ -125,9 +123,16 @@ impl LauncherError {
     }
 
     pub fn payload(&self) -> ErrorPayload {
+        // Network: Display добавляет префикс «сеть: », а UI кладёт свою
+        // локализованную обёртку («Проблема с сетью…») — в payload идёт
+        // голая причина, иначе в сообщении тройное дублирование.
+        let message = match self {
+            LauncherError::Network(msg) => msg.clone(),
+            _ => self.to_string(),
+        };
         ErrorPayload {
             code: self.code().into(),
-            message: self.to_string(),
+            message,
             hint: self.hint(),
         }
     }
@@ -156,5 +161,18 @@ mod tests {
         assert_eq!(p["code"], "hash_mismatch");
         assert!(p["message"].as_str().unwrap().contains("x.jar"));
         assert!(p["hint"].is_string());
+    }
+
+    /// Network: в payload голая причина без префикса «сеть: » (его добавляет
+    /// Display для логов) и без хинта — UI локализует обёртку сам.
+    #[test]
+    fn network_payload_is_raw_reason() {
+        let e = LauncherError::network("login_with_xbox: HTTP 403");
+        let p = serde_json::to_value(e.payload()).unwrap();
+        assert_eq!(p["code"], "network");
+        assert_eq!(p["message"], "login_with_xbox: HTTP 403");
+        assert!(p["hint"].is_null(), "хинт сети теперь на стороне i18n");
+        // Display для логов сохраняет префикс.
+        assert!(e.to_string().starts_with("сеть: "));
     }
 }
