@@ -11,12 +11,10 @@ use crate::paths::Paths;
 /// API mclo.gs: вынесен в константу — офлайн-тест не ходит в сеть.
 const MCLOGS_API: &str = "https://api.mclo.gs/1/log";
 
-/// Читаемые архивные логи: только `*.log`. Ротаты Minecraft пишутся как
-/// `*.log.gz`, но gzip-контейнер распаковывать нечем: `flate2` нет в
-/// [dependencies] (Cargo.toml — не трогаем), а `zip` умеет только deflate
-/// внутри zip-архива. Поэтому .gz скрыт из списка, а `read_archived` для
-/// .gz-имён даёт честный InvalidInput.
-const READABLE_EXT: &str = "log";
+/// Читаемые архивные логи: `*.log` и ротаты `*.log.gz` (flate2 — прямая
+/// зависимость, D42). Граница чтения одинаковая: не более `max_bytes`
+/// РАСПАКОВАННОГО текста — иначе .gz стал бы декомпрессионной бомбой.
+const READABLE_EXTS: [&str; 2] = ["log", "gz"];
 
 /// Имя файла лога, разрешённое из UI/диска: латиница/цифры/`.`/`_`/`-`,
 /// база 1–128 символов, расширение .log/.gz. Регекс-эквивалент
@@ -86,7 +84,7 @@ pub fn list_archived(paths: &Paths, instance_id: &str) -> Result<Vec<LogFileInfo
     for entry in std::fs::read_dir(crate::util::fs::long_path(&logs_dir))? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name == "latest.log" || !name.ends_with(READABLE_EXT) {
+        if name == "latest.log" || !READABLE_EXTS.iter().any(|e| name.ends_with(e)) {
             continue;
         }
         if !is_valid_log_name(&name) {
@@ -104,7 +102,9 @@ pub fn list_archived(paths: &Paths, instance_id: &str) -> Result<Vec<LogFileInfo
 }
 
 /// Прочитать архивный лог: последние `max_bytes` байт, не разрывая строки
-/// (хвост обрезается до начала следующей строки).
+/// (хвост обрезается до начала следующей строки). Для `*.log.gz` — то же,
+/// но граница считается по РАСПАКОВАННОМУ тексту: `Read::take` не даёт
+/// декомпрессионной бомбе раздуть память, сколько бы ни было на диске.
 pub fn read_archived(
     paths: &Paths,
     instance_id: &str,
@@ -113,16 +113,14 @@ pub fn read_archived(
 ) -> Result<String> {
     let logs_dir = instance_logs_dir(paths, instance_id)?;
     require_valid_log_name(name)?;
-    if name.ends_with(".gz") {
-        return Err(LauncherError::InvalidInput(
-            "gz в этой версии не читается".into(),
-        ));
-    }
-    let path = crate::util::fs::long_path(&logs_dir.join(name));
-    let data = std::fs::read(&path)?;
     if max_bytes == 0 {
         return Ok(String::new());
     }
+    let path = crate::util::fs::long_path(&logs_dir.join(name));
+    if name.ends_with(".gz") {
+        return gz_tail(&path, max_bytes);
+    }
+    let data = std::fs::read(&path)?;
     if (data.len() as u64) <= max_bytes {
         return Ok(String::from_utf8_lossy(&data).into_owned());
     }
@@ -133,6 +131,40 @@ pub fn read_archived(
         Some(pos) => Ok(tail[pos + 1..].to_string()),
         None => Ok(tail.into_owned()), // одной строкой без переводов — как есть
     }
+}
+
+/// Хвост РАСПАКОВАННОГО gzip-лога (последние `max_bytes`, выровненные по
+/// началу строки). Потоковое чтение с обрезкой буфера спереди: память
+/// ограничена max_bytes независимо от размера архива — декомпрессионная
+/// бомба упирается в тот же потолок, что и обычный лог. Битый gzip —
+/// честная io-ошибка из декодера.
+fn gz_tail(path: &std::path::Path, max_bytes: u64) -> Result<String> {
+    use std::io::Read as _;
+    let mut decoder = flate2::read::GzDecoder::new(std::fs::File::open(path)?);
+    let mut buf: Vec<u8> = Vec::new();
+    let mut total = 0usize; // весь распакованный объём — решает «хвост или целиком»
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = decoder.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        total += n;
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() > max_bytes as usize {
+            let keep = max_bytes as usize;
+            buf.drain(..buf.len() - keep);
+        }
+    }
+    if total as u64 <= max_bytes {
+        return Ok(String::from_utf8_lossy(&buf).into_owned());
+    }
+    let start = buf.len() - max_bytes as usize;
+    let tail = String::from_utf8_lossy(&buf[start..]).into_owned();
+    Ok(match tail.find('\n') {
+        Some(pos) => tail[pos + 1..].to_string(),
+        None => tail,
+    })
 }
 
 /// Отправить СОДЕРЖИМОЕ на mclo.gs (санитизация снаружи — вызывающий
@@ -257,24 +289,44 @@ mod tests {
 
     // ---------- list_archived ----------
 
+    /// Записать настоящий gzip-файл (для тестов чтения ротатов).
+    fn write_gz(path: &std::path::Path, content: &[u8]) {
+        use std::io::Write as _;
+        let mut enc = flate2::write::GzEncoder::new(
+            std::fs::File::create(path).unwrap(),
+            flate2::Compression::default(),
+        );
+        enc.write_all(content).unwrap();
+        enc.finish().unwrap();
+    }
+
     #[test]
-    fn list_excludes_latest_gz_and_foreign_files_sorted_by_mtime_desc() {
+    fn list_includes_gz_rotations_sorted_by_mtime_desc() {
         let (_guard, paths) = test_paths();
         let logs = make_logs_dir(&paths, "inst1");
         std::fs::write(logs.join("latest.log"), "current").unwrap();
         std::fs::write(logs.join("2026-01-01-1.log"), "old").unwrap();
         std::fs::write(logs.join("2026-02-01-1.log"), "newer").unwrap();
-        std::fs::write(logs.join("2026-03-01-1.log.gz"), "gz").unwrap();
+        write_gz(&logs.join("2026-03-01-1.log.gz"), b"newest");
         std::fs::write(logs.join("readme.txt"), "не лог").unwrap();
         set_mtime(&logs.join("2026-01-01-1.log"), 1_000);
         set_mtime(&logs.join("2026-02-01-1.log"), 2_000);
+        set_mtime(&logs.join("2026-03-01-1.log.gz"), 3_000);
 
         let list = list_archived(&paths, "inst1").unwrap();
         let names: Vec<&str> = list.iter().map(|f| f.name.as_str()).collect();
-        // .gz скрыт (нечем распаковать), latest.log — текущий, txt — не лог.
-        assert_eq!(names, vec!["2026-02-01-1.log", "2026-01-01-1.log"]);
-        assert_eq!(list[0].bytes, "newer".len() as u64);
-        assert_eq!(list[0].modified, 2_000, "свежий первым (mtime убыв.)");
+        // gz-ротат читается наравне с .log (D42); latest.log — текущий, txt — не лог.
+        assert_eq!(
+            names,
+            vec!["2026-03-01-1.log.gz", "2026-02-01-1.log", "2026-01-01-1.log"]
+        );
+        assert_eq!(
+            list[0].bytes,
+            std::fs::metadata(logs.join("2026-03-01-1.log.gz"))
+                .unwrap()
+                .len()
+        );
+        assert_eq!(list[0].modified, 3_000, "свежий первым (mtime убыв.)");
     }
 
     #[test]
@@ -349,14 +401,46 @@ mod tests {
     }
 
     #[test]
-    fn read_rejects_gz_with_honest_error() {
+    fn read_gz_small_returns_full_content() {
         let (_guard, paths) = test_paths();
         let logs = make_logs_dir(&paths, "inst1");
-        std::fs::write(logs.join("2026-01-01-1.log.gz"), b"\x1f\x8b").unwrap();
-        let err = read_archived(&paths, "inst1", "2026-01-01-1.log.gz", 1024)
-            .expect_err("gz не читается");
-        assert!(matches!(err, LauncherError::InvalidInput(_)));
-        assert!(err.to_string().contains("gz"), "в сообщении про gz: {err}");
+        write_gz(&logs.join("a.log.gz"), b"line1\nline2\n");
+        let text = read_archived(&paths, "inst1", "a.log.gz", 1024).unwrap();
+        assert_eq!(text, "line1\nline2\n");
+    }
+
+    #[test]
+    fn read_gz_tail_aligned_to_line_start() {
+        let (_guard, paths) = test_paths();
+        let logs = make_logs_dir(&paths, "inst1");
+        // 3 строки: последние 10 распакованных байт = "ne2\nline3\n" → "line3\n".
+        write_gz(&logs.join("a.log.gz"), b"line1\nline2\nline3\n");
+        let text = read_archived(&paths, "inst1", "a.log.gz", 10).unwrap();
+        assert_eq!(text, "line3\n");
+    }
+
+    #[test]
+    fn read_gz_bomb_is_capped_by_tail_cap() {
+        let (_guard, paths) = test_paths();
+        let logs = make_logs_dir(&paths, "inst1");
+        // ~1 МБ распакованного из крошечного архива: cap держит память.
+        let big = vec![b'x'; 1024 * 1024];
+        write_gz(&logs.join("big.log.gz"), &big);
+        let text = read_archived(&paths, "inst1", "big.log.gz", 1024).unwrap();
+        assert!(text.len() <= 1024, "хвост не больше cap");
+        assert!(text.ends_with('x'), "хвост содержит конец данных");
+    }
+
+    #[test]
+    fn read_gz_corrupt_is_honest_io_error() {
+        let (_guard, paths) = test_paths();
+        let logs = make_logs_dir(&paths, "inst1");
+        std::fs::write(logs.join("bad.log.gz"), b"\x1f\x8b").unwrap(); // обрезанный gzip
+        let err = read_archived(&paths, "inst1", "bad.log.gz", 1024).expect_err("битый gzip");
+        assert!(
+            matches!(err, LauncherError::Io(_)),
+            "битый архив — io-ошибка декодера, получено: {err:?}"
+        );
     }
 
     #[test]

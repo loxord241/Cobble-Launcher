@@ -144,7 +144,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     void loadSettings().then(() => void load());
     void subscribeEvents();
     void loadAccounts();
-    getVersion().then(setVersion).catch(() => setVersion("0.1.0"));
+    getVersion().then(setVersion).catch(() => setVersion("0.2.0"));
     // A32: слушатели событий ядра живут ровно пока смонтирован Shell.
     return () => unsubscribeEvents();
   }, [load, loadSettings, subscribeEvents, loadAccounts]);

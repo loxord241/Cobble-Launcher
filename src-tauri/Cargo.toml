@@ -1,6 +1,6 @@
 [package]
 name = "mc-launcher-v2"
-version = "0.1.0"
+version = "0.2.0"
 description = "Быстрый и честный лаунчер Minecraft для Windows"
 authors = ["loxord241"]
 license = "MIT"
@@ -38,6 +38,7 @@ dirs = "7.0.0"
 regex = "1.13.1"
 futures = "0.3.34"
 zip = { version = "8.6.0", features = ["deflate"] }
+flate2 = "1.1"
 rand = "0.10.3"
 clap = { version = "4.6.7", features = ["derive"] }
 md-5 = "0.11.0"
