@@ -97,7 +97,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `instance_repair` | `{id}` | `RepairReport` {checked, redownloaded} (клиент+библиотеки+нативы+ассеты по хэшам; saves/config/mods не трогаются) | not_found, instance_running, network, http |
 | `java_test_path` | `{javaExe}` | `JavaTestInfo` {major, bits, versionLine} (java -version, таймаут 5 с) | invalid_input, timeout |
 | `log_share_mclogs` | `{id}` | `{url}` (хвост latest.log 512 КБ → redact → api.mclo.gs; офлайн → offline_mode) | not_found, network, offline_mode, http |
-| `instance_logs_list` | `{id}` | `LogFileInfo[]` {name, bytes, modified} (*.log кроме latest; .gz не читается в этой версии) | not_found, invalid_input |
+| `instance_logs_list` | `{id}` | `LogFileInfo[]` {name, bytes, modified} (*.log и *.log.gz кроме latest; .gz читается — хвост распакованного, D42) | not_found, invalid_input |
 | `instance_log_read` | `{id, name}` | `string` (хвост 512 КБ, целые строки) | not_found, invalid_input |
 | `content_snapshots` | `{id}` | `SnapshotInfo[]` {name, bytes, createdAt} (snapshots/mods-*.zip, ротация 3) | not_found, invalid_input |
 | `content_rollback` | `{id, name}` | `ContentEntry[]` (манифестные файлы заменяются содержимым снапшота) | not_found, invalid_input, instance_running |
