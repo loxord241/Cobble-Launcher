@@ -140,6 +140,11 @@ pub fn run() -> tauri::Result<()> {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // D46: авто-обновления — проверка и установка подписанных апдейтов
+        // (minisign-ключ, см. docs/DECISIONS D46); process — relaunch после
+        // установки. Эндпоинт и pubkey — в tauri.conf.json.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             commands::instance_list,
             commands::instance_create,

@@ -1,47 +1,82 @@
-// Настройки → «Обновления лаунчера»: ядро (`update_check`) спрашивает GitHub
-// releases/latest и сравнивает версии. Авто-обновления нет (нет ключей подписи),
-// поэтому UI только честно показывает результат и ведёт на страницу релизов.
+// Настройки → «Обновления лаунчера» (D46). Проверка — `update_check`
+// (GitHub releases/latest, работает и без манифеста); состояние живёт в
+// сторе updates.ts — его же наполняет тихий старт-чек. Установка —
+// updater-плагин: подписанный апдейт (latest.json + minisign), прогресс
+// скачивания, перезапуск через process-плагин. Если подписанного релиза
+// ещё нет — честная надпись + ручной путь на страницу релизов.
 // Самодостаточен: без пропсов, вставляется в SettingsPage одной строкой.
 import { useCallback, useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Check, ExternalLink, LoaderCircle, RefreshCw } from "lucide-react";
-import { api } from "../../api/client";
-import type { UpdateInfo } from "../../api/types";
+import { Check, Download, ExternalLink, LoaderCircle, RefreshCw } from "lucide-react";
 import { apiErrorText, errorText, t } from "../../i18n";
+import { useUpdateStore } from "../../state/updates";
 
 export default function UpdatesSection() {
   const [version, setVersion] = useState("");
-  const [info, setInfo] = useState<UpdateInfo | null>(null);
-  const [busy, setBusy] = useState(false);
-  // Сбой IPC/opener — не то же самое, что «ядро не смогло проверить» (info.note):
-  // первое означает поломку, второе — честный «не удалось» от ядра.
-  const [error, setError] = useState<string | null>(null);
+  const info = useUpdateStore((s) => s.info);
+  const busy = useUpdateStore((s) => s.busy);
+  const error = useUpdateStore((s) => s.error);
+  const check = useUpdateStore((s) => s.check);
+  const checked = useUpdateStore((s) => s.checked);
+
+  const [installing, setInstalling] = useState(false);
+  // null = прогресс не определён (ContentLength не пришёл), иначе 0–100.
+  const [progress, setProgress] = useState<number | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
 
   useEffect(() => {
     getVersion()
       .then(setVersion)
       .catch(() => setVersion(""));
-  }, []);
-
-  const check = useCallback(async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      setInfo(await api.updateCheck());
-    } catch (e) {
-      setInfo(null);
-      setError(apiErrorText(e));
-    } finally {
-      setBusy(false);
-    }
+    // Тихий старт-чек мог уже отработать — если нет, проверим при заходе
+    // в раздел (но не молча: это явное действие пользователя).
+    if (!checked) void check();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const openReleases = useCallback(async (url: string) => {
     try {
       await openUrl(url);
     } catch (e) {
-      setError(apiErrorText(e));
+      setInstallError(apiErrorText(e));
+    }
+  }, []);
+
+  // Установка: отдельная проверка updater-плагином даёт объект Update с
+  // подписью; качаем с прогрессом и перезапускаемся. Релизы без latest.json
+  // (до 0.2.1) дают ошибку — показываем честный ручной путь.
+  const install = useCallback(async () => {
+    setInstalling(true);
+    setInstallError(null);
+    setProgress(null);
+    try {
+      const { check: pluginCheck } = await import("@tauri-apps/plugin-updater");
+      const update = await pluginCheck();
+      if (!update) {
+        setInstallError(t("updates.installerUnavailable"));
+        return;
+      }
+      let total = 0;
+      let received = 0;
+      await update.downloadAndInstall((ev) => {
+        if (ev.event === "Started") {
+          total = ev.data.contentLength ?? 0;
+        } else if (ev.event === "Progress") {
+          received += ev.data.chunkLength ?? 0;
+          if (total > 0) {
+            setProgress(Math.min(100, Math.round((received * 100) / total)));
+          }
+        } else {
+          setProgress(100);
+        }
+      });
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    } catch (e) {
+      setInstallError(t("updates.installerUnavailable"));
+    } finally {
+      setInstalling(false);
     }
   }, []);
 
@@ -89,24 +124,80 @@ export default function UpdatesSection() {
           </p>
         )}
 
-        {/* Есть обновление: «текущая → новая», тег — ссылка на страницу релиза */}
+        {/* Есть обновление: «текущая → новая», установка — подписанный апдейт,
+            ручной путь — ссылка на страницу релиза */}
         {updateAvailable && latest && (
           <div
             role="status"
-            className="anim-fade-up mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-success"
+            className="anim-fade-up mt-3 rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-success"
           >
-            <span className="font-mono">{info?.current || version} →</span>
-            {url ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono">{info?.current || version} →</span>
+              <span className="font-mono font-semibold">{latest}</span>
+              {url && (
+                <button
+                  type="button"
+                  onClick={() => void openReleases(url)}
+                  className="inline-flex items-center gap-1 underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                >
+                  {t("updates.openReleases")}
+                  <ExternalLink size={13} aria-hidden />
+                </button>
+              )}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void install()}
+                disabled={installing}
+                aria-busy={installing}
+                className="btn-primary btn-sm"
+              >
+                {installing ? (
+                  <LoaderCircle size={14} aria-hidden className="animate-spin" />
+                ) : (
+                  <Download size={14} aria-hidden />
+                )}
+                {installing ? t("updates.installing") : t("updates.installNow")}
+              </button>
+              {installing && progress !== null && (
+                <div
+                  className="h-1.5 w-40 overflow-hidden rounded-full bg-surface-2"
+                  role="progressbar"
+                  aria-valuenow={progress}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                >
+                  <div
+                    className="h-full rounded-full bg-success transition-[width] duration-300"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+              )}
+              {installing && progress !== null && (
+                <span className="font-mono text-xs">{progress}%</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Сбой установки (нет манифеста/подписи, сеть): честная причина +
+            ручной путь на релизы */}
+        {installError && (
+          <div
+            role="alert"
+            className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-warning"
+          >
+            <span>{installError}</span>
+            {url && (
               <button
                 type="button"
                 onClick={() => void openReleases(url)}
-                className="inline-flex items-center gap-1 font-mono font-semibold underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                className="inline-flex items-center gap-1 underline decoration-dotted underline-offset-2 hover:decoration-solid"
               >
                 {t("updates.openReleases")}
                 <ExternalLink size={13} aria-hidden />
               </button>
-            ) : (
-              <span className="font-mono font-semibold">{latest}</span>
             )}
           </div>
         )}

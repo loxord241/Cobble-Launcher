@@ -575,3 +575,12 @@
 - Снесён react-virtual, tokio «full» → 6 точечных фич.
 - cargo 311+9, clippy/tsc чистые; ui_checks/catalog_d39/content_features
   зелёные.
+
+## 2026-10-02 (ночь) — D46: тихий автоапдейтер
+
+- Ключ подписи minisign вне репо (%LOCALAPPDATA%\cobble-updater-keys),
+  pubkey в конфиге; updater+process плагины, capability, .sig-артефакты.
+- Проверка — update_check раз в сессию (бейдж в сайдбаре → Настройки);
+  установка — только явная кнопка, подписанный апдейт, прогресс, relaunch.
+- Релиз 0.2.1+: build.ps1 -Bundle подписывает, make_latest_json.cjs
+  собирает манифест (заливается ассетом в релиз).

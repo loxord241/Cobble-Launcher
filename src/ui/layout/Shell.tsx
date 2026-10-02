@@ -18,6 +18,7 @@ import {
   X,
   ChevronDown,
   Check,
+  Download,
   UserPlus,
   Wifi,
   WifiOff,
@@ -28,6 +29,7 @@ import { useInstances, unsubscribeEvents } from "../../state/instances";
 import { useSettings } from "../../state/settings";
 import { useAccounts, accountKindLabelKey } from "../../state/accounts";
 import { useSkins } from "../../state/skins";
+import { useUpdateStore } from "../../state/updates";
 import { SkinHead } from "../components/SkinViews";
 import HomePage from "../pages/HomePage";
 import InstancesPage from "../pages/InstancesPage";
@@ -68,6 +70,8 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const updateInfo = useUpdateStore((s) => s.info);
+  const silentUpdateCheck = useUpdateStore((s) => s.silentCheck);
   const noticeTimer = useRef<number | null>(null);
   const dropBusy = useRef(false);
   // A8: узкий селектор — сброс лог-буфера каждые 200 мс не должен
@@ -145,9 +149,12 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     void subscribeEvents();
     void loadAccounts();
     getVersion().then(setVersion).catch(() => setVersion("0.2.0"));
+    // D46: тихая проверка обновлений — один раз за сессию (задержка внутри
+    // стора); результат — бейдж в футере и раздел в Настройках, без тостов.
+    silentUpdateCheck();
     // A32: слушатели событий ядра живут ровно пока смонтирован Shell.
     return () => unsubscribeEvents();
-  }, [load, loadSettings, subscribeEvents, loadAccounts]);
+  }, [load, loadSettings, subscribeEvents, loadAccounts, silentUpdateCheck]);
 
   // Ctrl+K — фокус в поиск (спека фазы B); Esc чистит внутри инпута.
   // F19: палитра команд живёт на Ctrl+P, а не на Ctrl+K — приёмка
@@ -477,6 +484,18 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
             </button>
           ))}
           <div className="mt-auto border-t border-border-app p-3 text-xs text-text-muted">
+            {updateInfo?.updateAvailable && updateInfo.latest && (
+              <button
+                type="button"
+                onClick={() => setPage("settings")}
+                className="mb-2 flex w-full items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2 py-1.5 text-accent hover:bg-accent/15"
+                title={t("updates.availableBadge")}
+              >
+                <Download size={12} aria-hidden />
+                <span className="truncate">{t("updates.availableBadge")}</span>
+                <span className="ml-auto font-mono">{updateInfo.latest}</span>
+              </button>
+            )}
             {t("shell.footer.version")} <span className="font-mono">{version}</span>
             {/* A14: обязательный дисклеймер Mojang об неофициальном статусе. */}
             <div className="mt-1">{t("shell.disclaimer")}</div>

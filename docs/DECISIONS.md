@@ -734,3 +734,35 @@ Azure-приложений (client_id владельца — саморегис�
 Верификация: cargo 311+9 (новый тест network_payload_is_raw_reason),
 clippy -D warnings, tsc чистые; приёмки ui_checks, catalog_d39,
 content_features зелёные.
+
+## D46. Тихий автоапдейтер: updater-плагин + подписанные релизы (2026-10-02)
+
+1. Ключи подписи: minisign-пара `tauri signer generate` — приватный ключ и
+   файл пароля ЖИВУТ ВНЕ РЕПО (`%LOCALAPPDATA%\cobble-updater-keys\`,
+   cobble.key + cobble.key.pass; пароль случайный, потеря = перевыпуск
+   ключа и разовая ручная переустановка). Публичный ключ — в
+   tauri.conf.json (по определению не секрет). В git не попадает никогда;
+   .git/info/exclude дополнен dist-latest/. Грабли, пойманные живьём:
+   бандлер читает TAURI_SIGNING_PRIVATE_KEY (СОДЕРЖИМОЕ, не path); пустой
+   пароль через $env: в PowerShell невозможен — присваивание "" удаляет
+   переменную и бандл зависает на промпте; scripts/build.ps1 держать
+   ASCII--only — PowerShell 5.1 коверкает UTF-8 .ps1 без BOM.
+2. Ядро: tauri-plugin-updater + tauri-plugin-process (relaunch), capability
+   updater:default/process:default, `bundle.createUpdaterArtifacts: true`.
+   Эндпоинт — releases/latest/download/latest.json (без авторизации, как и
+   существующая кнопка проверки).
+3. Дизайн «тихого»: проверка — лёгкий `update_check` (GitHub API, работает
+   уже сейчас), один раз за сессию с задержкой 8с; результат — бейдж
+   «Доступно обновление» в футере сайдбара (клик → Настройки) + раздел
+   «Обновления». УСТАНОВКА ТОЛЬКО ЯВНАЯ (кнопка «Установить и перезапустить»):
+   молчаливая подмена бинарника при честном UI — нет. Установка идёт через
+   updater-плагин (подпись проверяется ядром Tauri), прогресс скачивания —
+   полоса в разделе. Если подписанного релиза ещё нет (до 0.2.1) — честный
+   текст «установщик не готов» + ручная ссылка на релизы.
+4. Релизная процедура (0.2.1+): `scripts/build.ps1 -Bundle` подхватывает
+   ключ из %LOCALAPPDATA% (TAURI_SIGNING_PRIVATE_KEY_PATH) → рядом с
+   установщиками появляются .sig; `scripts/make_latest_json.cjs <версия>
+   <заметки>` собирает latest.json из NSIS-setup + .sig → залить в релиз
+   вместе с установщиками и их подписями.
+Верификация: cargo 311+9, clippy -D warnings, tsc чистые; сборка бандла с
+ключом даёт .sig (живая проверка подписи); приёмки после сборки.
