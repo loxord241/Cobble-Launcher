@@ -144,9 +144,44 @@ pub fn copy_tree_mixed(src_root: &Path, dst_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Поддерживает ли том хардлинки — дешёвая проба на каждый вызов: создать
+/// файл в `root`, сделать жёсткую ссылку рядом, удалить оба (ENV-3). На
+/// ReFS/exFAT/FAT32/SMB `hard_link()` падает (счётчик ссылок там всегда 1),
+/// и эвристика «удалить при count<=1» стёрла бы ВСЕ библиотеки и клиенты.
+pub fn hardlinks_supported(root: &Path) -> bool {
+    let long_root = crate::util::fs::long_path(root);
+    if std::fs::create_dir_all(&long_root).is_err() {
+        return false;
+    }
+    let probe = root.join(format!(".hardlink-probe-{}", std::process::id()));
+    let link = root.join(format!(".hardlink-probe-{}.lnk", std::process::id()));
+    if std::fs::write(crate::util::fs::long_path(&probe), b"probe").is_err() {
+        return false;
+    }
+    let ok = std::fs::hard_link(
+        crate::util::fs::long_path(&probe),
+        crate::util::fs::long_path(&link),
+    )
+    .is_ok();
+    let _ = std::fs::remove_file(crate::util::fs::long_path(&probe));
+    let _ = std::fs::remove_file(crate::util::fs::long_path(&link));
+    ok
+}
+
 /// «Очистить кэш»: удалить объекты стора, на которые нет ссылок (спека §6.12).
 pub fn cleanup_store(paths: &crate::paths::Paths) -> Result<usize> {
     let mut removed = 0;
+    // ENV-3: без поддержки хардлинков счётчик ссылок всегда 1, связанные и
+    // несвязанные объекты неразличимы — чистка стёрла бы весь стор. Честно
+    // пропускаем: библиотеки/клиенты останутся, игрок ничего не потеряет.
+    if !hardlinks_supported(&paths.libraries_store()) {
+        tracing::info!(
+            "очистка кэша пропущена: том {} не поддерживает жёсткие ссылки — \
+             связанные объекты отличить от несвязанных невозможно",
+            paths.libraries_store().display()
+        );
+        return Ok(0);
+    }
     // Ассеты (assets_objects) не обходим: современный профиль использует их
     // на месте (--assetsDir указывает прямо в стор, materialize_virtual —
     // только legacy/virtual), хардлинк-счётчик у них всегда 1, и чистка по
@@ -229,6 +264,45 @@ mod tests {
         assert!(linked.exists(), "связанный остался");
         assert!(!unlinked.exists(), "несвязанный удалён");
         assert!(live_asset.exists(), "живой ассет стора не удаляется");
+    }
+
+    /// ENV-3: проба хардлинков в tempdir проходит (NTFS) и не оставляет
+    /// пробных файлов; на томе без поддержки функция обязана вернуть false,
+    /// а не паниковать.
+    #[test]
+    fn hardlinks_supported_probe_runs_and_cleans_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let libs = dir.path().join("libs");
+        let supported = hardlinks_supported(&libs);
+        // Сами по себе true/false обе допустимы (том теста неизвестен),
+        // важно: нет паники и нет мусора от пробы.
+        for leftover in ["", ".lnk"] {
+            let p = libs.join(format!(".hardlink-probe-{}{leftover}", std::process::id()));
+            assert!(!p.exists(), "пробный файл убран: {}", p.display());
+        }
+        if supported {
+            // На поддерживающем томе проба детерминированно повторяется.
+            assert!(hardlinks_supported(&libs), "повторная проба тоже проходит");
+        }
+    }
+
+    /// ENV-3: если проба не удалась (здесь: libraries_store — файл, каталог
+    /// из него не создать), cleanup_store возвращает Ok(0) и НИЧЕГО не удаляет —
+    /// на томах без хардлинков эвристика «count<=1» стёрла бы весь стор.
+    #[test]
+    fn cleanup_store_skipped_when_hardlinks_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        // libraries_store = <root>/store/libraries — занимаем его файлом.
+        std::fs::create_dir_all(crate::util::fs::long_path(&paths.store_dir())).unwrap();
+        std::fs::write(paths.libraries_store(), b"not a dir").unwrap();
+        let victims = paths.clients_store().join("old.jar");
+        std::fs::create_dir_all(crate::util::fs::long_path(&paths.clients_store())).unwrap();
+        std::fs::write(&victims, b"must survive").unwrap();
+
+        let removed = cleanup_store(&paths).unwrap();
+        assert_eq!(removed, 0, "без хардлинков чистка не выполняется");
+        assert!(victims.exists(), "содержимое стора не тронуто");
     }
 
     /// A22: сбой копирования (фолбэк после неудачного hardlink) не оставляет

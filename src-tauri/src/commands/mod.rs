@@ -778,11 +778,16 @@ pub async fn account_add_offline(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<crate::auth::Account> {
-    let uuid = crate::auth::offline::offline_uuid(&name).to_string();
+    // ENV-13: uuid считается от санитизированного имени — как его увидит игра.
+    // Раньше uuid брали от сырого ввода («Steve\r\n»), а в аккаунт клалось
+    // чистое имя: офлайн-uuid не совпадал с md5("OfflinePlayer:Steve") и
+    // рассинхронизировал инвентарь в офлайн-мирах.
+    let clean = crate::util::names::sanitize_user_name(&name, "Player");
+    let uuid = crate::auth::offline::offline_uuid(&clean).to_string();
     let acc = crate::auth::Account {
         id: uuid::Uuid::new_v4().to_string(),
         kind: crate::auth::AccountKind::Offline,
-        name: crate::util::names::sanitize_user_name(&name, "Player"),
+        name: clean,
         uuid,
         refresh_ref: None,
         authlib_server: None,
@@ -1145,22 +1150,33 @@ pub async fn settings_get(state: State<'_, AppState>) -> Result<Settings> {
 
 #[tauri::command]
 pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> Result<OkMsg> {
+    let mut merged = settings;
+    // ENV-8: пустая строка/одни пробелы — легитимное «без прокси» (UI шлёт
+    // undefined, но пустую строку мог сохранить старый билд settings.json);
+    // нормализуем до None, чтобы не превращать «без прокси» в ошибку.
+    let normalized = merged.proxy_url.take().filter(|s| !s.trim().is_empty());
+    merged.proxy_url = normalized;
+    let proxy = merged.proxy_url.clone();
     let old_proxy = state.settings.read().await.proxy_url.clone();
-    if settings.proxy_url != old_proxy {
-        match HttpClient::new(settings.proxy_url.as_deref()) {
+    if proxy != old_proxy {
+        match HttpClient::new(proxy.as_deref()) {
             Ok(new_http) => {
                 *state.http.write().await = Arc::new(new_http);
                 tracing::info!("HTTP-клиент обновлен с новым proxy_url");
             }
+            // ENV-8: раньше ошибка конструктора только логировалась, битый
+            // proxy_url СОХРАНЯЛСЯ и все сетевые вызовы продолжали падать.
+            // Теперь настройки не сохраняются — пользователь сразу видит ошибку.
             Err(e) => {
-                tracing::warn!("Некорректный proxy_url: {e}");
+                return Err(LauncherError::InvalidInput(format!(
+                    "некорректный proxy_url: {e}"
+                )));
             }
         }
     }
     // accounts_active_id принадлежит auth-потоку (account_active_set и пр.),
     // а не странице настроек: её снимок мог устареть, и слепое сохранение
     // откатывало бы смену активного аккаунта — берём значение с диска.
-    let mut merged = settings;
     if let Ok(current) = Settings::load(&state.paths.settings_file()) {
         merged.accounts_active_id = current.accounts_active_id;
     }
@@ -1267,14 +1283,14 @@ pub async fn log_share_mclogs(
         let dir = crate::instances::instance_dir(&paths, &id)
             .join("minecraft")
             .join("logs");
-        let data = std::fs::read(crate::util::fs::long_path(&dir.join("latest.log")))?;
         // Хвост 512 КБ — mclo.gs сам режет большие, нам хватит с запасом.
-        let slice: &[u8] = if data.len() > 512 * 1024 {
-            &data[data.len() - 512 * 1024..]
-        } else {
-            &data
-        };
-        Ok::<_, LauncherError>(String::from_utf8_lossy(slice).into_owned())
+        // ENV-9: читаем через seek-хвост, а не `std::fs::read` целиком —
+        // гигантский latest.log (500 МБ+) при panic=abort ронял лаунчер OOM-ом.
+        let data = crate::mclogs::read_tail(
+            &crate::util::fs::long_path(&dir.join("latest.log")),
+            512 * 1024,
+        )?;
+        Ok::<_, LauncherError>(String::from_utf8_lossy(&data).into_owned())
     })
     .await
     .map_err(join_err)??;
@@ -1725,10 +1741,12 @@ pub async fn logs_tail(state: State<'_, AppState>, lines: u32) -> Result<String>
     if !log.exists() {
         return Ok(String::new());
     }
-    let data = std::fs::read(crate::util::fs::long_path(&log))?;
+    let data = crate::mclogs::read_tail(&crate::util::fs::long_path(&log), 2 * 1024 * 1024)?;
+    // ENV-9: launcher.log может разрастись — читаем хвост до 2 МБ, а не весь файл.
     let text = String::from_utf8_lossy(&data);
-    let tail: Vec<&str> = text.lines().skip(text.lines().count().saturating_sub(lines as usize)).collect();
-    Ok(tail.join("\n"))
+    let all: Vec<&str> = text.lines().collect();
+    let skip = all.len().saturating_sub(lines as usize);
+    Ok(all[skip..].join("\n"))
 }
 
 #[tauri::command]
@@ -1977,6 +1995,25 @@ mod tests {
         assert_eq!(saved.last_played, Some(12345), "last_played с диска");
         assert_eq!(saved.ram_mb, 4096, "пользовательское поле перенесено");
         assert_eq!(saved.notes, "заметка", "notes перенесены");
+    }
+
+    /// ENV-13: офлайн-uuid считается от санитизированного имени — тот же путь,
+    /// что в account_add_offline. Ник «Steve\r\n» должен дать тот же uuid,
+    /// что чистый «Steve» (иначе инвентарь офлайн-миров рассинхронизируется).
+    #[test]
+    fn offline_account_uuid_uses_sanitized_name() {
+        let clean = crate::util::names::sanitize_user_name("Steve\r\n", "Player");
+        assert_eq!(clean, "Steve", "управляющие символы вырезаны");
+        assert_eq!(
+            crate::auth::offline::offline_uuid(&clean),
+            crate::auth::offline::offline_uuid("Steve"),
+            "uuid от чистого имени совпадает с vanilla-правилом"
+        );
+        assert_ne!(
+            crate::auth::offline::offline_uuid("Steve\r\n"),
+            crate::auth::offline::offline_uuid("Steve"),
+            "сырой ввод давал бы другой uuid — это и был баг"
+        );
     }
 
     /// Реальная сеть — #[ignore], гонять на приёмке (спека §9). Пока репозиторий

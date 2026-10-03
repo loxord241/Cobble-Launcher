@@ -69,6 +69,25 @@ pub enum LauncherError {
 
 pub type Result<T> = std::result::Result<T, LauncherError>;
 
+/// ENV-15: подсказка для сертификатных ошибок TLS (сбитая дата/время,
+/// captive-портал): без неё они выглядят как безликая «ошибка сети».
+const CERT_HINT: &str =
+    "Не удалось проверить сервер. Если на компьютере сбита дата и время — исправьте их и повторите.";
+
+/// ENV-15: ищет «certificate» по всей цепочке source(). Display у reqwest
+/// показывает только верхний уровень, а слово про сертификат лежит глубже
+/// (rustls/schannel), поэтому текст проверяем по цепочке источников.
+fn mentions_certificate(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(err);
+    while let Some(e) = current {
+        if e.to_string().to_lowercase().contains("certificate") {
+            return true;
+        }
+        current = e.source();
+    }
+    false
+}
+
 /// Сериализуется как payload — так ошибки автоматически проходят через
 /// #[tauri::command] в UI (спека §4.1: `{code, message, hint}`).
 impl serde::Serialize for LauncherError {
@@ -118,6 +137,23 @@ impl LauncherError {
             LauncherError::OfflineMode(_) => Some(
                 "Выключите тумблер «Работать офлайн» в титлбаре, чтобы качать из сети.".into(),
             ),
+            // ENV-15: исключение из «сеть без хинта» — сертификатная ошибка
+            // (сбитое время, captive-портал) без адресного совета неразличима
+            // с обычным обрывом сети.
+            LauncherError::Http(e) => {
+                if mentions_certificate(e) {
+                    Some(CERT_HINT.into())
+                } else {
+                    None
+                }
+            }
+            LauncherError::Network(msg) => {
+                if msg.to_lowercase().contains("certificate") {
+                    Some(CERT_HINT.into())
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -174,5 +210,59 @@ mod tests {
         assert!(p["hint"].is_null(), "хинт сети теперь на стороне i18n");
         // Display для логов сохраняет префикс.
         assert!(e.to_string().starts_with("сеть: "));
+    }
+
+    /// ENV-15: подменная цепочка ошибок — верхний уровень без слова
+    /// «certificate», источник с ним (как rustls под hyper под reqwest:
+    /// Display reqwest цепочку не разворачивает).
+    #[derive(Debug)]
+    struct CertSource;
+    impl std::fmt::Display for CertSource {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "invalid peer certificate: UnknownIssuer")
+        }
+    }
+    impl std::error::Error for CertSource {}
+
+    #[derive(Debug)]
+    struct PlainSource;
+    impl std::fmt::Display for PlainSource {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "connection refused")
+        }
+    }
+    impl std::error::Error for PlainSource {}
+
+    #[derive(Debug)]
+    struct TopLevel(Box<dyn std::error::Error + 'static>);
+    impl std::fmt::Display for TopLevel {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "error sending request for url (https://example.com)")
+        }
+    }
+    impl std::error::Error for TopLevel {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(self.0.as_ref())
+        }
+    }
+
+    /// ENV-15: «certificate» находится в source-цепочке, чистая цепочка — нет.
+    #[test]
+    fn certificate_found_in_source_chain() {
+        assert!(mentions_certificate(&TopLevel(Box::new(CertSource))));
+        assert!(!mentions_certificate(&TopLevel(Box::new(PlainSource))));
+    }
+
+    /// ENV-15: Network с сертификатной причиной получает хинт про дату/время,
+    /// остальные сетевые тексты — как раньше, без хинта (его даёт i18n).
+    #[test]
+    fn network_certificate_error_gets_time_hint() {
+        let e = LauncherError::network("tls handshake: certificate verify failed");
+        let p = serde_json::to_value(e.payload()).unwrap();
+        assert_eq!(p["code"], "network");
+        assert!(p["hint"].as_str().unwrap().contains("дата и время"));
+
+        let plain = LauncherError::network("connection refused");
+        assert!(plain.payload().hint.is_none());
     }
 }

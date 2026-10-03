@@ -984,7 +984,9 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
     }
     drop(tx);
 
-    let mut log_file = std::fs::File::create(&log_path)?;
+    // ENV-4: не держим handle latest.log — Log4j в игре ротирует этот же файл.
+    // Свежий лог создаём и сразу закрываем; строки пишем append-ом на каждую.
+    std::fs::File::create(&log_path)?;
     let mut tail: VecDeque<String> = VecDeque::with_capacity(64);
     let start = Instant::now();
     let mut found_at: Option<Instant> = None;
@@ -1004,7 +1006,9 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
         }
         match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(line) => {
-                let _ = writeln!(log_file, "{line}");
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+                    let _ = writeln!(f, "{line}");
+                }
                 if found_at.is_none() && line.contains("Sound engine started") {
                     found_at = Some(Instant::now());
                 }

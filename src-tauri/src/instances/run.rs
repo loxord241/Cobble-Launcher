@@ -44,16 +44,23 @@ fn emit(bus: &EventBus, instance_id: &str, phase: LaunchPhase) {
 /// а реестр секретов наполняется при авторизации (спека §11, «секреты не
 /// покидают процесс»). Логировался без redact только launcher.log — этого мало.
 fn write_game_line(
-    log_file: Option<&mut std::fs::File>,
+    log_path: &std::path::Path,
     bus: &EventBus,
     instance_id: &str,
     line: &str,
     stream: crate::events::LogStream,
 ) {
     let safe = crate::util::redact::redact(line);
-    if let Some(f) = log_file {
-        let _ = std::io::Write::write_all(f, format!("{safe}\n").as_bytes());
-    }
+    // ENV-4: handle лога живёт только внутри этой функции — игра (Log4j)
+    // пишет и РОТИРУЕТ тот же latest.log, чужой открытый дескриптор ломал
+    // ротацию и давал двойную запись с затиранием байтов. Append-режим на
+    // Windows дописывает в конец атомарно, дескриптор почти всегда закрыт.
+    // Открыть не удалось — запуск не роняем, событие в UI уходит как обычно.
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{safe}\n").as_bytes()));
     bus.emit(LauncherEvent::GameLogLine {
         instance_id: instance_id.to_string(),
         line: safe,
@@ -557,7 +564,9 @@ fn supervise_to_menu(
     let logs_dir = game_dir.join("logs");
     std::fs::create_dir_all(crate::util::fs::long_path(&logs_dir))?;
     let log_path = crate::util::fs::long_path(&logs_dir.join("latest.log"));
-    let mut log_file = std::fs::File::create(&log_path)?;
+    // ENV-4: только создаём/усекаем свежий лог на запуск и СРАЗУ закрываем —
+    // держать handle нельзя, его держит сама игра (см. write_game_line).
+    drop(std::fs::File::create(&log_path)?);
 
     let stdout = child
         .stdout
@@ -597,7 +606,7 @@ fn supervise_to_menu(
         }
         match rx.recv_timeout(std::time::Duration::from_millis(250)) {
             Ok(line) => {
-                write_game_line(Some(&mut log_file), bus, instance_id, &line, crate::events::LogStream::Stdout);
+                write_game_line(&log_path, bus, instance_id, &line, crate::events::LogStream::Stdout);
                 if found_at.is_none() && line.contains("Sound engine started") {
                     found_at = Some(std::time::Instant::now());
                 }
@@ -820,7 +829,9 @@ fn supervise_detached(
     let logs_dir = game_dir.join("logs");
     let _ = std::fs::create_dir_all(crate::util::fs::long_path(&logs_dir));
     let log_path = crate::util::fs::long_path(&logs_dir.join("latest.log"));
-    let mut log_file = std::fs::File::create(&log_path).ok();
+    // ENV-4: свежий лог на запуск создаём/усекаем и сразу закрываем
+    // (best-effort, как раньше) — handle за супервизией не остаётся.
+    let _ = std::fs::File::create(&log_path);
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let (tx, rx) = std::sync::mpsc::channel::<(String, crate::events::LogStream)>();
@@ -850,7 +861,7 @@ fn supervise_detached(
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(500)) {
             Ok((line, stream)) => {
-                write_game_line(log_file.as_mut(), bus, instance_id, &line, stream);
+                write_game_line(&log_path, bus, instance_id, &line, stream);
                 if !saw_running && line.contains("Sound engine started") {
                     saw_running = true;
                 }
@@ -1011,15 +1022,14 @@ mod tests {
         let mut rx = bus.subscribe();
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("latest.log");
-        let mut f = std::fs::File::create(&log_path).unwrap();
+        // ENV-4: файл write_game_line открывает сам (append на каждую строку).
         write_game_line(
-            Some(&mut f),
+            &log_path,
             &bus,
             "inst-1",
             &format!("Authorization: Bearer {secret}"),
             LogStream::Stdout,
         );
-        drop(f);
 
         let text = std::fs::read_to_string(&log_path).unwrap();
         assert!(!text.contains(secret), "секрет утёк в latest.log: {text}");
@@ -1035,9 +1045,12 @@ mod tests {
         assert!(!line.contains(secret), "секрет утёк в событие: {line}");
         assert!(line.contains("[REDACTED]"), "{line}");
 
-        // Детальный запуск: файл лога может не открыться — событие всё равно чистое.
+        // ENV-4: файл лога может не открыться (здесь: путь — каталог) —
+        // паники нет, событие в UI всё равно уходит и остаётся чистым.
+        let bad_log = dir.path().join("log-dir");
+        std::fs::create_dir(&bad_log).unwrap();
         write_game_line(
-            None,
+            &bad_log,
             &bus,
             "inst-2",
             &format!("token={secret}"),
@@ -1047,10 +1060,6 @@ mod tests {
             panic!("ожидалось событие GameLogLine");
         };
         assert!(!line.contains(secret) && line.contains("[REDACTED]"), "{line}");
-        assert!(
-            !std::fs::read_to_string(&log_path).unwrap().contains(secret),
-            "файл лога не должен получать строки без буфера"
-        );
     }
 
     /// A50: рабочий каталог дочернего процесса не может быть `\\?\`-путём

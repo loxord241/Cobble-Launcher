@@ -82,7 +82,9 @@ pub fn toggle(paths: &Paths, id: &str, file: &str) -> Result<ContentEntry> {
     let from_long = crate::util::fs::long_path(&from);
     let to_long = crate::util::fs::long_path(&to);
     if from_long.exists() {
-        std::fs::rename(from_long, &to_long)?;
+        // ENV-11b: антивирус на миг придерживает .jar (sharing violation) —
+        // голый rename падал навсегда; повторяем, как atomic_write (A26).
+        crate::util::fs::rename_with_retry(&from_long, &to_long)?;
     } else if !to_long.exists() {
         // Ни текущего, ни целевого файла нет — переименовывать нечего.
         return Err(LauncherError::NotFound(from.to_string_lossy().into()));

@@ -6,7 +6,7 @@
 use crate::errors::{LauncherError, Result};
 use crate::events::{DlProgress, DlQueueState, EventBus, LauncherEvent};
 use crate::net::http::{backoff_delay, retryable_wait, HttpClient};
-use crate::util::fs::{long_path, part_path, sha1_file, sha512_file};
+use crate::util::fs::{long_path, part_path_unique, sha1_file, sha512_file};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -277,7 +277,12 @@ impl DownloadEngine {
                 ))
             })?;
         }
-        let part = long_path(&part_path(&task.dest));
+        // ENV-2: `.part` уникален для группы. Два движка (два инстанса одной
+        // версии) качают одну библиотеку параллельно: общий `.part` приводил к
+        // тому, что второй движок усекал чужой недокачанный файл, а финальный
+        // rename ловил ERROR_SHARING_VIOLATION. Валидный dest выше уже отдался
+        // из кэша, так что существующий файл гонка не портит.
+        let part = long_path(&part_path_unique(&task.dest, &task.group));
         let _ = crate::util::fs::remove_file_with_retry(&part);
 
         for attempt in 1..=MAX_ATTEMPTS {

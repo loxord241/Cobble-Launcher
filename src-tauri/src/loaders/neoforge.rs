@@ -125,7 +125,10 @@ pub fn run_installer(
         .arg(crate::util::fs::long_path(installer))
         .arg("--installClient")
         .arg(crate::util::fs::long_path(game_dir))
-        .current_dir(crate::util::fs::long_path(game_dir));
+        // ENV-6: рабочий каталог получает Win32 (SetCurrentDirectoryW), `\\?\`-пути
+        // он не принимает (см. spawn_dir в run.rs) — префикс снимаем. Аргументы
+        // выше идут файловыми API и остаются расширенными.
+        .current_dir(crate::util::fs::strip_long_prefix(game_dir));
     hide_console(&mut cmd);
     let out = cmd
         .output()

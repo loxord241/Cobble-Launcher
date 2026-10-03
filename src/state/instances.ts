@@ -125,6 +125,46 @@ function dropBufferedLogs(instanceId: string) {
   logBuffer.delete(instanceId);
 }
 
+// ENV-10: игра, запущенная из прошлой сессии лаунчера, восстанавливается в
+// load() как running, но супервизора над процессом в этой сессии нет — событие
+// launch_state(exited) не придёт, и UI навсегда покажет «Запущено». Лёгкий
+// опрос ядра снимает зависший статус, когда процесс исчез из process_status.
+const RUNNING_POLL_MS = 4000;
+let runningPollTimer: ReturnType<typeof setInterval> | null = null;
+
+/** ENV-10: один тик опроса — снимает статус «running», если процесса больше нет. */
+async function pollRunningProcesses() {
+  const statuses = useInstances.getState().status;
+  // Пока UI не считает запущенным ничего, ядро дёргать не о чем.
+  if (!Object.values(statuses).some((st) => st.phase === "running")) return;
+  const alive = await api
+    .processStatus()
+    .then((pairs) => new Set(pairs.map(([id]) => id)))
+    .catch(() => undefined);
+  // Ядро не ответило — статус не трогаем, повторим на следующем тике.
+  if (!alive) return;
+  useInstances.setState((s) => {
+    const status = { ...s.status };
+    let changed = false;
+    for (const id of Object.keys(status)) {
+      // Снимаем ТОЛЬКО phase "running": подготовку/загрузку ведёт событийный
+      // поток, а exited (+crashReport при падении) ставит обработчик launch_state.
+      if (status[id]?.phase === "running" && !alive.has(id)) {
+        delete status[id];
+        changed = true;
+      }
+    }
+    // Ничего не изменилось — возвращаем тот же стейт: подписчиков не дёргаем.
+    return changed ? { status } : s;
+  });
+}
+
+/** ENV-10: таймер — один на модуль (guard от повторной подписки Shell). */
+function ensureRunningPoll() {
+  if (runningPollTimer !== null) return;
+  runningPollTimer = setInterval(() => void pollRunningProcesses(), RUNNING_POLL_MS);
+}
+
 // D18: прогресс загрузки принадлежит инстансу, чей launch_state перешёл в
 // downloading. В DlProgress (src/api/types.ts) нет instance_id, поэтому
 // опираемся на фазу запуска, а не на «первый попавшийся» статус.
@@ -166,6 +206,8 @@ export const useInstances = create<InstancesState>((set, get) => ({
   subscribeEvents: async () => {
     if (isSubscribed) return;
     isSubscribed = true;
+    // ENV-10: опрос живучести статусов «running», восстановленных из .lock.
+    ensureRunningPoll();
 
     // A32: unlisten держим модульно — иначе слушатели Tauri не снять.
     const unlisten = await onCoreEvent((event) => {

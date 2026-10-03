@@ -32,14 +32,30 @@ fn screenshots_dir(paths: &Paths, id: &str) -> PathBuf {
     minecraft_dir(&instance_dir(paths, id)).join("screenshots")
 }
 
-/// Имя файла скриншота: латиница/цифры/`.`/`_`/`-`/пробел, стебель 1–128,
-/// суффикс `.png` (строчно — `.PNG`/.jpg не скриншоты Minecraft по умолчанию).
-/// Регекс по образцу worlds::valid_world_name (крейт regex уже в зависимостях).
-/// `..`, разделители и кириллица не проходят — путь всегда внутри screenshots/.
+/// Имя файла скриншота: стебель 1–128, суффикс `.png` (строчно — `.PNG`/.jpg
+/// не скриншоты Minecraft по умолчанию). ENV-12: прежний ASCII-регекс делал
+/// скриншоты с кириллицей невидимыми и неудаляемыми — Minecraft пишет их с
+/// любыми именами. Чёрный список по образцу worlds::valid_world_name:
+/// запрещённые Windows `<>:"/\|?*`, управляющие символы, точки/пробелы по
+/// краям и `..` — разделителей нет, путь всегда внутри screenshots/.
 fn valid_shot_name(name: &str) -> bool {
-    regex::Regex::new(r"^[A-Za-z0-9._\- ]{1,128}\.png$")
-        .map(|re| re.is_match(name))
-        .unwrap_or(false)
+    const FORBIDDEN: &str = "<>:\"/\\|?*";
+    let Some(stem) = name.strip_suffix(".png") else {
+        return false;
+    };
+    if !(1..=128).contains(&stem.chars().count()) {
+        return false;
+    }
+    if stem.contains("..") {
+        return false;
+    }
+    if stem.starts_with('.') || stem.starts_with(' ') {
+        return false;
+    }
+    if stem.ends_with('.') || stem.ends_with(' ') {
+        return false;
+    }
+    !stem.chars().any(|c| FORBIDDEN.contains(c) || c.is_control())
 }
 
 /// modified в секундах UNIX (0, если недоступно — скриншот всё равно показываем).
@@ -63,7 +79,7 @@ fn thumb_data_url(path: &Path, bytes: u64) -> Option<String> {
 
 /// Список скриншотов инстанса (F3): png-файлы `screenshots/`, свежие сверху.
 /// Нет каталога — пустой список (ещё не играли, не ошибка). Мусор (каталоги,
-/// не-png, имена вне белого списка) молча пропускается.
+/// не-png, имена, не прошедшие валидацию) молча пропускается.
 pub fn list(paths: &Paths, instance_id: &str) -> Result<Vec<ShotInfo>> {
     valid_id(instance_id)?;
     let dir = screenshots_dir(paths, instance_id);
@@ -106,10 +122,10 @@ pub fn delete(paths: &Paths, instance_id: &str, name: &str) -> Result<()> {
     valid_id(instance_id)?;
     if !valid_shot_name(name) {
         return Err(LauncherError::InvalidInput(format!(
-            "некорректное имя скриншота: {name:?} (png, латиница/цифры/._- /пробел, до 128)"
+            "некорректное имя скриншота: {name:?} (png, запрещены <>:\"/\\|?*, до 128)"
         )));
     }
-    // Регекс запрещает `..` и разделители — join не выходит за screenshots/.
+    // Валидация запрещает разделители и `..` — join не выходит за screenshots/.
     let path = screenshots_dir(paths, instance_id).join(name);
     if !long_path(&path).is_file() {
         return Err(LauncherError::NotFound(format!("скриншот {name}")));
@@ -190,22 +206,26 @@ mod tests {
         set_mtime(&old, 100);
         let new = make_shot(&paths, &inst.id, "shot-two.png", 200);
         set_mtime(&new, 200);
+        // ENV-12: кириллическое имя теперь валидно — скриншот виден.
+        let cyr = make_shot(&paths, &inst.id, "снимок.png", 150);
+        set_mtime(&cyr, 150);
 
-        // Мусор: не-png, каталог, кириллица, верхний регистр расширения.
+        // Мусор: не-png, каталог, верхний регистр расширения.
         let dir = screenshots_dir(&paths, &inst.id);
         std::fs::write(long_path(&dir.join("note.jpg")), b"j").unwrap();
         std::fs::create_dir_all(long_path(&dir.join("folder.png"))).unwrap();
-        std::fs::write(long_path(&dir.join("снимок.png")), b"j").unwrap();
         std::fs::write(long_path(&dir.join("upper.PNG")), b"j").unwrap();
 
         let shots = list(&paths, &inst.id).unwrap();
-        assert_eq!(shots.len(), 2, "только png с валидными именами");
+        assert_eq!(shots.len(), 3, "png с валидными именами (вкл. кириллицу)");
         assert_eq!(shots[0].name, "shot-two.png", "свежие сверху");
-        assert_eq!(shots[1].name, "2026-09-28_16.41.12.png");
+        assert_eq!(shots[1].name, "снимок.png");
+        assert_eq!(shots[2].name, "2026-09-28_16.41.12.png");
         assert_eq!(shots[0].bytes, 200);
-        assert_eq!(shots[1].bytes, 100);
+        assert_eq!(shots[1].bytes, 150);
+        assert_eq!(shots[2].bytes, 100);
         assert_eq!(shots[0].modified, 200);
-        assert_eq!(shots[1].modified, 100);
+        assert_eq!(shots[2].modified, 100);
         // Маленькие файлы получают превью целиком в data-URL.
         let thumb = shots[0].thumb.as_deref().unwrap();
         assert!(thumb.starts_with("data:image/png;base64,"), "превью {thumb}");
@@ -242,8 +262,9 @@ mod tests {
     }
 
     /// Имя валидируется ДО обращения к диску: traversal, разделители,
-    /// кириллица, не-.png, пустое и слишком длинный стебель — InvalidInput;
-    /// допустимые имена проходят дальше и дают NotFound (файла нет).
+    /// не-.png, пустое, запрещённые символы и слишком длинный стебель —
+    /// InvalidInput; допустимые имена (включая кириллицу, ENV-12) проходят
+    /// дальше и дают NotFound (файла нет).
     #[test]
     fn delete_name_validation() {
         let (_d, paths, inst) = setup();
@@ -253,14 +274,24 @@ mod tests {
             "a/b.png",
             r"a\b.png",
             "",
-            "снимок.png",
+            "bad:name.png",
+            "bad<w>name.png",
             "shot.jpg",
             "shot.PNG",
             ".png",
+            "..png",
+            "shot..png",
+            " .png",
+            "shot .png",
             too_long.as_str(),
         ] {
             let err = delete(&paths, &inst.id, bad).unwrap_err();
             assert_eq!(err.code(), "invalid_input", "имя {bad:?} отклонено");
+        }
+        // ENV-12: кириллица и юникод валидны — файл отсутствует, значит NotFound.
+        for good in ["снимок.png", "скриншот 2026.png", "скрин.png"] {
+            let err = delete(&paths, &inst.id, good).unwrap_err();
+            assert_eq!(err.code(), "not_found", "имя {good:?} допустимо");
         }
         // На границе (стебель 128) имя допустимо — файла нет, NotFound.
         let ok = format!("{}.png", "x".repeat(128));

@@ -180,8 +180,16 @@ pub fn run() -> tauri::Result<()> {
         // D48: single-instance — регистрируется ПЕРВЫМ: второй процесс умирает,
         // его аргументы (ярлык «запустить игру») приходят в этот колбэк.
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            use tauri::Manager as _;
+            // ENV-5: повторный запуск без аргументов ярлыка — просто поднять
+            // окно: иначе оно оставалось свёрнутым и пользователь видел
+            // «ничего не произошло».
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
             if let Some(id) = parse_shortcut_args(&args) {
-                use tauri::Manager as _;
                 match app.get_webview_window("main") {
                     Some(w) => {
                         use tauri::Emitter as _;

@@ -67,6 +67,26 @@ pub fn part_path(dest: &Path) -> PathBuf {
     dest.with_file_name(name)
 }
 
+/// Уникальный `.part`-путь: суффикс из короткого хэша ключа (группы задач).
+/// ENV-2: два движка (два инстанса одной версии) качают одну библиотеку —
+/// общий `.part` приводил к тому, что второй `File::create` усекал чужой
+/// недокачанный файл, а финальный rename ловил SHARING_VIOLATION. Ключ один
+/// и тот же у задач одной группы (один движок) — путь детерминирован, чужие
+/// группы друг друга не трогают. Сигнатура `part_path` не меняется: она
+/// используется одиночными атомарными записями (`atomic_write`).
+pub fn part_path_unique(dest: &Path, key: &str) -> PathBuf {
+    let mut name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // 12 hex-символов SHA1 ключа: для разводки параллельных групп достаточно,
+    // имя файла не раздувает (лимиты длинных путей Windows).
+    let short = sha1_bytes(key.as_bytes());
+    name.push_str(".part.");
+    name.push_str(&short[..12]);
+    dest.with_file_name(name)
+}
+
 /// Атомарная запись байтов: данные → `.part` → rename поверх цели (спека §3).
 pub fn atomic_write(dest: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = dest.parent() {
@@ -377,5 +397,32 @@ mod tests {
         fs::write(&p, b"x").unwrap();
         remove_file_with_retry(&p).unwrap();
         assert!(!p.exists());
+    }
+
+    /// ENV-2: разные ключи (группы) дают разные `.part`-пути — параллельные
+    /// движки не пишут в один временный файл; один ключ — путь детерминирован.
+    #[test]
+    fn part_path_unique_differs_by_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("libraries").join("guava.jar");
+        let a = part_path_unique(&dest, "instance:one");
+        let b = part_path_unique(&dest, "instance:two");
+        assert_ne!(a, b, "разные группы обязаны получить разные .part");
+        assert_eq!(a, part_path_unique(&dest, "instance:one"), "детерминизм");
+        assert_ne!(a, part_path(&dest), "уникальный путь не совпадает с общим .part");
+    }
+
+    /// ENV-2: после финального rename уникальный `.part` не остаётся,
+    /// содержимое лежит в цели.
+    #[test]
+    fn unique_part_rename_leaves_no_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("guava.jar");
+        let part = part_path_unique(&dest, "g");
+        fs::write(&part, b"payload").unwrap();
+        rename_with_retry(&part, &dest).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"payload");
+        assert!(!part.exists(), "после rename .part не должен оставаться");
+        assert!(!part_path(&dest).exists());
     }
 }

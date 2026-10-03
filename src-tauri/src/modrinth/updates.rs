@@ -280,25 +280,40 @@ pub async fn update_all(
 
         // Скачалось: старый файл → корзина инстанса (откат возможен вручную,
         // спека §6.6). A26: перенос ретраится — файл может придержать антивирус.
+        // Путь в корзине запоминаем: если финальный перенос сорвётся, старый
+        // мод вернём оттуда на место.
         let old_path = game_dir.join(&old_entry.file);
+        let mut trashed: Option<std::path::PathBuf> = None;
         if old_path.exists() {
             let name = old_path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| format!("old-{}", check.project_id));
-            let _ = crate::util::fs::rename_with_retry(
-                &old_path,
-                &trash.join(format!("{}-{}", chrono_suffix(), name)),
-            );
+            let in_trash = trash.join(format!("{}-{}", chrono_suffix(), name));
+            if crate::util::fs::rename_with_retry(&old_path, &in_trash).is_ok() {
+                trashed = Some(in_trash);
+            }
         }
-        // Старый файл уже уехал — финальное имя свободно, обычного rename
-        // достаточно. Сбой здесь: temp сносим, ошибку отдаём наружу (инстанс
-        // остаётся со старым модом, запись манифеста не тронута).
-        if let Err(e) =
-            std::fs::rename(crate::util::fs::long_path(&temp), crate::util::fs::long_path(&dest))
-        {
+        // ENV-1: финальный перенос temp → dest тоже ретраится — свежий .jar
+        // легко придерживает антивирус (os error 5/32), голый rename терял
+        // файл НАСМЕРТЬ: старый уже уезжал в корзину, temp сносился. Теперь
+        // при сбое старый возвращается из корзины, temp сносится, запись
+        // манифеста не тронута — инстанс остаётся рабочим.
+        if let Err(e) = crate::util::fs::rename_with_retry(&temp, &dest) {
             crate::util::fs::remove_file_ignore(&temp);
-            return Err(e.into());
+            if let Some(in_trash) = trashed {
+                // Возврат старого файла; если не вышел (всё ещё заблокирован) —
+                // не паникуем, но честно называем путь в корзине: файл не
+                // потерян, его можно вернуть вручную.
+                if let Err(r) = crate::util::fs::rename_with_retry(&in_trash, &old_path) {
+                    return Err(LauncherError::Internal(format!(
+                        "обновление {} сорвалось ({e}); старый файл ждёт в корзине: {} ({r})",
+                        file.filename,
+                        in_trash.display()
+                    )));
+                }
+            }
+            return Err(e);
         }
 
         // Манифест: заменить запись.

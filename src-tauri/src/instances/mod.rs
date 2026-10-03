@@ -448,8 +448,12 @@ pub fn duplicate(paths: &crate::paths::Paths, id: &str) -> Result<Instance> {
 
 /// Удаление: в корзину ОС (восстановимо) или насовсем (спека §6.12).
 /// Store-контент (libraries/versions/bin — hardlinks из стора) удаляем
-/// напрямую: данные остаются в сторе, а корзина на таких деревьях падает.
-/// В корзину идёт уникальное: saves/mods/config/instance.json.
+/// напрямую и ДО корзины: данные остаются в сторе, а корзина на таких
+/// деревьях падает и раздувалась бы общим контентом. В корзину идёт
+/// уникальное: saves/mods/config/instance.json.
+/// ENV-7: если корзина недоступна (USB/FAT32/SMB/отключена) — честная ошибка
+/// с подсказкой «Удалить безвозвратно»; тихий переход к безвозвратному
+/// удалению запрещён — пользователь выбрал обратимый вариант.
 pub fn delete(paths: &crate::paths::Paths, id: &str, wipe: bool) -> Result<()> {
     // Без валидации id `..\backups` с wipe:true удалял бы каталог бэкапов,
     // а `..\..` — что угодно в данных/домашнем каталоге (A1).
@@ -487,6 +491,13 @@ fn ps_quote(s: &str) -> String {
     s.replace('\'', "''")
 }
 
+/// ENV-7: корзина на томе недоступна (USB/FAT32/SMB/отключена) — честная
+/// подсказка вместо криптического исключения PowerShell. Тихо удалять насовсем
+/// нельзя: пользователь выбрал ОБРАТИМЫЙ вариант.
+#[cfg(windows)]
+const RECYCLE_UNAVAILABLE: &str =
+    "корзина недоступна на этом томе — используйте «Удалить безвозвратно»";
+
 /// Корзина ОС. Крейт `trash` на части систем падает с «operations aborted»,
 /// поэтому — PowerShell + VisualBasic.FileIO (документированный путь Windows).
 /// Скрипт передаётся отдельным аргументом `Command` (массив `args`, без
@@ -505,8 +516,10 @@ fn recycle_dir(dir: &Path) -> Result<()> {
     if out.status.success() {
         return Ok(());
     }
-    Err(LauncherError::Internal(format!(
-        "корзина: {}",
+    // ENV-7: сбой (в т.ч. исключение «корзины нет на томе») — понятная
+    // InvalidInput с подсказкой, детали PowerShell — в скобках для диагностики.
+    Err(LauncherError::InvalidInput(format!(
+        "{RECYCLE_UNAVAILABLE} ({})",
         String::from_utf8_lossy(&out.stderr).trim()
     )))
 }
@@ -943,6 +956,21 @@ mod tests {
 
         recycle_dir(&target).expect("каталог уходит в корзину, инъекция не исполнилась");
         assert!(!long_path(&target).exists(), "каталог перемещён в корзину");
+    }
+
+    /// ENV-7: сбой корзины (здесь: каталога нет — PowerShell падает исключением)
+    /// даёт честную InvalidInput с подсказкой «Удалить безвозвратно», а не
+    /// криптический внутренний вывод PS; тихого безвозвратного удаления нет.
+    #[cfg(windows)]
+    #[test]
+    fn recycle_failure_is_honest_invalid_input() {
+        let (_d, paths) = test_paths();
+        let ghost = paths.instances_dir().join("no-such-instance-dir");
+        let err = recycle_dir(&ghost).unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+        let text = err.to_string();
+        assert!(text.contains("корзина недоступна"), "{text}");
+        assert!(text.contains("безвозвратно"), "{text}");
     }
 
     /// A28: запись `instance.json` сериализуется глобальным мьютексом —

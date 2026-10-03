@@ -101,6 +101,24 @@ pub fn list_archived(paths: &Paths, instance_id: &str) -> Result<Vec<LogFileInfo
     Ok(out)
 }
 
+/// Последние `max_bytes` байт файла (ENV-9): seek от конца, в память попадает
+/// только хвост. Раньше гигантский latest.log читался `std::fs::read` целиком
+/// — при логе 500 МБ+ и `panic = "abort"` OOM ронял лаунчер. Файл короче
+/// границы — читается целиком (возврат меньше `max_bytes` означает «весь файл»).
+pub fn read_tail(path: &std::path::Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    if max_bytes == 0 {
+        return Ok(Vec::new());
+    }
+    let mut file = std::fs::OpenOptions::new().read(true).open(path)?;
+    let len = file.metadata()?.len();
+    let skip = len.saturating_sub(max_bytes);
+    file.seek(SeekFrom::Start(skip))?;
+    let mut buf = Vec::with_capacity((len - skip) as usize);
+    file.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 /// Прочитать архивный лог: последние `max_bytes` байт, не разрывая строки
 /// (хвост обрезается до начала следующей строки). Для `*.log.gz` — то же,
 /// но граница считается по РАСПАКОВАННОМУ тексту: `Read::take` не даёт
@@ -120,12 +138,13 @@ pub fn read_archived(
     if name.ends_with(".gz") {
         return gz_tail(&path, max_bytes);
     }
-    let data = std::fs::read(&path)?;
-    if (data.len() as u64) <= max_bytes {
+    // ENV-9: весь файл в память не тянем — только seek-хвост.
+    let data = read_tail(&path, max_bytes)?;
+    if (data.len() as u64) < max_bytes {
+        // Файл меньше границы — вернулся целиком, резать хвост не нужно.
         return Ok(String::from_utf8_lossy(&data).into_owned());
     }
-    let start = data.len() - max_bytes as usize;
-    let tail = String::from_utf8_lossy(&data[start..]);
+    let tail = String::from_utf8_lossy(&data);
     // Не рвать строку посреди: отступаем до первого \n в хвосте.
     match tail.find('\n') {
         Some(pos) => Ok(tail[pos + 1..].to_string()),
@@ -449,6 +468,41 @@ mod tests {
         make_logs_dir(&paths, "inst1");
         let err = read_archived(&paths, "inst1", "ghost.log", 1024).expect_err("нет файла");
         assert!(matches!(err, LauncherError::NotFound(_)) || matches!(err, LauncherError::Io(_)));
+    }
+
+    // ---------- read_tail (ENV-9) ----------
+
+    /// Гигантский файл не читается целиком: хвост ровно cap и совпадает
+    /// с концом файла; маленький файл возвращается весь.
+    #[test]
+    fn read_tail_caps_at_max_and_keeps_file_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("big.log");
+        let mut content = b"HEAD line\n".to_vec();
+        content.extend(vec![b'x'; 1024 * 1024]);
+        std::fs::write(&big, &content).unwrap();
+        let cap = 512 * 1024usize;
+        let tail = read_tail(&big, cap as u64).unwrap();
+        assert_eq!(tail.len(), cap, "хвост ровно cap для файла больше cap");
+        assert_eq!(&tail[..], &content[content.len() - cap..], "это конец файла");
+
+        let small = dir.path().join("small.log");
+        std::fs::write(&small, b"abc").unwrap();
+        assert_eq!(read_tail(&small, cap as u64).unwrap(), b"abc", "меньше cap — целиком");
+        assert!(read_tail(&small, 0).unwrap().is_empty(), "cap=0 — пусто");
+    }
+
+    /// Плоский .log на ~1 МБ читается в пределах cap и содержит конец файла —
+    /// как gz-хвост выше (раньше здесь был цельный `std::fs::read`).
+    #[test]
+    fn read_plain_big_log_is_capped_by_tail() {
+        let (_guard, paths) = test_paths();
+        let logs = make_logs_dir(&paths, "inst1");
+        let big = vec![b'x'; 1024 * 1024];
+        std::fs::write(logs.join("big.log"), &big).unwrap();
+        let text = read_archived(&paths, "inst1", "big.log", 1024).unwrap();
+        assert!(text.len() <= 1024, "хвост не больше cap");
+        assert!(text.ends_with('x'), "хвост содержит конец данных");
     }
 
     // ---------- upload / parse_response ----------
