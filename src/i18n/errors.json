@@ -1,0 +1,87 @@
+{
+  "network": {
+    "ru": "Проблема с сетью. Проверьте подключение или прокси в настройках.",
+    "en": "Network problem. Check your connection or proxy in settings.",
+    "uk": "Проблема з мережею. Перевірте з'єднання або проксі в налаштуваннях."
+  },
+  "hash_mismatch": {
+    "ru": "Файл повреждён при скачивании и не прошёл проверку хэша.",
+    "en": "File corrupted during download and failed the hash check.",
+    "uk": "Файл пошкоджено під час завантаження — не збігся хеш."
+  },
+  "not_found": {
+    "ru": "Не найдено.",
+    "en": "Not found.",
+    "uk": "Не знайдено."
+  },
+  "invalid_input": {
+    "ru": "Проверьте введённые данные.",
+    "en": "Please check the entered data.",
+    "uk": "Перевірте введені дані."
+  },
+  "zip_slip": {
+    "ru": "Архив содержит опасные пути и заблокирован.",
+    "en": "The archive contains dangerous paths and has been blocked.",
+    "uk": "Архів містить небезпечні шляхи та заблокований."
+  },
+  "java_not_found": {
+    "ru": "Нужная Java не найдена. Установите её в настройках.",
+    "en": "Required Java not found. Install it in settings.",
+    "uk": "Потрібну Java не знайдено. Встановіть її у налаштуваннях."
+  },
+  "version_not_found": {
+    "ru": "Такой версии нет в манифесте.",
+    "en": "This version is not in the manifest.",
+    "uk": "Такої версії немає в маніфесті."
+  },
+  "timeout": {
+    "ru": "Операция не уложилась в таймаут.",
+    "en": "The operation timed out.",
+    "uk": "Перевищено час очікування операції."
+  },
+  "io": {
+    "ru": "Ошибка файловой системы.",
+    "en": "File system error.",
+    "uk": "Помилка файлової системи."
+  },
+  "json": {
+    "ru": "Не удалось разобрать данные.",
+    "en": "Failed to parse data.",
+    "uk": "Не вдалося розібрати дані."
+  },
+  "http": {
+    "ru": "Сервер ответил ошибкой.",
+    "en": "The server responded with an error.",
+    "uk": "Сервер відповів помилкою."
+  },
+  "zip": {
+    "ru": "Архив повреждён или не читается.",
+    "en": "The archive is corrupted or unreadable.",
+    "uk": "Архів пошкоджено або не читається."
+  },
+  "cancelled": {
+    "ru": "Операция отменена.",
+    "en": "Operation cancelled.",
+    "uk": "Операцію скасовано."
+  },
+  "internal": {
+    "ru": "Внутренняя ошибка лаунчера. Подробности — в логе.",
+    "en": "Internal launcher error. See the log for details.",
+    "uk": "Внутрішня помилка лаунчера. Подробиці — у логу."
+  },
+  "instance_running": {
+    "ru": "Игра этого инстанса запущена — сначала остановите её.",
+    "en": "This instance’s game is running — stop it first.",
+    "uk": "Гра цього інстансу запущена — спочатку зупиніть її."
+  },
+  "offline_mode": {
+    "ru": "Включён режим «Работать офлайн» — скачивание из сети отключено.",
+    "en": "“Work offline” mode is on — network downloads are disabled.",
+    "uk": "Увімкнено режим «Працювати офлайн» — завантаження з мережі вимкнено."
+  },
+  "network_detail": {
+    "ru": "Проблема с сетью",
+    "en": "Network problem",
+    "uk": "Проблема з мережею"
+  }
+}
