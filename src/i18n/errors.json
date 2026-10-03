@@ -2,86 +2,103 @@
   "network": {
     "ru": "Проблема с сетью. Проверьте подключение или прокси в настройках.",
     "en": "Network problem. Check your connection or proxy in settings.",
-    "uk": "Проблема з мережею. Перевірте з'єднання або проксі в налаштуваннях."
+    "uk": "Проблема з мережею. Перевірте з'єднання або проксі в налаштуваннях.",
+    "pl": "Problem z siecią. Sprawdź połączenie lub proxy w ustawieniach."
   },
   "hash_mismatch": {
     "ru": "Файл повреждён при скачивании и не прошёл проверку хэша.",
     "en": "File corrupted during download and failed the hash check.",
-    "uk": "Файл пошкоджено під час завантаження — не збігся хеш."
+    "uk": "Файл пошкоджено під час завантаження — не збігся хеш.",
+    "pl": "Plik uszkodził się podczas pobierania i nie przeszedł weryfikacji hash."
   },
   "not_found": {
     "ru": "Не найдено.",
     "en": "Not found.",
-    "uk": "Не знайдено."
+    "uk": "Не знайдено.",
+    "pl": "Nie znaleziono."
   },
   "invalid_input": {
     "ru": "Проверьте введённые данные.",
     "en": "Please check the entered data.",
-    "uk": "Перевірте введені дані."
+    "uk": "Перевірте введені дані.",
+    "pl": "Sprawdź wprowadzone dane."
   },
   "zip_slip": {
     "ru": "Архив содержит опасные пути и заблокирован.",
     "en": "The archive contains dangerous paths and has been blocked.",
-    "uk": "Архів містить небезпечні шляхи та заблокований."
+    "uk": "Архів містить небезпечні шляхи та заблокований.",
+    "pl": "Archiwum zawiera niebezpieczne ścieżki i zostało zablokowane."
   },
   "java_not_found": {
     "ru": "Нужная Java не найдена. Установите её в настройках.",
     "en": "Required Java not found. Install it in settings.",
-    "uk": "Потрібну Java не знайдено. Встановіть її у налаштуваннях."
+    "uk": "Потрібну Java не знайдено. Встановіть її у налаштуваннях.",
+    "pl": "Nie znaleziono wymaganej Javy. Zainstaluj ją w ustawieniach."
   },
   "version_not_found": {
     "ru": "Такой версии нет в манифесте.",
     "en": "This version is not in the manifest.",
-    "uk": "Такої версії немає в маніфесті."
+    "uk": "Такої версії немає в маніфесті.",
+    "pl": "Nie znaleziono wersji Minecraft."
   },
   "timeout": {
     "ru": "Операция не уложилась в таймаут.",
     "en": "The operation timed out.",
-    "uk": "Перевищено час очікування операції."
+    "uk": "Перевищено час очікування операції.",
+    "pl": "Czas oczekiwania upłynął."
   },
   "io": {
     "ru": "Ошибка файловой системы.",
     "en": "File system error.",
-    "uk": "Помилка файлової системи."
+    "uk": "Помилка файлової системи.",
+    "pl": "Błąd dysku lub pliku."
   },
   "json": {
     "ru": "Не удалось разобрать данные.",
     "en": "Failed to parse data.",
-    "uk": "Не вдалося розібрати дані."
+    "uk": "Не вдалося розібрати дані.",
+    "pl": "Otrzymano uszkodzone dane (nieprawidłowy JSON)."
   },
   "http": {
     "ru": "Сервер ответил ошибкой.",
     "en": "The server responded with an error.",
-    "uk": "Сервер відповів помилкою."
+    "uk": "Сервер відповів помилкою.",
+    "pl": "Serwer zwrócił błąd."
   },
   "zip": {
     "ru": "Архив повреждён или не читается.",
     "en": "The archive is corrupted or unreadable.",
-    "uk": "Архів пошкоджено або не читається."
+    "uk": "Архів пошкоджено або не читається.",
+    "pl": "Błąd archive."
   },
   "cancelled": {
     "ru": "Операция отменена.",
     "en": "Operation cancelled.",
-    "uk": "Операцію скасовано."
+    "uk": "Операцію скасовано.",
+    "pl": "Operacja anulowana."
   },
   "internal": {
     "ru": "Внутренняя ошибка лаунчера. Подробности — в логе.",
     "en": "Internal launcher error. See the log for details.",
-    "uk": "Внутрішня помилка лаунчера. Подробиці — у логу."
+    "uk": "Внутрішня помилка лаунчера. Подробиці — у логу.",
+    "pl": "Błąd wewnętrzny launchera. Szczegóły — w logu."
   },
   "instance_running": {
     "ru": "Игра этого инстанса запущена — сначала остановите её.",
     "en": "This instance’s game is running — stop it first.",
-    "uk": "Гра цього інстансу запущена — спочатку зупиніть її."
+    "uk": "Гра цього інстансу запущена — спочатку зупиніть її.",
+    "pl": "Instancja jest już uruchomiona."
   },
   "offline_mode": {
     "ru": "Включён режим «Работать офлайн» — скачивание из сети отключено.",
     "en": "“Work offline” mode is on — network downloads are disabled.",
-    "uk": "Увімкнено режим «Працювати офлайн» — завантаження з мережі вимкнено."
+    "uk": "Увімкнено режим «Працювати офлайн» — завантаження з мережі вимкнено.",
+    "pl": "Włączony tryb offline: sieć wyłączona."
   },
   "network_detail": {
     "ru": "Проблема с сетью",
     "en": "Network problem",
-    "uk": "Проблема з мережею"
+    "uk": "Проблема з мережею",
+    "pl": "Problem z siecią"
   }
 }

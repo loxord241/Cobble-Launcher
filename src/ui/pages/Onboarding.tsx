@@ -114,6 +114,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
               <option value="en">English</option>
               <option value="ru">Русский</option>
               <option value="uk">Українська</option>
+              <option value="pl">Polski</option>
             </select>
             <h2 className="mt-4 font-semibold">{t("onboarding.dir")}</h2>
             <p className="mt-2 text-sm text-text-muted">{t("onboarding.dir.hint")}</p>

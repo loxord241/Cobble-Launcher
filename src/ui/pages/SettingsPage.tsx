@@ -350,6 +350,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               <option value="en">English</option>
               <option value="ru">Русский</option>
               <option value="uk">Українська</option>
+              <option value="pl">Polski</option>
             </select>
           </Field>
 

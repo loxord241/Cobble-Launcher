@@ -1,15 +1,21 @@
 // Мини-i18n без зависимостей: t("key") + {placeholders}. Спека §8.
-// Языки: en (по умолчанию), ru, uk. Fallback-цепочка: current → en → ключ.
+// Языки: en (по умолчанию), ru, uk, pl. Fallback-цепочка: current → en → ключ.
 import ru from "./ru.json";
 import en from "./en.json";
 import uk from "./uk.json";
+import pl from "./pl.json";
 import errors from "./errors.json";
 import type { ErrorPayload } from "../api/types";
 
 type Dict = Record<string, string>;
-type ErrorEntry = Record<"ru" | "en" | "uk", string>;
+type ErrorEntry = Record<"ru" | "en" | "uk" | "pl", string>;
 
-const dicts: Record<string, Dict> = { ru: ru as Dict, en: en as Dict, uk: uk as Dict };
+const dicts: Record<string, Dict> = {
+  ru: ru as Dict,
+  en: en as Dict,
+  uk: uk as Dict,
+  pl: pl as Dict,
+};
 const errorDict = errors as unknown as Record<string, ErrorEntry>;
 
 /**
@@ -75,13 +81,14 @@ export function t(key: string, params?: Record<string, string | number>): string
 
 /**
  * A40: плюрализация числительных. Ключ — база, форма выбирается правилами
- * языка: ru/uk — one/few/many (1 строка, 2 строки, 5 строк), en — one/other.
+ * языка: ru/uk/pl — one/few/many (1 linia, 2 linie, 5 linii — у польского
+ * те же славянские правила), en — one/other.
  * Набор форм `one/few/many/other` есть во всех словарях (паритет ключей);
  * недостижимые для языка формы служат только этому паритету.
  * {n} подставляется всегда.
  */
 function pluralCandidates(lang: string, n: number): string[] {
-  if (lang === "ru" || lang === "uk") {
+  if (lang === "ru" || lang === "uk" || lang === "pl") {
     const mod10 = n % 10;
     const mod100 = n % 100;
     const primary =
