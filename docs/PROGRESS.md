@@ -639,3 +639,18 @@
   живьём: CSP цел, экспорт отклоняет относительный путь. Вердикт аудитора:
   после P1-фиксов проект готов к публичному релизу; телеметрии нет (25
   внешних хостов перечислены).
+
+## 2026-10-03 — Релиз 0.2.1
+
+- Версия 0.2.0 → 0.2.1 в 4 местах (package.json, tauri.conf.json, Cargo.toml, Cargo.lock).
+- Верификация: cargo 327+10, npm run build, ПОЛНАЯ приёмочная волна 12/12
+  (ui_checks, catalog_d39, cards_skins, content_features, m5, wave2, parity1–4,
+  scroll_test, e2e_features, kill_acceptance) на живом CDP-стенде; конфиг
+  после волны чист (бамп версии — единственный дифф).
+- Бандл: scripts/build.ps1 -Bundle — NSIS-setup + MSI, оба с .sig (ключ из
+  %LOCALAPPDATA%\cobble-updater-keys); make_latest_json.cjs собрал
+  dist-latest/latest.json на NSIS-setup.
+- Публикация: коммит master → orphan-main снапшотом → gh release create v0.2.1
+  (установщики + .sig + latest.json).
+- Первый полный cargo-цикл в новом расположении C:\projects (debug+release
+  профили собраны с нуля).
