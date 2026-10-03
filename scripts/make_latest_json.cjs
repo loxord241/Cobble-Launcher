@@ -47,9 +47,11 @@ if (!fs.existsSync(sigFile)) {
 }
 const signature = fs.readFileSync(sigFile, "utf8").trim();
 
-// Имя ассета в GitHub-релизе совпадает с именем файла.
+// Имя ассета в GitHub-релизе: GitHub заменяет пробелы точками ("Cobble.Launcher_…"),
+// поэтому URL строим от dotted-имени — иначе updater получает 404 (поймано на 0.2.1).
+const assetName = pick.file.replace(/ /g, ".");
 const url = `https://github.com/loxord241/Cobble-Launcher/releases/download/${tag}/${encodeURIComponent(
-  pick.file,
+  assetName,
 )}`;
 
 const manifest = {
