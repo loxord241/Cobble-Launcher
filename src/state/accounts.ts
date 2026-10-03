@@ -62,3 +62,38 @@ export const accountKindLabelKey: Record<AccountKind, string> = {
   ely: "account.kind.ely",
   authlib: "account.kind.authlib",
 };
+
+/** Сортировка профилей (D53): активный всегда первый, дальше по имени или по
+ * порядку добавления. Выбор живёт в localStorage и общий для модалки аккаунтов
+ * и меню чипа в титлбаре. */
+export type AccountSort = "name" | "added";
+const SORT_KEY = "accountsSort";
+
+export function accountSortPref(): AccountSort {
+  try {
+    return localStorage.getItem(SORT_KEY) === "added" ? "added" : "name";
+  } catch {
+    return "name";
+  }
+}
+
+export function setAccountSortPref(mode: AccountSort): void {
+  try {
+    localStorage.setItem(SORT_KEY, mode);
+  } catch {
+    /* приватный режим — сортировка просто не запоминается */
+  }
+}
+
+export function sortAccounts(
+  list: Account[],
+  mode: AccountSort,
+  activeId?: string,
+): Account[] {
+  const rest =
+    mode === "name"
+      ? [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
+      : [...list];
+  const active = rest.find((a) => a.id === activeId);
+  return active ? [active, ...rest.filter((a) => a.id !== activeId)] : rest;
+}

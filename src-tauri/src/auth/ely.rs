@@ -90,7 +90,7 @@ pub async fn refresh_session(client: &HttpClient, refresh_token: &str) -> Result
         .send()
         .await?
         .error_for_status()
-        .map_err(|e| LauncherError::network(format!("ely.by refresh: {e}")))?
+        .map_err(|e| LauncherError::network_err("ely.by refresh", &e))?
         .json()
         .await?;
     crate::util::redact::register_secret(&resp.access_token);

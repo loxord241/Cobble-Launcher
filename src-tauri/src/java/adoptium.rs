@@ -38,6 +38,12 @@ struct AdoptiumPackage {
     size: Option<u64>,
 }
 
+/// Хвост ENV-аудита (D50): два параллельных install_jre одного major
+/// гонялись за один `.jdk{major}.zip.part` и staging. Установки редки —
+/// сериализуем их на процесс целиком; после захвата замка пере-проверяем
+/// готовую Java, чтобы второй вызов просто взял результат первого.
+static INSTALL_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
 /// Скачать JRE `major` (windows x64, jre, hotspot) в `runtime_dir/jdk{major}`.
 /// Возвращает путь к java-исполняемому файлу.
 pub async fn install_jre(
@@ -46,6 +52,7 @@ pub async fn install_jre(
     major: u32,
     on_progress: impl Fn(u64, u64) + Send + 'static,
 ) -> Result<PathBuf> {
+    let _guard = INSTALL_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
     let target = runtime_dir.join(format!("jdk{major}"));
     let java_exe = if cfg!(windows) {
         target.join("bin").join("java.exe")

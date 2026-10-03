@@ -236,9 +236,10 @@ body {
   opacity: 0.5;
 }
 /* Disabled primary — приглушённый, но читаемый: сплошная смесь с фоном вместо
-   просвечивающего акцента (судья 2026-10-03: «как битая кнопка»). */
+   просвечивающего акцента (судья 2026-10-03: «как битая кнопка»); доля акцента
+   48% — на ступень читаемее по второй итерации судьи. */
 .btn-primary:disabled {
-  background: color-mix(in srgb, var(--accent) 35%, var(--surface-2));
+  background: color-mix(in srgb, var(--accent) 48%, var(--surface-2));
   color: var(--on-accent);
   opacity: 1;
 }

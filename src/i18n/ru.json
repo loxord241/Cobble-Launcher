@@ -438,5 +438,8 @@
   "project.versions.open": "Открыть на Modrinth",
   "common.confirm": "Подтвердить",
   "common.delete": "Удалить",
-  "accounts.deleteDetail": "Профиль будет удалён только из лаунчера — файлы игры не тронутся."
+  "accounts.deleteDetail": "Профиль будет удалён только из лаунчера — файлы игры не тронутся.",
+  "accounts.sort.label": "Сортировка",
+  "accounts.sort.name": "По имени",
+  "accounts.sort.added": "По добавлению"
 }

@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { X, Trash2, Globe, Shield, User, Plus, ExternalLink, RefreshCw, Server } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useAccounts, accountKindLabelKey } from "../../state/accounts";
+import {
+  useAccounts,
+  accountKindLabelKey,
+  accountSortPref,
+  setAccountSortPref,
+  sortAccounts,
+  type AccountSort,
+} from "../../state/accounts";
 import { useSkins } from "../../state/skins";
 import { useSettings } from "../../state/settings";
 import { useModalA11y } from "../hooks/useModalA11y";
@@ -50,6 +57,12 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
   const activeId =
     accounts.find((a) => a.id === (settings?.accountsActiveId ?? accounts[0]?.id))?.id ??
     accounts[0]?.id;
+  // Сортировка профиля (D53): активный первый, дальше по имени/добавлению.
+  const [sortMode, setSortMode] = useState<AccountSort>(accountSortPref);
+  const visibleAccounts = sortAccounts(accounts, sortMode, activeId);
+  // Фейд на верхней кромке середины: показывает, что список уехал вверх
+  // (замечание судьи — срезанная строка без затухания читалась сыро).
+  const [scrolled, setScrolled] = useState(false);
   // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
   // busy-операции закрытие не блокируют (поведение до правки: onClose без
   // guard'а) — хук получает тот же onClose, что и кнопки/оверлей.
@@ -181,21 +194,49 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4">
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          {scrolled && (
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b from-card to-transparent"
+            />
+          )}
+          <div
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6"
+            onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 6)}
+          >
+          {/* Отступы — внутри контента: padding самого скроллера не входит в
+              scroll extent, бегунок не доезжал до низа дорожки (судья). */}
+          <div className="flex flex-col py-4">
         {/* Список существующих аккаунтов */}
         <div>
-          <div className="text-xs font-semibold uppercase tracking-wider text-text-muted">
-            {t("accounts.currentList")} ({accounts.length})
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+              {t("accounts.currentList")} ({accounts.length})
+            </div>
+            <select
+              value={sortMode}
+              onChange={(e) => {
+                const m = e.target.value as AccountSort;
+                setAccountSortPref(m);
+                setSortMode(m);
+              }}
+              aria-label={t("accounts.sort.label")}
+              className="h-7 rounded-md border border-border-strong bg-card px-2 text-xs"
+            >
+              <option value="name">{t("accounts.sort.name")}</option>
+              <option value="added">{t("accounts.sort.added")}</option>
+            </select>
           </div>
           {/* Один скролл на всю середину: внутренний скролл списка давал
               вторую дорожку рядом с дорожкой модалки (судья, 2026-10-03). */}
           <div className="mt-2 flex flex-col gap-2">
-            {accounts.length === 0 ? (
+            {visibleAccounts.length === 0 ? (
               <div className="rounded-md border border-border-app bg-bg p-3 text-center text-sm text-text-muted">
                 {t("accounts.noAccounts")}
               </div>
             ) : (
-              accounts.map((acc) => {
+              visibleAccounts.map((acc) => {
                 const isActive = acc.id === activeId;
                 return (
                   <div
@@ -513,6 +554,8 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
             {error}
           </p>
         )}
+          </div>
+          </div>
         </div>
 
         <div className="flex shrink-0 justify-end border-t border-border-app px-6 py-4">

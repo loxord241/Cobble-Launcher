@@ -180,6 +180,19 @@ impl LauncherError {
     pub fn network(msg: impl Into<String>) -> Self {
         LauncherError::Network(msg.into())
     }
+
+    /// Хвост ENV-15: сеть с контекстом исходной ошибки. Display у reqwest не
+    /// содержит слово «certificate» (оно глубже в source()), а hint у
+    /// Network(String) ищет только по тексту — раньше места вида
+    /// `network(format!("{prefix}: {e}"))` теряли подсказку про дату/время.
+    /// Здесь слово вытягивается из цепочки источника явно.
+    pub fn network_err<E: std::error::Error + 'static>(prefix: &str, e: &E) -> Self {
+        let mut msg = format!("{prefix}: {e}");
+        if mentions_certificate(e) && !msg.to_lowercase().contains("certificate") {
+            msg.push_str(" (certificate verification failed)");
+        }
+        LauncherError::Network(msg)
+    }
 }
 
 #[cfg(test)]
@@ -263,6 +276,18 @@ mod tests {
         assert!(p["hint"].as_str().unwrap().contains("дата и время"));
 
         let plain = LauncherError::network("connection refused");
+        assert!(plain.payload().hint.is_none());
+    }
+
+    /// Хвост ENV-15: network_err вытягивает слово «certificate» из source-
+    /// цепочки в текст — hint у Network(String) ищет только по сообщению.
+    #[test]
+    fn network_err_preserves_certificate_from_chain() {
+        let e = LauncherError::network_err("ely.by refresh", &TopLevel(Box::new(CertSource)));
+        assert!(e.to_string().contains("certificate"));
+        assert!(e.payload().hint.as_deref().unwrap().contains("дата и время"));
+
+        let plain = LauncherError::network_err("x", &PlainSource);
         assert!(plain.payload().hint.is_none());
     }
 }

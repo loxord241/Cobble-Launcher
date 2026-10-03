@@ -27,7 +27,12 @@ import { apiErrorText, t } from "../../i18n";
 import { api } from "../../api/client";
 import { useInstances, unsubscribeEvents } from "../../state/instances";
 import { useSettings } from "../../state/settings";
-import { useAccounts, accountKindLabelKey } from "../../state/accounts";
+import {
+  useAccounts,
+  accountKindLabelKey,
+  accountSortPref,
+  sortAccounts,
+} from "../../state/accounts";
 import { useSkins } from "../../state/skins";
 import { useUpdateStore } from "../../state/updates";
 import { resolveLaunchTarget } from "../../state/launch";
@@ -389,7 +394,9 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
                   aria-label={t("shell.account.profile")}
                   className="anim-menu-in origin-top-right absolute right-0 top-11 z-50 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
                 >
-                  {accounts.map((a) => (
+                  {/* Тот же порядок, что в модалке аккаунтов: активный первый,
+                      дальше по предвыбранной сортировке (D53). */}
+                  {sortAccounts(accounts, accountSortPref(), active?.id).map((a) => (
                     <button
                       key={a.id}
                       role="menuitemradio"

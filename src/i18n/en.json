@@ -438,5 +438,8 @@
   "project.versions.open": "Open on Modrinth",
   "common.confirm": "Confirm",
   "common.delete": "Delete",
-  "accounts.deleteDetail": "The profile is removed from the launcher only — game files stay untouched."
+  "accounts.deleteDetail": "The profile is removed from the launcher only — game files stay untouched.",
+  "accounts.sort.label": "Sort",
+  "accounts.sort.name": "By name",
+  "accounts.sort.added": "By added"
 }

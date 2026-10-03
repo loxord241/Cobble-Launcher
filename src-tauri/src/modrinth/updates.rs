@@ -278,43 +278,11 @@ pub async fn update_all(
             )));
         }
 
-        // Скачалось: старый файл → корзина инстанса (откат возможен вручную,
-        // спека §6.6). A26: перенос ретраится — файл может придержать антивирус.
-        // Путь в корзине запоминаем: если финальный перенос сорвётся, старый
-        // мод вернём оттуда на место.
+        // Скачалось: старый файл → корзина инстанса, temp → на его место.
+        // Логика вынесена в swap_updated_file — ради прямого регресс-теста
+        // ENV-1 (прежде тест упирался в процесс-глобальный шов TEST_API_BASE).
         let old_path = game_dir.join(&old_entry.file);
-        let mut trashed: Option<std::path::PathBuf> = None;
-        if old_path.exists() {
-            let name = old_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| format!("old-{}", check.project_id));
-            let in_trash = trash.join(format!("{}-{}", chrono_suffix(), name));
-            if crate::util::fs::rename_with_retry(&old_path, &in_trash).is_ok() {
-                trashed = Some(in_trash);
-            }
-        }
-        // ENV-1: финальный перенос temp → dest тоже ретраится — свежий .jar
-        // легко придерживает антивирус (os error 5/32), голый rename терял
-        // файл НАСМЕРТЬ: старый уже уезжал в корзину, temp сносился. Теперь
-        // при сбое старый возвращается из корзины, temp сносится, запись
-        // манифеста не тронута — инстанс остаётся рабочим.
-        if let Err(e) = crate::util::fs::rename_with_retry(&temp, &dest) {
-            crate::util::fs::remove_file_ignore(&temp);
-            if let Some(in_trash) = trashed {
-                // Возврат старого файла; если не вышел (всё ещё заблокирован) —
-                // не паникуем, но честно называем путь в корзине: файл не
-                // потерян, его можно вернуть вручную.
-                if let Err(r) = crate::util::fs::rename_with_retry(&in_trash, &old_path) {
-                    return Err(LauncherError::Internal(format!(
-                        "обновление {} сорвалось ({e}); старый файл ждёт в корзине: {} ({r})",
-                        file.filename,
-                        in_trash.display()
-                    )));
-                }
-            }
-            return Err(e);
-        }
+        swap_updated_file(&old_path, &temp, &dest, &trash, &file.filename)?;
 
         // Манифест: заменить запись.
         let mut manifest = crate::instances::load_content_manifest(paths, &inst.id);
@@ -339,6 +307,48 @@ fn chrono_suffix() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0)
         .to_string()
+}
+
+/// ENV-1: перенос скачанного temp на место старого файла с корзиной.
+/// Старый уезжает в `.trash` (для ручного отката), temp занимает его место;
+/// если финальный перенос сорвался (свежий .jar придержал антивирус) — старый
+/// возвращается из корзины, temp сносится, запись манифеста не тронута:
+/// инстанс остаётся рабочим. Если не вышел даже возврат — честно называем
+/// путь в корзине: файл не потерян, его можно вернуть вручную.
+fn swap_updated_file(
+    old_path: &std::path::Path,
+    temp: &std::path::Path,
+    dest: &std::path::Path,
+    trash: &std::path::Path,
+    label: &str,
+) -> Result<()> {
+    if old_path.exists() {
+        std::fs::create_dir_all(crate::util::fs::long_path(trash))?;
+    }
+    let mut trashed: Option<std::path::PathBuf> = None;
+    if old_path.exists() {
+        let name = old_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("old-{label}"));
+        let in_trash = trash.join(format!("{}-{}", chrono_suffix(), name));
+        if crate::util::fs::rename_with_retry(old_path, &in_trash).is_ok() {
+            trashed = Some(in_trash);
+        }
+    }
+    if let Err(e) = crate::util::fs::rename_with_retry(temp, dest) {
+        crate::util::fs::remove_file_ignore(temp);
+        if let Some(in_trash) = trashed {
+            if let Err(r) = crate::util::fs::rename_with_retry(&in_trash, old_path) {
+                return Err(LauncherError::Internal(format!(
+                    "обновление {label} сорвалось ({e}); старый файл ждёт в корзине: {} ({r})",
+                    in_trash.display()
+                )));
+            }
+        }
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Самозалечивающийся манифест (legacy-модпаки): записи без `project_id`
@@ -389,6 +399,69 @@ mod tests {
     use crate::instances::{ContentEntry, ContentKind, ContentSource};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    /// Регресс ENV-1 (счастливый путь): старый мод уезжает в .trash, temp
+    /// занимает его место, ничего лишнего не остаётся.
+    #[test]
+    fn update_swap_happy_path_trashes_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("mods");
+        std::fs::create_dir_all(&game).unwrap();
+        let old = game.join("old.jar");
+        std::fs::write(&old, b"old").unwrap();
+        let temp = game.join(".update-new.jar");
+        std::fs::write(&temp, b"new").unwrap();
+        let dest = game.join("new.jar");
+        let trash = game.join(".trash");
+
+        swap_updated_file(&old, &temp, &dest, &trash, "new.jar").unwrap();
+
+        assert!(!old.exists(), "старого файла на месте быть не должно");
+        assert!(!temp.exists(), "temp должен переехать на место dest");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        let trashed: Vec<_> = std::fs::read_dir(&trash)
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(trashed.len(), 1, "старый мод должен лежать в корзине");
+        assert_eq!(std::fs::read(trashed[0].path()).unwrap(), b"old");
+    }
+
+    /// Регресс ENV-1 (антивирус придержал новый файл): temp снесён, старый
+    /// вернулся из корзины — инстанс остаётся рабочим, файлы не теряются.
+    #[cfg(windows)]
+    #[test]
+    fn update_swap_blocked_dest_restores_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("mods");
+        std::fs::create_dir_all(&game).unwrap();
+        let old = game.join("old.jar");
+        std::fs::write(&old, b"old").unwrap();
+        let temp = game.join(".update-new.jar");
+        std::fs::write(&temp, b"new").unwrap();
+        let dest = game.join("new.jar");
+        let trash = game.join(".trash");
+
+        // Держим dest занятым без share-доступа (как антивирус): rename
+        // выдаёт os error 32, после исчерпания ретраев (~850 мс) должен
+        // сработать возврат старого из корзины.
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .share_mode(0)
+            .open(&dest)
+            .unwrap();
+        let res = swap_updated_file(&old, &temp, &dest, &trash, "new.jar");
+        drop(lock);
+
+        assert!(res.is_err());
+        assert!(dest.exists(), "заблокированный dest остаётся (пустой)");
+        assert!(old.exists(), "старый мод обязан вернуться из корзины");
+        assert_eq!(std::fs::read(&old).unwrap(), b"old");
+        assert!(!temp.exists(), "temp сносится при сбое");
+    }
 
     fn test_paths(dir: &tempfile::TempDir) -> Paths {
         let paths = Paths::new(dir.path().to_path_buf());

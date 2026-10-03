@@ -119,7 +119,7 @@ pub async fn server_info(client: &HttpClient, server_url: &str) -> Result<Server
         let resp = match client.raw().get(&candidate).send().await {
             Ok(r) => r,
             Err(e) => {
-                last_err = LauncherError::network(format!("{candidate}: {e}"));
+                last_err = LauncherError::network_err(&candidate, &e);
                 continue;
             }
         };
@@ -225,7 +225,7 @@ pub async fn refresh_session(
         .send()
         .await?
         .error_for_status()
-        .map_err(|e| LauncherError::network(format!("{base} refresh: {e}")))?
+        .map_err(|e| LauncherError::network_err(&format!("{base} refresh"), &e))?
         .json()
         .await?;
     crate::util::redact::register_secret(&resp.access_token);
