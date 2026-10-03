@@ -1,6 +1,6 @@
 [package]
 name = "mc-launcher-v2"
-version = "0.2.2"
+version = "0.2.3"
 description = "Быстрый и честный лаунчер Minecraft для Windows"
 authors = ["loxord241"]
 license = "MIT"
