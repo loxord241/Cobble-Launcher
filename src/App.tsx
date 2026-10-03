@@ -1,5 +1,5 @@
 // Корень: онбординг-гейт → shell. Чистый профиль → мастер онбординга (M4).
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Shell from "./ui/layout/Shell";
 import Onboarding from "./ui/pages/Onboarding";
 import { useSettings } from "./state/settings";
@@ -7,11 +7,20 @@ import { t } from "./i18n";
 import { useInstances } from "./state/instances";
 
 export default function App() {
-  const { settings, loaded, load, error: loadError, } = useSettings();
-  const { error, setError, load: loadInstances } = useInstances();
+  // PERF#1 (аудит 2026-10-03): без селекторов App подписан на ВЕСЬ стор —
+  // каждый тик dl_progress (10/с) перерисовывал всё дерево. Только узкие поля.
+  const loaded = useSettings((s) => s.loaded);
+  const load = useSettings((s) => s.load);
+  const loadError = useSettings((s) => s.error);
+  const settings = useSettings((s) => s.settings);
+  const error = useInstances((s) => s.error);
+  const setError = useInstances((s) => s.setError);
+  const loadInstances = useInstances((s) => s.load);
   // onboardingDone читается один раз при старте; сброс из настроек
   // перезагружает состояние через update.
   const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
+  // Стабильный колбэк: инлайн-стрелка каждый рендер App давала Shell новый проп.
+  const handleLogout = useCallback(() => setShowOnboarding(true), []);
 
   useEffect(() => {
     void load();
@@ -53,7 +62,7 @@ export default function App() {
 
   return (
     <>
-      <Shell onLogout={() => setShowOnboarding(true)} />
+      <Shell onLogout={handleLogout} />
       {error && (
         <div
           role="alert"

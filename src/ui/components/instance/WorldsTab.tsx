@@ -5,14 +5,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Archive, Globe, Trash2 } from "lucide-react";
 import { api } from "../../../api/client";
+import { formatSize } from "../../format";
 import { apiErrorText, currentLanguage, t } from "../../../i18n";
 import { askConfirm } from "../../confirm";
 import type { WorldInfo, WorldScope } from "../../../api/types";
-
-/** Размер мира в строке списка: МБ с округлением (как fmtBytes в настройках). */
-function fmtSize(bytes: number): string {
-  return `${Math.round(bytes / (1024 * 1024))} МБ`;
-}
 
 /** Дата изменения мира — в локали интерфейса (A38), стиль даты страницы. */
 function fmtDate(unixSecs: number): string {
@@ -113,7 +109,7 @@ export default function WorldsTab({
                   {w.name}
                 </div>
                 <div className="truncate font-mono text-[12px] text-text-muted">
-                  {fmtDate(w.lastModified)} · {fmtSize(w.sizeBytes)}
+                  {fmtDate(w.lastModified)} · {formatSize(w.sizeBytes)}
                 </div>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Clock, Download, ExternalLink, HardDrive, Heart, LoaderCircle, Scale, X } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../../api/client";
+import { formatSize } from "../format";
 import { apiErrorText, currentLanguage, plural, t } from "../../i18n";
 import { useInstances } from "../../state/instances";
 import { useModalA11y } from "../hooks/useModalA11y";
@@ -22,13 +23,6 @@ type Tab = "overview" | "changelog" | "gallery" | "versions";
 
 const TABS: Tab[] = ["overview", "changelog", "gallery", "versions"];
 
-// Человеческий размер файла (как fmtBytes в LogViewerModal).
-function fmtBytes(bytes: number): string {
-  const mb = bytes / (1024 * 1024);
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} ГБ`;
-  if (mb >= 1) return `${Math.round(mb)} МБ`;
-  return `${Math.round(bytes / 1024)} КБ`;
-}
 
 /** Относительная дата («5 дней назад») для чипа «Обновлено»; пусто — не дата. */
 function relWhen(iso: string): string {
@@ -353,7 +347,7 @@ export default function ProjectDetailModal({
             {packSize !== null && (
               <span className="chip-mono flex items-center gap-1 text-xs">
                 <HardDrive size={12} aria-hidden />
-                {fmtBytes(packSize)}
+                {formatSize(packSize)}
               </span>
             )}
             {detail?.license && (
@@ -547,7 +541,7 @@ export default function ProjectDetailModal({
                           )}
                           {primary && (
                             <span className={`chip-mono text-xs ${v.datePublished ? "" : "ml-auto"}`}>
-                              {fmtBytes(primary.size)}
+                              {formatSize(primary.size)}
                             </span>
                           )}
                           {isMod && (

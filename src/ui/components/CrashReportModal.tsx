@@ -20,6 +20,14 @@ import { useInstances, type CrashReport } from "../../state/instances";
 import { useAccounts } from "../../state/accounts";
 import { useSettings } from "../../state/settings";
 
+function diagText(ruleId: string, field: "title" | "advice", fallback: string): string {
+  // LOC#3 (аудит 2026-10-03): диагнозы ядра вшиты по-русски — переводим по
+  // ruleId; ключа нет (новое правило) — честный fallback на текст ядра.
+  const key = `crash.diag.${ruleId}.${field}`;
+  const text = t(key);
+  return text === key ? fallback : text;
+}
+
 export default function CrashReportModal({
   report,
   onClose,
@@ -160,8 +168,8 @@ export default function CrashReportModal({
                   key={i}
                   className="rounded-lg border border-accent/30 bg-accent-soft/40 p-4 text-text"
                 >
-                  <div className="text-sm font-bold text-accent">{d.title}</div>
-                  <div className="mt-1 text-sm leading-relaxed">{d.advice}</div>
+                  <div className="text-sm font-bold text-accent">{diagText(d.ruleId, "title", d.title)}</div>
+                  <div className="mt-1 text-sm leading-relaxed">{diagText(d.ruleId, "advice", d.advice)}</div>
                 </div>
               ))}
             </div>

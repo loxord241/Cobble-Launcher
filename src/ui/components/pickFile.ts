@@ -22,7 +22,7 @@ export async function pickImagePath(): Promise<string | null> {
 export async function pickArchivePath(): Promise<string | null> {
   const picked = await open({
     multiple: false,
-    filters: [{ name: "Modrinth/CurseForge/MultiMC архив", extensions: ["zip", "mrpack"] }],
+    filters: [{ name: "Modrinth / CurseForge / MultiMC (*.zip, *.mrpack)", extensions: ["zip", "mrpack"] }],
   });
   return typeof picked === "string" ? picked : null;
 }

@@ -10,7 +10,6 @@
 use crate::errors::{LauncherError, Result};
 use crate::instances::{instance_dir, load_content_manifest, minecraft_dir};
 use crate::paths::Paths;
-use std::io::Write as _;
 use std::path::PathBuf;
 
 /// Сколько снапшотов храним (ротация после create).
@@ -89,8 +88,9 @@ pub fn create(paths: &Paths, instance_id: &str) -> Result<String> {
             let fname = e.file_name().to_string_lossy().into_owned();
             zip.start_file(fname.clone(), opts)
                 .map_err(|err| LauncherError::Zip(format!("start_file {fname}: {err}")))?;
-            let data = std::fs::read(crate::util::fs::long_path(&e.path()))?;
-            zip.write_all(&data)?;
+            // PERF#4: поток вместо чтения jar целиком в память.
+            let mut f = std::fs::File::open(crate::util::fs::long_path(&e.path()))?;
+            std::io::copy(&mut f, &mut zip)?;
             count += 1;
         }
     }

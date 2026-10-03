@@ -16,7 +16,9 @@ const dicts: Record<string, Dict> = {
   uk: uk as Dict,
   pl: pl as Dict,
 };
-const errorDict = errors as unknown as Record<string, ErrorEntry>;
+const errorDict = errors as unknown as Record<string, Record<string, string>>;
+// LOC#2: секция подсказок (hint-коды ядра → тексты по языку).
+const hintDict = (errors as unknown as { hints?: Record<string, Record<string, string>> }).hints;
 
 /**
  * A11/D30: язык можно задать ключом localStorage "lang" — он перекрывает
@@ -124,7 +126,12 @@ export function errorText(e: ErrorPayload): string {
     e.code === "network" && e.message && e.message !== e.code
       ? `${short ?? localized ?? e.code}: ${e.message}`
       : (localized ?? e.message);
-  return e.hint ? `${base}. ${e.hint}` : base;
+  // LOC#2: ядро отдаёт КОД подсказки (hintCode) — текст по словарю, иначе
+  // en/uk/pl приклеивался бы русский совет из ядра.
+  const hint = e.hintCode
+    ? hintDict?.[e.hintCode]?.[current]
+    : undefined;
+  return hint ? `${base}. ${hint}` : base;
 }
 
 /**
@@ -134,14 +141,14 @@ export function errorText(e: ErrorPayload): string {
  */
 export function apiErrorText(e: unknown): string {
   if (typeof e === "string" && e) return e;
-  const payload = e as { code?: unknown; message?: unknown; hint?: unknown } | null | undefined;
+  const payload = e as { code?: unknown; message?: unknown; hintCode?: unknown } | null | undefined;
   const message =
     typeof payload?.message === "string" && payload.message ? payload.message : undefined;
   if (typeof payload?.code === "string" && payload.code) {
     return errorText({
       code: payload.code,
       message: message ?? payload.code,
-      hint: typeof payload?.hint === "string" && payload.hint ? payload.hint : undefined,
+      hintCode: typeof payload?.hintCode === "string" && payload.hintCode ? payload.hintCode : undefined,
     });
   }
   if (message) return message;

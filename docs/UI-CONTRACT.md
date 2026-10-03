@@ -4,7 +4,7 @@
 типы входа/выхода и события. Смена UI = переписать `src/ui` + `src/theme`,
 не трогая `src/api` и ядро.
 
-Все ошибки команд приходят как `{code, message, hint?}` (`LauncherError.payload`),
+Все ошибки команд приходят как `{code, message, hintCode?}` (`LauncherError.payload`; LOC#2: подсказка — КОД, текст локализует фронт из `errors.json` → `hints`),
 код маппится в `src/i18n/errors.json`, `message` — fallback.
 Полный реестр кодов (`src-tauri/src/errors.rs`): `network`, `hash_mismatch`,
 `not_found`, `invalid_input`, `zip_slip`, `java_not_found`, `version_not_found`,

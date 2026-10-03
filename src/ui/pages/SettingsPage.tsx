@@ -5,6 +5,7 @@ import { Download, RefreshCw, Check, Coffee, Trash2, Upload } from "lucide-react
 import { isHexColor, useSettings } from "../../state/settings";
 import { api } from "../../api/client";
 import { apiErrorText, t } from "../../i18n";
+import { formatSize } from "../format";
 import { pickJsonPath, pickPngPath, pickSavePath } from "../components/pickFile";
 import ThemeCards from "../components/ThemeCards";
 import type { JavaInstall, RamGuide, Settings, StorageStats } from "../../api/types";
@@ -13,13 +14,6 @@ import UpdatesSection from "../components/UpdatesSection";
 /** D20: пауза перед записью в ядро — поля не пишутся на каждый keystroke. */
 const SAVE_DEBOUNCE_MS = 400;
 
-/** Человеческий размер для статистики диска (F18): МБ с округлением, ГБ с десятыми. */
-function fmtBytes(bytes: number): string {
-  const mb = bytes / (1024 * 1024);
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} ГБ`;
-  if (mb >= 1) return `${Math.round(mb)} МБ`;
-  return `${Math.round(bytes / 1024)} КБ`;
-}
 
 /** Пресеты акцентного цвета (первый — сланцевый синий по умолчанию). */
 const ACCENT_PRESETS = ["#7FB2F0", "#6FBF8F", "#E8A25C", "#E06C6C", "#A78BE0"];
@@ -28,10 +22,6 @@ const ACCENT_PRESETS = ["#7FB2F0", "#6FBF8F", "#E8A25C", "#E06C6C", "#A78BE0"];
 function themeAccent(): string {
   const value = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
   return isHexColor(value) ? value : ACCENT_PRESETS[0];
-}
-
-function messageOf(e: unknown): string {
-  return String((e as { message?: string })?.message ?? e);
 }
 
 export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset: () => void }) {
@@ -61,7 +51,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
     (patch: Partial<Settings>) => {
       void update(patch)
         .then(() => setSaveError(null))
-        .catch((e) => setSaveError(messageOf(e)));
+        .catch((e) => setSaveError(apiErrorText(e)));
     },
     [update],
   );
@@ -156,7 +146,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
     setStorageMsg(null);
     try {
       const res = await api.storageClean();
-      setStorageMsg(t("settings.storage.cleaned", { freed: fmtBytes(res.freedBytes) }));
+      setStorageMsg(t("settings.storage.cleaned", { freed: formatSize(res.freedBytes) }));
       setStats(await api.storageStats());
     } catch (e) {
       setStorageMsg(apiErrorText(e));
@@ -601,7 +591,7 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
                     void update({ logo: id })
                       .then(() => api.applyLogo(id))
                       .then(() => setSaveError(null))
-                      .catch((e) => setSaveError(messageOf(e)));
+                      .catch((e) => setSaveError(apiErrorText(e)));
                   }}
                   className={`flex flex-col items-center gap-1.5 rounded-lg border p-2 transition-colors ${
                     selected
@@ -670,10 +660,10 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
           {stats && (
             <p className="mt-3 text-xs text-text-muted">
               {t("settings.storage.stats", {
-                instances: fmtBytes(stats.instancesBytes),
-                cache: fmtBytes(stats.cacheBytes),
-                trash: fmtBytes(stats.trashBytes),
-                logs: fmtBytes(stats.logsBytes),
+                instances: formatSize(stats.instancesBytes),
+                cache: formatSize(stats.cacheBytes),
+                trash: formatSize(stats.trashBytes),
+                logs: formatSize(stats.logsBytes),
               })}
             </p>
           )}

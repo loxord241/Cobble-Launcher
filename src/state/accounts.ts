@@ -1,5 +1,6 @@
 // Стейт аккаунтов (M8): чип профиля в титлбаре + управление профилями.
 import { create } from "zustand";
+import { currentLanguage } from "../i18n";
 import { api } from "../api/client";
 import type { Account, AccountKind } from "../api/types";
 
@@ -92,7 +93,8 @@ export function sortAccounts(
 ): Account[] {
   const rest =
     mode === "name"
-      ? [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
+      // LOC-гипотеза из аудита: локаль интерфейса, а не ОС (польские ą/ć/ł).
+      ? [...list].sort((a, b) => a.name.localeCompare(b.name, currentLanguage(), { sensitivity: "base" }))
       : [...list];
   const active = rest.find((a) => a.id === activeId);
   return active ? [active, ...rest.filter((a) => a.id !== activeId)] : rest;

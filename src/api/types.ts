@@ -156,7 +156,8 @@ export interface JavaInstall {
 export interface ErrorPayload {
   code: string;
   message: string;
-  hint?: string;
+  /** LOC#2: код подсказки — текст берётся из errors.json → "hints". */
+  hintCode?: string;
 }
 
 /** D18: группа задач (`instance:{id}` / `mrpack:{...}`) — владелец прогресса. */

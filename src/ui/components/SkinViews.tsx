@@ -18,12 +18,13 @@ const STEVE = {
   shoe: "#5f5f5f",
 };
 
-const defaultSkinCache = new Map<string, string>();
+// PERF#9 (аудит 2026-10-03): текстура дефолта одна на всех — после D54 она
+// не зависит от имени, кэш Map на каждый ник дублировал одинаковый dataURL.
+let defaultSkinUrl: string | null = null;
 
 /** Дефолтная текстура 64×64 (canvas → data URL): Стив, одинаковый для всех. */
-function defaultSkinTexture(name: string): string {
-  const memo = defaultSkinCache.get(name);
-  if (memo) return memo;
+function defaultSkinTexture(): string {
+  if (defaultSkinUrl) return defaultSkinUrl;
 
   const canvas = document.createElement("canvas");
   canvas.width = 64;
@@ -65,7 +66,7 @@ function defaultSkinTexture(name: string): string {
   px(36, 52, 4, 3, STEVE.shirt);
 
   const url = canvas.toDataURL("image/png");
-  defaultSkinCache.set(name, url);
+  defaultSkinUrl = url;
   return url;
 }
 
@@ -77,9 +78,9 @@ function shade(hex: string, delta: number): string {
   return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
 }
 
-/** Текстура для отрисовки: скин профиля или дефолт от имени. */
-function textureOf(name: string, skin?: SkinInfo | null): string {
-  return skin?.dataUrl ?? defaultSkinTexture(name);
+/** Текстура для отрисовки: скин профиля или общий дефолт. */
+function textureOf(_name: string, skin?: SkinInfo | null): string {
+  return skin?.dataUrl ?? defaultSkinTexture();
 }
 
 /**

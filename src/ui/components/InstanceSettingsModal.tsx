@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { X, Save, Sparkles } from "lucide-react";
 import { api } from "../../api/client";
-import { t, apiErrorText } from "../../i18n";
+import { t, apiErrorText, currentLanguage } from "../../i18n";
 import { useModalA11y } from "../hooks/useModalA11y";
+import { formatRamMb } from "../format";
 import { useAccounts, accountKindLabelKey } from "../../state/accounts";
 import type { Instance, JavaInstall, JavaTestInfo, RamGuide } from "../../api/types";
 
@@ -154,7 +155,7 @@ export default function InstanceSettingsModal({
   const hours = Math.floor((instance.playSeconds ?? 0) / 3600);
   const minutes = Math.round(((instance.playSeconds ?? 0) % 3600) / 60);
   const lastPlayed = instance.lastPlayed
-    ? new Date(instance.lastPlayed * 1000).toLocaleString()
+    ? new Date(instance.lastPlayed * 1000).toLocaleString(currentLanguage())
     : null;
 
   const save = async () => {
@@ -190,7 +191,7 @@ export default function InstanceSettingsModal({
       onSaved(res);
       onClose();
     } catch (e) {
-      setError(String((e as { message?: string })?.message ?? e));
+      setError(apiErrorText(e));
     } finally {
       setBusy(false);
     }
@@ -244,7 +245,7 @@ export default function InstanceSettingsModal({
                 {t("instances.settings.ram")}
               </label>
               <span className="font-mono text-sm font-semibold text-accent">
-                {ramMb} MB ({(ramMb / 1024).toFixed(1)} GB)
+                {formatRamMb(ramMb)}
               </span>
             </div>
             <input

@@ -5,11 +5,15 @@ use serde::Serialize;
 
 /// Плоский payload ошибки для UI/IPC.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ErrorPayload {
     pub code: String,
     pub message: String,
+    /// LOC#2 (аудит 2026-10-03): код подсказки вместо вшитого текста —
+    /// перевод живёт в src/i18n/errors.json (секция "hints"), иначе en/uk/pl
+    /// получали русские советы.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub hint: Option<String>,
+    pub hint_code: Option<&'static str>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -69,10 +73,6 @@ pub enum LauncherError {
 
 pub type Result<T> = std::result::Result<T, LauncherError>;
 
-/// ENV-15: подсказка для сертификатных ошибок TLS (сбитая дата/время,
-/// captive-портал): без неё они выглядят как безликая «ошибка сети».
-const CERT_HINT: &str =
-    "Не удалось проверить сервер. Если на компьютере сбита дата и время — исправьте их и повторите.";
 
 /// ENV-15: ищет «certificate» по всей цепочке source(). Display у reqwest
 /// показывает только верхний уровень, а слово про сертификат лежит глубже
@@ -119,41 +119,20 @@ impl LauncherError {
         }
     }
 
-    /// Подсказка человеку (показывается в UI рядом с сообщением).
-    pub fn hint(&self) -> Option<String> {
+    /// Код подсказки человеку (переводится на фронте, errors.json → "hints").
+    pub fn hint_code(&self) -> Option<&'static str> {
         match self {
-            LauncherError::HashMismatch { .. } => Some(
-                "Файл скачан повторно и хэш снова не совпал — проверьте соединение или зеркало."
-                    .into(),
-            ),
-            LauncherError::JavaNotFound(_) => Some(
-                "Установите Java автоматически в настройках или укажите путь вручную.".into(),
-            ),
-            // Network без хинта: UI локализует «Проверьте подключение…» сам
-            // (errors.json → errorText), раньше совет дублировался дважды.
-            LauncherError::InstanceRunning(_) => Some(
-                "Остановите игру этого инстанса — Windows не даёт менять занятые файлы.".into(),
-            ),
-            LauncherError::OfflineMode(_) => Some(
-                "Выключите тумблер «Работать офлайн» в титлбаре, чтобы качать из сети.".into(),
-            ),
-            // ENV-15: исключение из «сеть без хинта» — сертификатная ошибка
-            // (сбитое время, captive-портал) без адресного совета неразличима
-            // с обычным обрывом сети.
-            LauncherError::Http(e) => {
-                if mentions_certificate(e) {
-                    Some(CERT_HINT.into())
-                } else {
-                    None
-                }
-            }
-            LauncherError::Network(msg) => {
-                if msg.to_lowercase().contains("certificate") {
-                    Some(CERT_HINT.into())
-                } else {
-                    None
-                }
-            }
+            LauncherError::HashMismatch { .. } => Some("hash_retry"),
+            LauncherError::JavaNotFound(_) => Some("java_settings"),
+            // ENV-15: сертификатная ошибка (сбитое время, captive-портал) без
+            // адресного совета неразличима с обычным обрывом сети.
+            LauncherError::Http(err) => mentions_certificate(err).then_some("cert_time"),
+            LauncherError::Network(msg) => msg
+                .to_lowercase()
+                .contains("certificate")
+                .then_some("cert_time"),
+            LauncherError::InstanceRunning(_) => Some("instance_running"),
+            LauncherError::OfflineMode(_) => Some("offline_toggle"),
             _ => None,
         }
     }
@@ -169,7 +148,7 @@ impl LauncherError {
         ErrorPayload {
             code: self.code().into(),
             message,
-            hint: self.hint(),
+            hint_code: self.hint_code(),
         }
     }
 
@@ -209,7 +188,7 @@ mod tests {
         let p = serde_json::to_value(e.payload()).unwrap();
         assert_eq!(p["code"], "hash_mismatch");
         assert!(p["message"].as_str().unwrap().contains("x.jar"));
-        assert!(p["hint"].is_string());
+        assert_eq!(p["hintCode"], "hash_retry");
     }
 
     /// Network: в payload голая причина без префикса «сеть: » (его добавляет
@@ -266,17 +245,17 @@ mod tests {
         assert!(!mentions_certificate(&TopLevel(Box::new(PlainSource))));
     }
 
-    /// ENV-15: Network с сертификатной причиной получает хинт про дату/время,
-    /// остальные сетевые тексты — как раньше, без хинта (его даёт i18n).
+    /// ENV-15/LOC#2: Network с сертификатной причиной несёт код cert_time
+    /// (текст локализует фронт), остальные сетевые тексты — без хинта.
     #[test]
     fn network_certificate_error_gets_time_hint() {
         let e = LauncherError::network("tls handshake: certificate verify failed");
         let p = serde_json::to_value(e.payload()).unwrap();
         assert_eq!(p["code"], "network");
-        assert!(p["hint"].as_str().unwrap().contains("дата и время"));
+        assert_eq!(p["hintCode"], "cert_time");
 
         let plain = LauncherError::network("connection refused");
-        assert!(plain.payload().hint.is_none());
+        assert!(plain.payload().hint_code.is_none());
     }
 
     /// Хвост ENV-15: network_err вытягивает слово «certificate» из source-
@@ -285,9 +264,9 @@ mod tests {
     fn network_err_preserves_certificate_from_chain() {
         let e = LauncherError::network_err("ely.by refresh", &TopLevel(Box::new(CertSource)));
         assert!(e.to_string().contains("certificate"));
-        assert!(e.payload().hint.as_deref().unwrap().contains("дата и время"));
+        assert_eq!(e.payload().hint_code, Some("cert_time"));
 
         let plain = LauncherError::network_err("x", &PlainSource);
-        assert!(plain.payload().hint.is_none());
+        assert!(plain.payload().hint_code.is_none());
     }
 }

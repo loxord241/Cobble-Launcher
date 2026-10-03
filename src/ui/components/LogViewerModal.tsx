@@ -27,8 +27,7 @@ type LevelFilter = "all" | "errors" | "warns";
 
 const FILTERS: LevelFilter[] = ["all", "errors", "warns"];
 
-// Человеческий размер для списка истории (как fmtBytes в SettingsPage).
-function fmtBytes(bytes: number): string {
+function formatSize(bytes: number): string {
   const mb = bytes / (1024 * 1024);
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} ГБ`;
   if (mb >= 1) return `${Math.round(mb)} МБ`;
@@ -42,7 +41,8 @@ export default function LogViewerModal({
   instance: Instance;
   onClose: () => void;
 }) {
-  const { logs } = useInstances();
+  // PERF#8: селектор по конкретному инстансу — чужие dl_progress не перерисовывают окно.
+  const instanceLogs = useInstances((s) => s.logs[instance.id]);
   const [copied, setCopied] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -53,7 +53,7 @@ export default function LogViewerModal({
 
   // A31: живой поток — только логи этой сессии инстанса. Системный
   // launcher.log лаунчера под игровой лог не подмешиваем — пусто значит пусто.
-  const displayLogs = logs[instance.id] ?? [];
+  const displayLogs = instanceLogs ?? [];
 
   // Просматриваемый файл: null — живой лог сессии; иначе — текст архивного.
   const [archived, setArchived] = useState<{ name: string; text: string } | null>(null);
@@ -273,7 +273,7 @@ export default function LogViewerModal({
                   >
                     <span className="truncate font-mono">{f.name}</span>
                     <span className="shrink-0 text-text-muted">
-                      {fmtBytes(f.bytes)} ·{" "}
+                      {formatSize(f.bytes)} ·{" "}
                       {new Date(f.modified * 1000).toLocaleDateString(currentLanguage())}
                     </span>
                   </button>

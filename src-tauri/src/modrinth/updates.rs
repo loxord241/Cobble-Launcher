@@ -193,7 +193,7 @@ pub async fn update_all(
     inst: &Instance,
 ) -> Result<usize> {
     let checks = check_updates(paths, &client, inst).await?;
-    let manifest = crate::instances::load_content_manifest(paths, &inst.id);
+    let mut manifest = crate::instances::load_content_manifest(paths, &inst.id);
     let game_dir =
         crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
     let trash = game_dir.join(".trash");
@@ -223,6 +223,25 @@ pub async fn update_all(
             })
     };
 
+    // PERF#2 (аудит 2026-10-03): двухфазная схема. Фаза 1 — план: резолв
+    // версий + задачи скачивания; движок получает ВСЕ задачи сразу и качает
+    // с полным параллелизмом (раньше run() звался на каждый файл — движок
+    // вырождался в последовательную скачку). Фаза 2 — свопы старых файлов и
+    // ОДНА запись манифеста (раньше — N×atomic_write с fsync).
+    struct PlannedUpdate {
+        task: DownloadTask,
+        temp: std::path::PathBuf,
+        dest: std::path::PathBuf,
+        old_path: std::path::PathBuf,
+        filename: String,
+        check_file: String,
+        version_id: String,
+        new_file_field: String,
+        new_sha1: Option<String>,
+    }
+
+    let mut plan: Vec<PlannedUpdate> = Vec::new();
+
     for check in &checks {
         let from_batch = manifest
             .iter()
@@ -250,53 +269,69 @@ pub async fn update_all(
         };
 
         // Новый файл качаем во ВРЕМЕННОЕ имя: старый мод уезжает в корзину
-        // ТОЛЬКО после успешной скачки — иначе сбой сети/отмена оставляли бы
-        // инстанс сломанным (старый уже в .trash/, нового нет).
+        // ТОЛЬКО после успешной скачки всей пачки — сбой сети/отмена оставляли
+        // бы инстанс сломанным.
         let dir = crate::modrinth::install::dir_for_kind(old_entry.kind);
         let dest = game_dir.join(dir).join(&file.filename);
         let temp = dest.with_file_name(format!(".update-{}", file.filename));
-        engine.add_tasks(vec![DownloadTask {
-            id: format!("update:{}", file.filename),
-            url: file.url.clone(),
-            dest: temp.clone(),
-            sha1: file.hashes.get("sha1").cloned(),
-            sha512: file.hashes.get("sha512").cloned(),
-            size: Some(file.size),
-            group: format!("instance:{}", inst.id),
-            priority: 25,
-        }]);
-        if let Err(e) = engine.run().await {
-            crate::util::fs::remove_file_ignore(&temp);
-            return Err(e);
-        }
-        let st = engine.queue_state();
-        if st.failed > 0 {
-            crate::util::fs::remove_file_ignore(&temp);
-            return Err(LauncherError::network(format!(
-                "обновление {} не скачалось",
-                file.filename
-            )));
-        }
+        plan.push(PlannedUpdate {
+            task: DownloadTask {
+                id: format!("update:{}", file.filename),
+                url: file.url.clone(),
+                dest: temp.clone(),
+                sha1: file.hashes.get("sha1").cloned(),
+                sha512: file.hashes.get("sha512").cloned(),
+                size: Some(file.size),
+                group: format!("instance:{}", inst.id),
+                priority: 25,
+            },
+            temp,
+            dest,
+            old_path: game_dir.join(&old_entry.file),
+            filename: file.filename.clone(),
+            check_file: check.file.clone(),
+            version_id: latest.id.clone(),
+            new_file_field: format!("{dir}/{}", file.filename),
+            new_sha1: file.hashes.get("sha1").cloned(),
+        });
+    }
 
-        // Скачалось: старый файл → корзина инстанса, temp → на его место.
-        // Логика вынесена в swap_updated_file — ради прямого регресс-теста
-        // ENV-1 (прежде тест упирался в процесс-глобальный шов TEST_API_BASE).
-        let old_path = game_dir.join(&old_entry.file);
-        swap_updated_file(&old_path, &temp, &dest, &trash, &file.filename)?;
+    if plan.is_empty() {
+        return Ok(0);
+    }
 
-        // Манифест: заменить запись.
-        let mut manifest = crate::instances::load_content_manifest(paths, &inst.id);
-        if let Some(e) = manifest
-            .iter_mut()
-            .find(|e| e.file == check.file)
-        {
-            e.file = format!("{dir}/{}", file.filename);
-            e.version_id = Some(latest.id.clone());
-            e.sha1 = file.hashes.get("sha1").cloned();
+    engine.add_tasks(plan.iter().map(|p| p.task.clone()).collect());
+    if let Err(e) = engine.run().await {
+        for p in &plan {
+            crate::util::fs::remove_file_ignore(&p.temp);
         }
-        crate::instances::save_content_manifest(paths, &inst.id, &manifest)?;
+        return Err(e);
+    }
+    let st = engine.queue_state();
+    if st.failed > 0 {
+        for p in &plan {
+            crate::util::fs::remove_file_ignore(&p.temp);
+        }
+        return Err(LauncherError::network(format!(
+            "обновление не скачалось: {}/{} файлов",
+            st.failed,
+            plan.len()
+        )));
+    }
+
+    // Всё скачалось: свопы (старый → корзина, temp → место) и одна запись
+    // манифеста. Сбой свопа (антивирус держит файл) — честная ошибка,
+    // манифест ещё не тронут.
+    for p in &plan {
+        swap_updated_file(&p.old_path, &p.temp, &p.dest, &trash, &p.filename)?;
+        if let Some(e) = manifest.iter_mut().find(|e| e.file == p.check_file) {
+            e.file = p.new_file_field.clone();
+            e.version_id = Some(p.version_id.clone());
+            e.sha1 = p.new_sha1.clone();
+        }
         updated += 1;
     }
+    crate::instances::save_content_manifest(paths, &inst.id, &manifest)?;
     Ok(updated)
 }
 

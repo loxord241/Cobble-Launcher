@@ -7,17 +7,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { FileText, Save } from "lucide-react";
 import { api } from "../../../api/client";
+import { formatSize } from "../../format";
 import { apiErrorText, t } from "../../../i18n";
 import { askConfirm } from "../../confirm";
 import type { ConfigFile } from "../../../api/types";
 
 /** Порог редактора: тот же cap, что на ядре (instances::configs). */
 const MAX_EDIT_BYTES = 1024 * 1024;
-
-/** Размер файла в строке списка: КБ с округлением. */
-function fmtSize(bytes: number): string {
-  return `${Math.round(bytes / 1024)} КБ`;
-}
 
 export default function ConfigsTab({
   instanceId,
@@ -128,7 +124,7 @@ export default function ConfigsTab({
                     {f.rel}
                   </span>
                 </span>
-                <span className="font-mono text-[12px] text-text-muted">{fmtSize(f.bytes)}</span>
+                <span className="font-mono text-[12px] text-text-muted">{formatSize(f.bytes)}</span>
               </button>
             </li>
           ))}

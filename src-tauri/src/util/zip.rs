@@ -2,7 +2,7 @@
 //! Чужие zip (импорты, модпаки) — недоверенный вход.
 
 use crate::errors::{LauncherError, Result};
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek};
 use std::path::{Component, Path, PathBuf};
 
 /// Лимиты на архив по умолчанию: защита от zip-bomb.
@@ -106,7 +106,7 @@ pub fn extract_zip_filtered<R: Read + Seek>(
         }
         let mut out = std::fs::File::create(&target)?;
         std::io::copy(&mut file, &mut out)?;
-        out.sync_all()?;
+        drop(out);
         on_file(&target);
         extracted.push(dest.join(rel));
     }
@@ -225,8 +225,10 @@ pub fn write_zip_dir(
                 let name = format!("{prefix}{rel}");
                 zip.start_file(name, *opts)
                     .map_err(|err| LauncherError::Zip(format!("start_file {rel}: {err}")))?;
-                let data = std::fs::read(crate::util::fs::long_path(&path))?;
-                zip.write_all(&data)?;
+                // PERF#4: поток (io::copy, буфер 64 КБ) вместо чтения файла
+                // целиком в RAM — моды бывают по 80 МБ.
+                let mut f = std::fs::File::open(crate::util::fs::long_path(&path))?;
+                std::io::copy(&mut f, zip)?;
                 *count += 1;
             }
         }
@@ -239,6 +241,7 @@ pub fn write_zip_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
 
     fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf = std::io::Cursor::new(Vec::new());

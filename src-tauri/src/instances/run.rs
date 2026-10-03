@@ -85,7 +85,8 @@ pub async fn prepare(
     // 1. Версия: манифест → JSON → inheritsFrom (загрузчики: корень —
     //    version JSON загрузчика в versions/ инстанса, спека §6.3).
     let instance_versions = crate::instances::instance_versions_dir(paths, &inst.id);
-    let manifest = fetch_manifest(&client, &paths.manifests_cache()).await?;
+    // PERF#7 (аудит 2026-10-03): манифест нужен только когда нет своего
+    // version JSON (загрузчики) — раньше сеть ходили при каждом запуске.
     let root_json = if let Some(vid) = &inst.version_id {
         let path = instance_versions.join(format!("{vid}.json"));
         if !path.exists() {
@@ -95,6 +96,7 @@ pub async fn prepare(
         }
         VersionJson::load(&path)?
     } else {
+        let manifest = fetch_manifest(&client, &paths.manifests_cache()).await?;
         let entry = resolve_entry(&manifest, &inst.mc_version)?;
         fetch_version_json_cached(&client, entry, &paths.manifests_cache()).await?
     };
@@ -478,7 +480,17 @@ pub async fn resolve_java(
             "java_path не существует: {p}"
         )));
     }
-    // 2. Системная / рантаймы лаунчера
+    // 2. Быстрый путь (PERF#5): свой рантайм jdk{major} — один probe вместо
+    // полного сканирования, которое спавнит java -version на каждую Java.
+    let runtime_exe = java_exe_of(paths.runtime_dir().join(format!("jdk{need_major}")));
+    if runtime_exe.exists() {
+        if let Ok(inst) = crate::java::detect::inspect(&runtime_exe, "launcher runtime").await {
+            if inst.major >= need_major {
+                return Ok(inst);
+            }
+        }
+    }
+    // 3. Системная / рантаймы лаунчера
     let installs = scan_all(&paths.runtime_dir(), &settings.extra_java_paths).await;
     if let Some(found) = pick_java(need_major, &installs) {
         return Ok(found.clone());

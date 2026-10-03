@@ -7,13 +7,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Folder, Image, Trash2 } from "lucide-react";
 import { api } from "../../../api/client";
+import { formatSize } from "../../format";
 import { apiErrorText, t } from "../../../i18n";
 import type { ShotInfo } from "../../../api/types";
-
-/** Размер скриншота: КБ с округлением (как fmtBytes в настройках). */
-function fmtSize(bytes: number): string {
-  return `${Math.max(1, Math.round(bytes / 1024))} КБ`;
-}
 
 export default function ScreensTab({
   instanceId,
@@ -99,7 +95,7 @@ export default function ScreensTab({
                     <div className="truncate text-[12px] font-medium leading-tight" title={s.name}>
                       {s.name}
                     </div>
-                    <div className="font-mono text-[11px] text-text-muted">{fmtSize(s.bytes)}</div>
+                    <div className="font-mono text-[11px] text-text-muted">{formatSize(s.bytes)}</div>
                   </div>
                   <button
                     aria-label={t("screens.delete", { name: s.name })}

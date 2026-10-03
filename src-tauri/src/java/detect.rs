@@ -111,6 +111,20 @@ pub fn parse_java_version(text: &str) -> Option<u32> {
 }
 
 /// Разбор `sun.arch.data.model` из `-XshowSettings:properties`.
+/// D56 (PERF#5): битность прямо из вывода `java -version` — HotSpot печатает
+/// «64-Bit Server VM» / «32-Bit Server VM». Позволяет не спавнить второй
+/// процесс с -XshowSettings ради sun.arch.data.model.
+pub fn parse_arch_bits_from_version(text: &str) -> Option<u32> {
+    let lower = text.to_lowercase();
+    if lower.contains("64-bit") {
+        Some(64)
+    } else if lower.contains("32-bit") {
+        Some(32)
+    } else {
+        None
+    }
+}
+
 pub fn parse_arch_bits(text: &str) -> u32 {
     for line in text.lines() {
         let line = line.trim();
@@ -262,18 +276,24 @@ pub async fn inspect(java_exe: &Path, origin: &str) -> Result<JavaInstall> {
         ))
     })?;
 
-    let mut scmd = Command::new(&exe);
-    scmd.args(["-XshowSettings:properties", "-version"]);
-    hide_console(&mut scmd);
-    let sout = tokio::task::spawn_blocking(move || scmd.output())
-        .await
-        .map_err(|e| LauncherError::Internal(format!("join showSettings: {e}")))??;
-    let stext = format!(
-        "{}{}",
-        String::from_utf8_lossy(&sout.stdout),
-        String::from_utf8_lossy(&sout.stderr)
-    );
-    let arch_bits = parse_arch_bits(&stext);
+    // D56 (PERF#5): битность уже в выводе -version — второй процесс не нужен.
+    let arch_bits = match parse_arch_bits_from_version(&text) {
+        Some(bits) => bits,
+        None => {
+            let mut scmd = Command::new(&exe);
+            scmd.args(["-XshowSettings:properties", "-version"]);
+            hide_console(&mut scmd);
+            let sout = tokio::task::spawn_blocking(move || scmd.output())
+                .await
+                .map_err(|e| LauncherError::Internal(format!("join showSettings: {e}")))??;
+            let stext = format!(
+                "{}{}",
+                String::from_utf8_lossy(&sout.stdout),
+                String::from_utf8_lossy(&sout.stderr)
+            );
+            parse_arch_bits(&stext)
+        }
+    };
 
     Ok(JavaInstall {
         java_exe: java_exe.to_path_buf(),

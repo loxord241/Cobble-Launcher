@@ -87,8 +87,23 @@ fn throttle_delay(bytes_this_second: u64, limit_kbps: u32, chunk: usize) -> Dura
     Duration::from_secs_f64(excess as f64 / limit as f64)
 }
 
+/// PERF#6: ключ дедупликации (dest + хэши) — эквивалент прежнего any().
+fn file_key(t: &DownloadTask) -> String {
+    format!("{:?}|{:?}|{:?}", t.dest, t.sha1, t.sha512)
+}
+
+/// Результат потоковой записи: дайджесты, посчитанные на лету.
+struct StreamedFile {
+    sha1: String,
+    sha512: String,
+}
+
 struct Runtime {
     tasks: Mutex<Vec<TaskEntry>>,
+    /// PERF#6: уникальные группы — задачи из вектора не удаляются, поэтому
+    /// множество растёт только в add_tasks; тикеру не нужно клонировать
+    /// тысячи строк под локом каждые 100 мс.
+    groups: Mutex<std::collections::HashSet<String>>,
     global_cancel: AtomicBool,
     group_cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
     paused: AtomicBool,
@@ -116,6 +131,7 @@ impl DownloadEngine {
             bus,
             rt: Runtime {
                 tasks: Mutex::new(Vec::new()),
+                groups: Mutex::new(std::collections::HashSet::new()),
                 global_cancel: AtomicBool::new(false),
                 group_cancels: Mutex::new(HashMap::new()),
                 paused: AtomicBool::new(false),
@@ -131,18 +147,22 @@ impl DownloadEngine {
     /// (спека §4.4: одинаковые URL не качаются дважды).
     pub fn add_tasks(&self, tasks: Vec<DownloadTask>) -> usize {
         let mut guard = self.rt.tasks.lock().unwrap();
+        // PERF#6: дедуп за O(1) на задачу — раньше any() по всему вектору
+        // давал O(N^2) на сборках с тысячами ассетов.
+        let mut seen_file: std::collections::HashSet<String> =
+            guard.iter().map(|e| file_key(&e.task)).collect();
+        let mut seen_url: std::collections::HashSet<String> =
+            guard.iter().map(|e| e.task.url.clone()).collect();
         let mut added = 0;
         for t in tasks {
-            let dup = guard.iter().any(|e| {
-                (e.task.dest == t.dest
-                    && e.task.sha1 == t.sha1
-                    && e.task.sha512 == t.sha512)
-                    || e.task.url == t.url
-            });
+            let dup = seen_file.contains(&file_key(&t)) || seen_url.contains(&t.url);
             if dup {
                 tracing::debug!("дедуп задачи: {}", t.url);
                 continue;
             }
+            seen_file.insert(file_key(&t));
+            seen_url.insert(t.url.clone());
+            self.rt.groups.lock().unwrap().insert(t.group.clone());
             guard.push(TaskEntry {
                 task: t,
                 state: TaskState::Pending,
@@ -298,16 +318,16 @@ impl DownloadEngine {
             match resp {
                 Ok(r) if r.status().is_success() => {
                     match self.stream_to_file(r, &part, cancel).await {
-                        Ok(_) => {
+                        Ok(streamed) => {
                             // Хэш-проверка обязательна для каждого байта (спека §3):
                             // sha1, при его отсутствии — sha512 (index.json
                             // модпаков); оба не заданы — без проверки.
+                            // PERF#3: дайджесты уже посчитаны на лету.
                             let mismatch: Option<(String, String)> = if let Some(sha) = &task.sha1 {
-                                let actual = sha1_file(&part)?;
-                                (actual != *sha).then_some((sha.clone(), actual))
+                                (streamed.sha1 != *sha).then_some((sha.clone(), streamed.sha1.clone()))
                             } else if let Some(sha) = &task.sha512 {
-                                let actual = sha512_file(&part)?;
-                                (actual != *sha).then_some((sha.clone(), actual))
+                                (streamed.sha512 != *sha)
+                                    .then_some((sha.clone(), streamed.sha512.clone()))
                             } else {
                                 None
                             };
@@ -371,16 +391,22 @@ impl DownloadEngine {
         unreachable!("цикл попыток всегда завершается return");
     }
 
-    /// Потоково писать ответ в файл; возвращает число записанных байтов.
+    /// Потоково писать ответ в файл. PERF#3 (аудит 2026-10-03): SHA-1 и
+    /// SHA-512 считаются на лету из тех же чанков — раньше файл читался с
+    /// диска второй раз ради проверки. Part-файл пишется без sync_all:
+    /// целостность гарантирует хэш-проверка перед финальным rename.
     async fn stream_to_file(
         &self,
         resp: reqwest::Response,
         part: &Path,
         cancel: &AtomicBool,
-    ) -> Result<u64> {
+    ) -> Result<StreamedFile> {
+        use sha1::Digest as _;
         let mut file = std::fs::File::create(part)?;
         let mut stream = resp.bytes_stream();
         let mut written: u64 = 0;
+        let mut hasher1 = sha1::Sha1::new();
+        let mut hasher512 = sha2::Sha512::new();
         // F17: накопитель семпла — лимит общий на движок, поэтому перед записью
         // ждём разрешения в общем окне (см. throttle_wait).
         let mut sample: usize = 0;
@@ -394,6 +420,8 @@ impl DownloadEngine {
                 self.throttle_wait(sample).await;
                 sample = 0;
             }
+            hasher1.update(&chunk);
+            hasher512.update(&chunk);
             file.write_all(&chunk)?;
             written += chunk.len() as u64;
         }
@@ -401,9 +429,11 @@ impl DownloadEngine {
         if sample > 0 {
             self.throttle_wait(sample).await;
         }
-        file.sync_all()?;
         self.rt.received_bytes.fetch_add(written, Ordering::Relaxed);
-        Ok(written)
+        Ok(StreamedFile {
+            sha1: hex::encode(hasher1.finalize()),
+            sha512: hex::encode(hasher512.finalize()),
+        })
     }
 
     /// F17: дождаться бюджета семпла в общем окне. Лимит берём с клиента
@@ -463,11 +493,11 @@ impl DownloadEngine {
             // Движок в приложении создаётся по группе (engine_for), так что
             // группа здесь одна; для гипотетической смеси шлём по событию на
             // каждую группу с агрегатами движка.
+            // PERF#6: из множества, без клона строк всех задач под локом.
             let groups: Vec<String> = {
-                let guard = self.rt.tasks.lock().unwrap();
-                let mut g: Vec<String> = guard.iter().map(|e| e.task.group.clone()).collect();
+                let groups = self.rt.groups.lock().unwrap();
+                let mut g: Vec<String> = groups.iter().cloned().collect();
                 g.sort();
-                g.dedup();
                 g
             };
             let (pending, downloading, done, failed, cancelled, total_bytes) = {

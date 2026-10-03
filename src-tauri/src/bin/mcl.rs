@@ -179,7 +179,19 @@ fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("ОШИБКА [{}]: {e}", e.code());
-            if let Some(hint) = e.hint() {
+            // LOC#2: код подсказки → короткий текст (CLI — служебная
+            // утилита владельца, язык один).
+            let hint_text: Option<&str> = match e.hint_code() {
+                Some("hash_retry") => Some("проверьте соединение или зеркало"),
+                Some("java_settings") => {
+                    Some("установите Java в настройках лаунчера или укажите путь вручную")
+                }
+                Some("instance_running") => Some("остановите игру этого инстанса и повторите"),
+                Some("offline_toggle") => Some("выключите «Работать офлайн», чтобы качать из сети"),
+                Some("cert_time") => Some("проверьте дату/время на компьютере"),
+                _ => None,
+            };
+            if let Some(hint) = hint_text {
                 eprintln!("Подсказка: {hint}");
             }
             std::process::ExitCode::FAILURE

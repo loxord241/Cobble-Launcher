@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { X, Check } from "lucide-react";
 import { useInstances } from "../../state/instances";
-import { t } from "../../i18n";
+import { t, apiErrorText } from "../../i18n";
 import { useModalA11y } from "../hooks/useModalA11y";
 import type { Instance } from "../../api/types";
 
@@ -34,7 +34,7 @@ export default function RenameInstanceModal({
       await rename(instance.id, trimmed);
       onClose();
     } catch (e) {
-      setError(String((e as { message?: string })?.message ?? e));
+      setError(apiErrorText(e));
     } finally {
       setBusy(false);
     }

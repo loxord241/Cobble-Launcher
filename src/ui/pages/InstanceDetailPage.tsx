@@ -37,6 +37,7 @@ import { useInstances } from "../../state/instances";
 import { useSettings } from "../../state/settings";
 import { pickImagePath } from "../components/pickFile";
 import { defaultArtwork } from "../defaultArt";
+import { formatSize } from "../format";
 import AddContentModal from "../components/AddContentModal";
 import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
@@ -102,7 +103,8 @@ export default function InstanceDetailPage({
       useShallow((s) => ({
         list: s.list,
         loaded: s.loaded,
-        status: s.status,
+        // PERF#8: статус только этого инстанса — чужие загрузки не перерисовывают страницу.
+        status: s.status[instanceId],
         launch: s.launch,
         stop: s.stop,
         remove: s.remove,
@@ -244,7 +246,7 @@ export default function InstanceDetailPage({
 
   const activeAccount =
     accounts.find((a) => a.id === settings?.accountsActiveId) ?? accounts[0] ?? null;
-  const st = status[instanceId];
+  const st = status;
   const phase = st?.phase;
   const busy = phase !== undefined && phase !== "exited";
   // Статус запуска — как в строке инстанса (aria-live для скринридеров).
@@ -1185,7 +1187,7 @@ function LogsPanel({
                     >
                       <span className="truncate font-mono">{f.name}</span>
                       <span className="ml-auto text-text-muted">
-                        {Math.max(1, Math.round(f.bytes / 1024))} КБ
+                        {formatSize(f.bytes)}
                       </span>
                     </button>
                   </li>
@@ -1252,7 +1254,7 @@ function ResMonitor({ instanceId }: { instanceId: string }) {
       {t("instances.monitor.cpu", { cpu: Math.round(sample.cpuPercent) })}
       {" · "}
       {t("instances.monitor.ram", {
-        ram: `${Math.max(1, Math.round(sample.ramBytes / 1024 / 1024))} МБ`,
+        ram: formatSize(sample.ramBytes),
       })}
     </span>
   );
