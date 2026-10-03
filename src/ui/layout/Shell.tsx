@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getVersion } from "@tauri-apps/api/app";
-import type { UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useShallow } from "zustand/react/shallow";
 import {
   House,
@@ -191,6 +191,45 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
 
   const active =
     accounts.find((a) => a.id === settings?.accountsActiveId) ?? accounts[0] ?? null;
+
+  // D48: ярлык рабочего стола — single-instance пересылает `--id` вторым
+  // процессом: либо событием shortcut_launch, либо через shortcut_take_pending
+  // (окно открылось позже колбэка). Запуск — тем же потоком, что и кнопка:
+  // статусы и прогресс придут через launch_state как обычно.
+  const launchFromShortcut = useCallback(
+    async (id: string) => {
+      try {
+        await launch(id, active?.name ?? "Player");
+      } catch {
+        // launch сам кладёт ошибку в стор статусов — тут глушить нечего.
+      }
+    },
+    [launch, active?.name],
+  );
+
+  useEffect(() => {
+    let un: UnlistenFn | null = null;
+    let disposed = false;
+    void api
+      .shortcutTakePending()
+      .then((id) => {
+        if (id) void launchFromShortcut(id);
+      })
+      .catch(() => undefined);
+    void listen<string>("shortcut_launch", (e) => {
+      void launchFromShortcut(String(e.payload));
+    })
+      .then((u) => {
+        if (disposed) u();
+        else un = u;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      un?.();
+    };
+  }, [launchFromShortcut]);
+
 
   // Скины профилей (D34): голова персонажа в чипе титлбара и в меню профилей.
   const skinsById = useSkins((s) => s.byId);

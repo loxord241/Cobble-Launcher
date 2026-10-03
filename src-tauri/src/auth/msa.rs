@@ -297,9 +297,11 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
 
 /// URL браузерного входа: auth-code + localhost redirect (device-code не даёт
 /// согласия XboxLive для саморегистрированных приложений — спека §6.8).
-pub fn authorize_url(client_id: &str, port: u16) -> String {
+/// `state` (uuid v4) — CSRF-защита: листнер принимает только redirect,
+/// вернувший тот же state.
+pub fn authorize_url(client_id: &str, port: u16, state: &str) -> String {
     format!(
-        "{AUTH_BASE}/authorize?client_id={client_id}&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A{port}&scope=XboxLive.signin%20offline_access"
+        "{AUTH_BASE}/authorize?client_id={client_id}&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A{port}&scope=XboxLive.signin%20offline_access&state={state}"
     )
 }
 
@@ -310,13 +312,23 @@ Connection: close
 
 <html><body style='font-family:sans-serif'><h2>OK</h2><p>close this tab</p></body></html>";
 
-/// Извлечь `?code=` из первой строки запроса redirect'а (percent-decode).
-fn extract_code(req: &str) -> Option<String> {
+/// Ответ браузеру при redirect'е с неверным/отсутствующим state (CSRF):
+/// код из такого запроса не принимается, ожидание продолжается.
+const OAUTH_STATE_REJECTED_PAGE: &str = "HTTP/1.1 400 Bad Request
+Content-Type: text/html; charset=utf-8
+Connection: close
+
+<html><body style='font-family:sans-serif'><h2>Invalid OAuth state</h2><p>close this tab</p></body></html>";
+
+/// Извлечь параметр `?key=` из первой строки запроса redirect'а
+/// (percent-decode; пустое значение — то же, что отсутствие).
+fn extract_query_param(req: &str, key: &str) -> Option<String> {
     let line = req.lines().next().unwrap_or("");
+    let needle = format!("{key}=");
     let raw = line
         .split_whitespace()
         .nth(1)
-        .and_then(|path| path.split("code=").nth(1))
+        .and_then(|path| path.split(needle.as_str()).nth(1))
         .map(|rest| rest.split('&').next().unwrap_or(rest))?;
     let decoded = pct_decode(raw);
     if decoded.is_empty() {
@@ -330,7 +342,12 @@ fn extract_code(req: &str) -> Option<String> {
 /// Асинхронный вариант для GUI (A5/D15): listener живёт прямо в future, поэтому
 /// таймаут/отмена вызывающей стороны закрывают сокет вместе с ней — раньше
 /// блокирующий `accept` в `spawn_blocking` переживал таймаут и держал порт.
-pub async fn wait_auth_code_async(listener: tokio::net::TcpListener) -> Result<String> {
+/// CSRF: запрос с отсутствующим или не совпадающим с `expected_state` state
+/// получает HTTP 400, и ожидание продолжается (код из него отбрасывается).
+pub async fn wait_auth_code_async(
+    listener: tokio::net::TcpListener,
+    expected_state: &str,
+) -> Result<String> {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     loop {
         let (mut stream, _) = listener
@@ -344,10 +361,17 @@ pub async fn wait_auth_code_async(listener: tokio::net::TcpListener) -> Result<S
             Err(e) => return Err(LauncherError::network(format!("read: {e}"))),
         };
         let req = String::from_utf8_lossy(&buf[..n]).to_string();
-        let code = extract_code(&req);
-        let _ = stream.write_all(OAUTH_DONE_PAGE.as_bytes()).await;
+        let code = extract_query_param(&req, "code");
+        let state_ok =
+            extract_query_param(&req, "state").as_deref() == Some(expected_state);
+        let page = if state_ok {
+            OAUTH_DONE_PAGE
+        } else {
+            OAUTH_STATE_REJECTED_PAGE
+        };
+        let _ = stream.write_all(page.as_bytes()).await;
         let _ = stream.shutdown().await;
-        if let Some(code) = code {
+        if let (Some(code), true) = (code, state_ok) {
             return Ok(code);
         }
     }
@@ -356,8 +380,11 @@ pub async fn wait_auth_code_async(listener: tokio::net::TcpListener) -> Result<S
 /// Принять redirect браузера на локальном порту и извлечь ?code=.
 /// Блокирующий вариант для CLI (`mcl auth-msa-web`): там процесс живёт до
 /// ответа браузера, закрывать сокет по таймауту не требуется.
+/// Проверка state — как в `wait_auth_code_async`.
 pub async fn wait_auth_code(
     listener: std::net::TcpListener,
+    // String, а не &str: уезжает в spawn_blocking (нужен 'static).
+    expected_state: String,
 ) -> Result<String> {
     tokio::task::spawn_blocking(move || {
         for stream in listener.incoming() {
@@ -372,10 +399,17 @@ pub async fn wait_auth_code(
                 Err(e) => return Err(LauncherError::network(format!("read: {e}"))),
             };
             let req = String::from_utf8_lossy(&buf[..n]).to_string();
-            let code = extract_code(&req);
-            let _ = std::io::Write::write_all(&mut stream, OAUTH_DONE_PAGE.as_bytes());
+            let code = extract_query_param(&req, "code");
+            let state_ok =
+                extract_query_param(&req, "state").as_deref() == Some(expected_state.as_str());
+            let page = if state_ok {
+                OAUTH_DONE_PAGE
+            } else {
+                OAUTH_STATE_REJECTED_PAGE
+            };
+            let _ = std::io::Write::write_all(&mut stream, page.as_bytes());
             let _ = stream.shutdown(std::net::Shutdown::Both);
-            if let Some(code) = code {
+            if let (Some(code), true) = (code, state_ok) {
                 return Ok(code);
             }
         }
@@ -449,21 +483,63 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// A5: listener принимает реальный redirect браузера и разбирает `?code=`.
+    /// A5: listener принимает реальный redirect браузера и разбирает `?code=`
+    /// при совпадении state.
     #[tokio::test]
     async fn wait_auth_code_async_parses_redirect() {
         use tokio::io::AsyncWriteExt as _;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let task = tokio::spawn(wait_auth_code_async(listener));
+        let task = tokio::spawn(wait_auth_code_async(listener, "teststate"));
         let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .unwrap();
         client
-            .write_all(b"GET /?code=abc%20123&state=x HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .write_all(b"GET /?code=abc%20123&state=teststate HTTP/1.1\r\nHost: localhost\r\n\r\n")
             .await
             .unwrap();
         assert_eq!(task.await.unwrap().unwrap(), "abc 123", "percent-decode сохранён");
+    }
+
+    /// CSRF: redirect с неверным state получает HTTP 400 («Invalid OAuth
+    /// state») и НЕ завершает ожидание; код принимается только от запроса
+    /// с ожидаемым state.
+    #[tokio::test]
+    async fn oauth_state_mismatch_is_rejected() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(wait_auth_code_async(listener, "teststate"));
+
+        // 1. Чужой код с неверным state: сервер отвечает 400 и продолжает ждать.
+        let mut evil = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        evil.write_all(b"GET /?code=evil&state=wrong HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp = Vec::new();
+        evil.read_to_end(&mut resp).await.unwrap();
+        let resp = String::from_utf8_lossy(&resp);
+        assert!(resp.contains("400"), "первый ответ должен быть 400: {resp}");
+        assert!(
+            resp.contains("Invalid OAuth state"),
+            "первый ответ без текста про state: {resp}"
+        );
+        drop(evil);
+
+        // 2. Легитимный redirect с ожидаемым state завершает ожидание.
+        let mut good = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        good.write_all(b"GET /?code=good&state=teststate HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            task.await.unwrap().unwrap(),
+            "good",
+            "код с верным state принят"
+        );
     }
 
     /// A5/D15: по таймауту future отменяется и сокет закрывается — порт
@@ -475,7 +551,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let res = tokio::time::timeout(
             Duration::from_millis(100),
-            wait_auth_code_async(listener),
+            wait_auth_code_async(listener, "any"),
         )
         .await;
         assert!(res.is_err(), "таймаут ожидания входа наступил");
@@ -483,14 +559,20 @@ mod tests {
             .expect("порт освобождён вместе с listener'ом");
     }
 
-    /// Разбор строки запроса: мусор без `code=` — не код, а не пустая строка.
+    /// Разбор строки запроса: мусор без `code=` — не код, а не пустая строка;
+    /// state извлекается тем же способом (пустое = отсутствие).
     #[test]
     fn extract_code_ignores_requests_without_code() {
-        assert_eq!(extract_code("GET /favicon.ico HTTP/1.1"), None);
-        assert_eq!(extract_code("GET /?code=&state=x HTTP/1.1"), None);
+        assert_eq!(extract_query_param("GET /favicon.ico HTTP/1.1", "code"), None);
+        assert_eq!(extract_query_param("GET /?code=&state=x HTTP/1.1", "code"), None);
         assert_eq!(
-            extract_code("GET /?code=xyz&state=x HTTP/1.1"),
+            extract_query_param("GET /?code=xyz&state=x HTTP/1.1", "code"),
             Some("xyz".into())
+        );
+        assert_eq!(extract_query_param("GET /?state=&code=x HTTP/1.1", "state"), None);
+        assert_eq!(
+            extract_query_param("GET /?code=x&state=abc HTTP/1.1", "state"),
+            Some("abc".into())
         );
     }
 

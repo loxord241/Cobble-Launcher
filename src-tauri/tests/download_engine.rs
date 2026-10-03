@@ -20,6 +20,7 @@ fn task(id: &str, url: String, dest: std::path::PathBuf, sha1: Option<String>) -
         url,
         dest,
         sha1,
+        sha512: None,
         size: None,
         group: "test".into(),
         priority: 1,
@@ -285,4 +286,33 @@ async fn dedup_same_url_and_dest() {
     let t2 = task("b", "http://127.0.0.1:1/x".into(), dir.path().join("x"), None);
     let added = engine.add_tasks(vec![t, t2]);
     assert_eq!(added, 1, "одинаковые URL/dest не качаются дважды");
+}
+
+/// SHA512: если sha1 не задан, движок обязан сверять sha512 (в index.json
+/// модпаков бывает только он). Неверный sha512 → HashMismatch, файл НЕ
+/// переименовывается в dest и `.part` не остаётся. sha2 нет в
+/// dev-dependencies, поэтому валидное значение не считаем — фиксированное
+/// тело гарантированно не совпадёт с заведомо неверным хэшем.
+#[tokio::test]
+async fn sha512_mismatch_fails_task_and_leaves_no_file() {
+    let base = spawn_axum(axum::Router::new().route(
+        "/sha512-bad",
+        axum::routing::get(|| async { axum::body::Body::from(GOOD.to_vec()) }),
+    ))
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("out.bin");
+    let engine = engine_with(Arc::new(HttpClient::new(None).unwrap()));
+    let mut t = task("t1", format!("{base}/sha512-bad"), dest.clone(), None);
+    t.sha512 = Some("0".repeat(128)); // заведомо неверный SHA512 (128 hex-символов)
+    engine.add_tasks(vec![t]);
+    engine.run().await.unwrap();
+    let st = engine.queue_state();
+    assert_eq!(st.failed, 1, "неверный sha512 → failed: {st:?}");
+    assert!(
+        st.failed_items[0].1.contains("хэш не совпал"),
+        "ожидался HashMismatch: {st:?}"
+    );
+    assert!(!dest.exists(), "битый файл не должен попасть в dest");
+    assert!(!dir.path().join("out.bin.part").exists(), ".part чистится");
 }

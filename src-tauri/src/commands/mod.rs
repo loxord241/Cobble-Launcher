@@ -447,7 +447,9 @@ pub async fn content_install(
     version_id: Option<String>,
 ) -> Result<Vec<crate::instances::ContentEntry>> {
     let inst = instances::load(&state.paths, &instance_id)?;
-    let group = format!("instance:{instance_id}");
+    // Суффикс операции: параллельные операции над инстансом не должны делить
+    // ключ реестра движков — engine_done первой снимал бы регистрацию второй.
+    let group = format!("instance:{instance_id}:content");
     let engine = state.engine_for(&group).await;
     let http = state.http().await;
     let out = crate::modrinth::install::install_project(
@@ -584,7 +586,8 @@ pub async fn content_update_all(
     instance_id: String,
 ) -> Result<usize> {
     let inst = instances::load(&state.paths, &instance_id)?;
-    let group = format!("instance:{instance_id}");
+    // Суффикс операции — см. content_install: свой ключ реестра движков.
+    let group = format!("instance:{instance_id}:update");
     let engine = state.engine_for(&group).await;
     let http = state.http().await;
     // F8: перед пакетным обновлением — авто-снапшот mods/ (ротация 3).
@@ -682,7 +685,8 @@ pub async fn instance_optimize(
         return Err(LauncherError::InstanceRunning(instance_id.clone()));
     }
     let inst = instances::load(&state.paths, &instance_id)?;
-    let group = format!("instance:{instance_id}");
+    // Суффикс операции — см. content_install: свой ключ реестра движков.
+    let group = format!("instance:{instance_id}:optimize");
     let engine = state.engine_for(&group).await;
     let http = state.http().await;
     let out = crate::optimize::optimize(&state.paths, http, engine, &inst).await;
@@ -816,13 +820,16 @@ pub async fn account_add_msa_browser(
         .map_err(|e| LauncherError::network(format!("local_addr: {e}")))?
         .port();
 
-    let auth_url = crate::auth::msa::authorize_url(&client_id, port);
+    // CSRF: случайный state в authorize-URL; листнер примет redirect только
+    // с ним же (чужой код от другого процесса/вкладки — 400 и ожидание).
+    let oauth_state = uuid::Uuid::new_v4().to_string();
+    let auth_url = crate::auth::msa::authorize_url(&client_id, port, &oauth_state);
     tauri_plugin_opener::open_url(auth_url, None::<&str>)
         .map_err(|e| LauncherError::Internal(format!("не удалось открыть браузер: {e}")))?;
 
     let code = tokio::time::timeout(
         std::time::Duration::from_secs(300),
-        crate::auth::msa::wait_auth_code_async(listener),
+        crate::auth::msa::wait_auth_code_async(listener, &oauth_state),
     )
     .await
     .map_err(|_| LauncherError::network("таймаут ожидания входа в браузере (5 мин)"))??;
@@ -1150,12 +1157,19 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> Res
             }
         }
     }
-    settings.save(&state.paths.settings_file())?;
+    // accounts_active_id принадлежит auth-потоку (account_active_set и пр.),
+    // а не странице настроек: её снимок мог устареть, и слепое сохранение
+    // откатывало бы смену активного аккаунта — берём значение с диска.
+    let mut merged = settings;
+    if let Ok(current) = Settings::load(&state.paths.settings_file()) {
+        merged.accounts_active_id = current.accounts_active_id;
+    }
+    merged.save(&state.paths.settings_file())?;
     // F16/F17: офлайн-режим и лимит скорости применяются к актуальному
     // HTTP-клиенту (в т.ч. к созданному при смене прокси — swap уже был).
-    let work_offline = settings.work_offline;
-    let speed_limit = settings.speed_limit_kbps;
-    *state.settings.write().await = settings;
+    let work_offline = merged.work_offline;
+    let speed_limit = merged.speed_limit_kbps;
+    *state.settings.write().await = merged;
     let http = state.http().await;
     http.set_offline(work_offline);
     http.set_speed_limit(speed_limit);
@@ -1208,15 +1222,16 @@ pub async fn world_delete_data(
     Ok(OkMsg { ok: true })
 }
 
-/// Проверка целостности и починка игровых файлов (F2). Движок группы
-/// instance:{id} — как у запуска: отмена запуска гасит и ремонт.
+/// Проверка целостности и починка игровых файлов (F2). Суффикс операции
+/// в группе — не делит ключ реестра движков с запуском и контентными
+/// операциями (см. content_install).
 #[tauri::command]
 pub async fn instance_repair(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<crate::instances::repair::RepairReport> {
     instances::load(&state.paths, &id)?;
-    let group = format!("instance:{id}");
+    let group = format!("instance:{id}:repair");
     let engine = state.engine_for(&group).await;
     let http = state.http().await;
     let paths = state.paths.clone();
@@ -1541,13 +1556,20 @@ pub async fn instance_configs(
         .map_err(join_err)?
 }
 
+/// Полное содержимое конфига для редактора (ConfigFile — карточка списка).
+#[derive(Serialize)]
+pub struct ConfigContent {
+    pub rel: String,
+    pub text: String,
+}
+
 /// Прочитать конфиг (F29; cap 1 МБ).
 #[tauri::command]
 pub async fn config_read(
     state: State<'_, AppState>,
     id: String,
     rel: String,
-) -> Result<crate::instances::configs::ConfigFile> {
+) -> Result<ConfigContent> {
     let paths = state.paths.clone();
     let (rel_out, text) = tauri::async_runtime::spawn_blocking(move || {
         let text = crate::instances::configs::read(&paths, &id, &rel)?;
@@ -1555,10 +1577,9 @@ pub async fn config_read(
     })
     .await
     .map_err(join_err)??;
-    Ok(crate::instances::configs::ConfigFile {
-        rel: rel_out,
-        bytes: text.len() as u64,
-    })
+    // Текст обязателен: раньше возвращали ConfigFile{bytes} и редактор
+    // получал undefined, а «Сохранить» затирал файл пустотой.
+    Ok(ConfigContent { rel: rel_out, text })
 }
 
 /// Сохранить конфиг (F29; игра запущена → instance_running).

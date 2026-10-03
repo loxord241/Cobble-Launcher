@@ -83,6 +83,7 @@ pub fn plan_asset_tasks(index: &AssetIndexJson, assets_store: &Path, group: &str
                 url: format!("{RESOURCES_BASE}/{prefix}/{}", o.hash),
                 dest: assets_store.join(prefix).join(&o.hash),
                 sha1: Some(o.hash.clone()),
+                sha512: None,
                 size: Some(o.size),
                 group: group.to_string(),
                 priority: 0, // ассеты — наименьший приоритет (спека §4.4)

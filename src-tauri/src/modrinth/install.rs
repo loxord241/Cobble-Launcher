@@ -200,11 +200,22 @@ async fn download_and_record(
     let dest = crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id))
         .join(dir)
         .join(&file.filename);
+    // Железное правило: файл без хэша из доверенного манифеста не качаем
+    // (Modrinth отдаёт sha1 и/или sha512 — берём оба, сверяется движок).
+    let sha1 = file.hashes.get("sha1").cloned();
+    let sha512 = file.hashes.get("sha512").cloned();
+    if sha1.is_none() && sha512.is_none() {
+        return Err(LauncherError::InvalidInput(format!(
+            "в манифесте нет хэша для {}",
+            file.filename
+        )));
+    }
     engine.add_tasks(vec![DownloadTask {
         id: format!("content:{}", file.filename),
         url: file.url.clone(),
         dest,
-        sha1: file.hashes.get("sha1").cloned(),
+        sha1,
+        sha512,
         size: Some(file.size),
         group: format!("instance:{}", inst.id),
         priority: 20,
@@ -291,8 +302,13 @@ mod tests {
         let inst = Instance::new("Тест", "1.21.1");
         let client = Arc::new(HttpClient::new(None).unwrap());
         let engine = DownloadEngine::new(client, 2, EventBus::default());
+        // Файл обязан иметь хэш (железное правило) — тест отмены не про это,
+        // поэтому даём фиктивный sha512: до его сверки загрузка не доживёт
+        // (отмена приходит посреди потока).
         let file = api::VersionFile {
-            hashes: std::collections::HashMap::new(),
+            hashes: [("sha512".to_string(), "0".repeat(128))]
+                .into_iter()
+                .collect(),
             url: format!("{base}/slow.jar"),
             filename: "x.jar".into(),
             primary: true,

@@ -19,6 +19,7 @@ pub fn plan_client_task(rv: &ResolvedVersion, clients_store: &Path, group: &str)
         url: info.url.clone(),
         dest: clients_store.join(format!("{sha1}.jar")),
         sha1: Some(sha1.clone()),
+        sha512: None,
         size: info.size,
         group: group.to_string(),
         priority: 20, // клиент важнее ассетов

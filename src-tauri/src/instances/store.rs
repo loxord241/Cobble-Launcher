@@ -147,7 +147,12 @@ pub fn copy_tree_mixed(src_root: &Path, dst_root: &Path) -> Result<()> {
 /// «Очистить кэш»: удалить объекты стора, на которые нет ссылок (спека §6.12).
 pub fn cleanup_store(paths: &crate::paths::Paths) -> Result<usize> {
     let mut removed = 0;
-    for root in [paths.libraries_store(), paths.assets_objects(), paths.clients_store()] {
+    // Ассеты (assets_objects) не обходим: современный профиль использует их
+    // на месте (--assetsDir указывает прямо в стор, materialize_virtual —
+    // только legacy/virtual), хардлинк-счётчик у них всегда 1, и чистка по
+    // нему стирала живые ассеты. GC неиспользуемых ассетов — отдельная
+    // фича по индексам (assets/indexes).
+    for root in [paths.libraries_store(), paths.clients_store()] {
         for file in walk_files(&root) {
             if hardlink_count(&file) <= 1 {
                 crate::util::fs::remove_file_ignore(&file);
@@ -209,15 +214,21 @@ mod tests {
         std::fs::write(&linked, b"keep").unwrap();
         let inst_copy = paths.instances_dir().join("i1/a.jar");
         link_or_copy(&linked, &inst_copy).unwrap();
-        // Несвязанный
-        let unlinked = paths.assets_objects().join("z/z.obj");
-        std::fs::create_dir_all(crate::util::fs::long_path(unlinked.parent().unwrap())).unwrap();
+        // Несвязанная библиотека
+        let unlinked = paths.clients_store().join("old.jar");
         std::fs::write(&unlinked, b"drop").unwrap();
+        // Живой ассет: современный профиль читает его из стора через
+        // --assetsDir, хардлинк-счётчик у него всегда 1 — чистка обязана
+        // его оставить (иначе ломается офлайн-запуск после «очистки кэша»).
+        let live_asset = paths.assets_objects().join("ab/abc.obj");
+        std::fs::create_dir_all(crate::util::fs::long_path(live_asset.parent().unwrap())).unwrap();
+        std::fs::write(&live_asset, b"live").unwrap();
 
         let removed = cleanup_store(&paths).unwrap();
         assert_eq!(removed, 1);
         assert!(linked.exists(), "связанный остался");
         assert!(!unlinked.exists(), "несвязанный удалён");
+        assert!(live_asset.exists(), "живой ассет стора не удаляется");
     }
 
     /// A22: сбой копирования (фолбэк после неудачного hardlink) не оставляет

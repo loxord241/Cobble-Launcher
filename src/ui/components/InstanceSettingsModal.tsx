@@ -40,6 +40,29 @@ function mcSupportsQuickPlay(mcVersion: string): boolean {
   return major === 1 && (minor ?? 0) >= 20;
 }
 
+/** Токенизация строки аргументов с учётом двойных кавычек:
+ *  -Dp="C:\My Game" → один токен -Dp=C:\My Game (кавычки снимаются).
+ *  Куски без пробела между ними склеиваются: сам regex даёт `-Dp=` и
+ *  `"C:\My Game"` отдельными совпадениями — без склейки флаг рвался бы
+ *  пополам, как и при наивном сплите по пробелам. */
+function splitArgs(s: string): string[] {
+  const out: string[] = [];
+  const re = /[^\s"']+|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
+  let cur = "";
+  let prevEnd = -1;
+  for (let m = re.exec(s); m !== null; m = re.exec(s)) {
+    // Разрыв (пробел) закрывает текущий токен; смежные куски склеиваются.
+    if (prevEnd >= 0 && m.index !== prevEnd && cur) {
+      out.push(cur);
+      cur = "";
+    }
+    cur += m[0].replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
+    prevEnd = m.index + m[0].length;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
 export default function InstanceSettingsModal({
   instance,
   onClose,
@@ -146,14 +169,10 @@ export default function InstanceSettingsModal({
         ...fresh,
         ramMb,
         javaPath: javaPath.trim() || undefined,
-        jvmFlags: jvmFlags
-          .split(/\s+/)
-          .map((s) => s.trim())
-          .filter(Boolean),
-        gameArgsExtra: gameArgs
-          .split(/\s+/)
-          .map((s) => s.trim())
-          .filter(Boolean),
+        // splitArgs, а не сплит по пробелам: -Dcustom.path="C:\Games\My Pack"
+        // — один токен, иначе JVM получает обрезанный флаг и не стартует.
+        jvmFlags: splitArgs(jvmFlags),
+        gameArgsExtra: splitArgs(gameArgs),
         notes: notes.trim(),
         // F1: пустая строка/не тот режим → undefined (не храним мусор).
         quickPlayWorld:

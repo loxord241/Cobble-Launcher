@@ -42,13 +42,26 @@ fn is_world_dir(path: &Path) -> bool {
     long_path(&path.join("level.dat")).is_file()
 }
 
-/// Имя мира (каталог в saves/): латиница/цифры/пробел/`_`/`-`, 1–64.
-/// Регекс по образцу settings::is_hex_color (крейт regex уже в зависимостях).
-/// `..`, разделители, кириллица не проходят — путь всегда остаётся внутри saves/.
+/// Имя мира (каталог в saves/): разрешено всё, кроме запрещённого —
+/// 1–64 символа, без `<>:"/\|?*`, управляющих и последовательности `..`;
+/// не `.`/`..`, края — не точка/пробел. Кириллица/CJK/эмодзи проходят
+/// («Новый мир» — валидное имя). Путь остаётся внутри saves/:
+/// разделители пути и traversal-имена отсечены. Regex не нужен — цикл по char.
 fn valid_world_name(world: &str) -> bool {
-    regex::Regex::new(r"^[A-Za-z0-9 _\-]{1,64}$")
-        .map(|re| re.is_match(world))
-        .unwrap_or(false)
+    const FORBIDDEN: &str = "<>:\"/\\|?*";
+    if !(1..=64).contains(&world.chars().count()) {
+        return false;
+    }
+    if world == "." || world == ".." || world.contains("..") {
+        return false;
+    }
+    if world.starts_with('.') || world.starts_with(' ') {
+        return false;
+    }
+    if world.ends_with('.') || world.ends_with(' ') {
+        return false;
+    }
+    !world.chars().any(|c| FORBIDDEN.contains(c) || c.is_control())
 }
 
 /// world → каталог saves/<world>: InvalidInput на плохом имени, NotFound,
@@ -56,7 +69,7 @@ fn valid_world_name(world: &str) -> bool {
 fn resolve_world(paths: &Paths, id: &str, world: &str) -> Result<PathBuf> {
     if !valid_world_name(world) {
         return Err(LauncherError::InvalidInput(format!(
-            "некорректное имя мира: {world:?} (латиница/цифры/пробел/_/-, до 64)"
+            "некорректное имя мира: {world:?} (запрещены <>:\"/\\|?* и управляющие символы, до 64)"
         )));
     }
     let dir = saves_dir(paths, id).join(world);
@@ -262,18 +275,50 @@ mod tests {
         }
     }
 
-    /// Имя мира валидируется ДО обращения к диску: traversal, кириллица,
-    /// пустое и слишком длинное — InvalidInput; допустимые имена проходят
-    /// дальше и дают NotFound (мира нет).
+    /// Имя мира валидируется ДО обращения к диску: traversal, пустое,
+    /// слишком длинное, запрещённые символы/`..`/краевые точки-пробелы —
+    /// InvalidInput. Кириллица, точка внутри и эмодзи допустимы; валидные
+    /// имена проходят дальше и дают NotFound (мира нет).
     #[test]
     fn world_name_validation() {
         let (_d, paths, inst) = setup();
         let too_long = "x".repeat(65);
-        for bad in ["../evil", "a/b", r"a\b", "", "мир", "a:b", too_long.as_str()] {
+        // 65 кириллических символов: отсекается по числу СИМВОЛОВ, не байт.
+        let too_long_cyr = "м".repeat(65);
+        for bad in [
+            "../evil",
+            "a/b",
+            r"a\b",
+            "",
+            "a:b",
+            "мир: тест",
+            "мир..тест",
+            ".",
+            "..",
+            "мир ",   // пробел в конце
+            " мир",   // пробел в начале
+            ".мир",   // точка в начале
+            "мир.",   // точка в конце
+            "a\u{7}b", // управляющий символ
+            too_long.as_str(),
+            too_long_cyr.as_str(),
+        ] {
             let err = backup_world(&paths, &inst.id, bad).unwrap_err();
             assert_eq!(err.code(), "invalid_input", "имя {bad:?} отклонено");
         }
-        for good in ["New World", "world_1", "a", "A-b C9", "x".repeat(64).as_str()] {
+        for good in [
+            "New World",
+            "world_1",
+            "a",
+            "A-b C9",
+            "x".repeat(64).as_str(),
+            // Кириллица/эмодзи/точка внутри имени — валидны.
+            "Новый мир",
+            "мир",
+            "my.world",
+            "мир 🌍",
+            "м".repeat(64).as_str(), // 64 кириллических символа = 128 байт, но 64 char
+        ] {
             let err = backup_world(&paths, &inst.id, good).unwrap_err();
             assert_eq!(err.code(), "not_found", "имя {good:?} допустимо, мира нет");
         }

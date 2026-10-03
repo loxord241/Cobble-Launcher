@@ -62,6 +62,8 @@ export const api = {
   instanceSettingsGet: (id: string) => invoke<Instance>("instance_settings_get", { id }),
   instanceSettingsSet: (instance: Instance) =>
     invoke<Instance>("instance_settings_set", { instance }),
+  /** D48: идентификатор инстанса из ярлыка, если окно открылось позже колбэка. */
+  shortcutTakePending: () => invoke<string | null>("shortcut_take_pending"),
   instanceLaunch: (id: string, player: string) =>
     invoke<{ ok: boolean }>("instance_launch", { id, player }),
   instanceImport: (path: string, name?: string) =>

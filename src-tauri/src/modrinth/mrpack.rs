@@ -201,12 +201,23 @@ pub async fn install_mrpack(
         // Санитизация пути из ЧУЖОГО модпака (спека §3): только относительные
         // безопасные компоненты.
         let rel = crate::util::zip::safe_relative_path(&f.path)?;
+        // Железное правило: каждый байт сверяется с хэшем доверенного
+        // манифеста. Modrinth отдаёт sha1 и/или sha512 — без обоих не качаем.
+        let sha1 = f.hashes.get("sha1").cloned();
+        let sha512 = f.hashes.get("sha512").cloned();
+        if sha1.is_none() && sha512.is_none() {
+            return Err(LauncherError::InvalidInput(format!(
+                "в манифесте нет хэша для {}",
+                f.path
+            )));
+        }
         tasks.push(DownloadTask {
             id: format!("mrpack:{}", f.path),
             url: f.downloads[0].clone(),
             dest: crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id))
                 .join(rel),
-            sha1: f.hashes.get("sha1").cloned(),
+            sha1,
+            sha512,
             size: Some(f.file_size),
             group: group.to_string(),
             priority: 15,

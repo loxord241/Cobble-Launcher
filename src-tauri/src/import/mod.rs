@@ -67,6 +67,36 @@ fn join_err(e: tauri::Error) -> LauncherError {
     LauncherError::Io(std::io::Error::other(format!("фоновая задача импорта: {e}")))
 }
 
+/// Откат несостоявшегося импорта — локальный аналог `rollback_instance` в
+/// modrinth/mrpack.rs (A29): на момент сбоя инстанс уже сохранён (запись в
+/// списке — это каталог `instances/<id>/instance.json`), но контента в нём
+/// нет, и сбой оставил бы «призрак» — битый инстанс навсегда. Каталог
+/// удаляем целиком; ошибку удаления только логируем — наружу идёт исходная
+/// причина сбоя.
+fn rollback_instance(paths: &Paths, id: &str) {
+    let dir = crate::instances::instance_dir(paths, id);
+    if let Err(e) = std::fs::remove_dir_all(crate::util::fs::long_path(&dir)) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("откат инстанса {id}: {} не удалён: {e}", dir.display());
+        }
+    }
+}
+
+/// Все шаги импорта ПОСЛЕ `instances::save` (распаковка, оверрайды, разбор
+/// загрузчика): при ошибке откатываем инстанс-«призрак» и возвращаем
+/// исходную ошибку (A29). Сам `instances::save` не оборачивается: если
+/// сохранилось, инстанс есть; если нет — и откатывать нечего.
+fn rollback_on_err<T>(paths: &Paths, inst: &Instance, r: Result<T>) -> Result<T> {
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            tracing::warn!("импорт не удался ({e}) — откатываю инстанс");
+            rollback_instance(paths, &inst.id);
+            Err(e)
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct CfManifest {
     pub minecraft: CfMinecraft,
@@ -95,6 +125,7 @@ pub struct CfModloader {
 }
 
 #[derive(Deserialize)]
+#[derive(Debug)]
 pub struct CfFileRef {
     #[serde(rename = "projectID")]
     pub project_id: u64,
@@ -216,27 +247,33 @@ fn import_archive_blocking(
             let inst = Instance::new(name_override.unwrap_or(&manifest.name), &manifest.minecraft.version);
             crate::instances::save(paths, &inst)?;
 
-            // overrides/ поверх каталога игры (zip-slip защищён).
-            let game_dir = crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
-            let extracted = crate::util::zip::extract_zip_stripping(
-                std::fs::File::open(crate::util::fs::long_path(archive))?,
-                &game_dir,
-                &format!("{}/", manifest.overrides),
-                |_| true,
-                |_| {},
-            )?;
-            tracing::info!("CF-zip: {} файлов overrides", extracted.len());
+            // Всё ПОСЛЕ save: сбой распаковки/загрузчика не должен оставлять
+            // сохранённый инстанс-«призрак» в списке (A29).
+            let post_save = || -> Result<(Option<(String, String)>, Vec<CfFileRef>)> {
+                // overrides/ поверх каталога игры (zip-slip защищён).
+                let game_dir = crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
+                let extracted = crate::util::zip::extract_zip_stripping(
+                    std::fs::File::open(crate::util::fs::long_path(archive))?,
+                    &game_dir,
+                    &format!("{}/", manifest.overrides),
+                    |_| true,
+                    |_| {},
+                )?;
+                tracing::info!("CF-zip: {} файлов overrides", extracted.len());
 
-            // Загрузчик из manifest (id = "forge-47.3.0" / "fabric-0.15.11").
-            let mut loader = None;
-            for ml in &manifest.minecraft.modloaders {
-                let (kind, ver) = ml.id.split_once('-').ok_or_else(|| {
-                    LauncherError::InvalidInput(format!("битый modloader id: {}", ml.id))
-                })?;
-                loader = Some((kind.to_string(), ver.to_string()));
-            }
-            // Список файлов модпака — наружу: ссылки собирает async-часть.
-            Ok((inst, loader, manifest.files))
+                // Загрузчик из manifest (id = "forge-47.3.0" / "fabric-0.15.11").
+                let mut loader = None;
+                for ml in &manifest.minecraft.modloaders {
+                    let (kind, ver) = ml.id.split_once('-').ok_or_else(|| {
+                        LauncherError::InvalidInput(format!("битый modloader id: {}", ml.id))
+                    })?;
+                    loader = Some((kind.to_string(), ver.to_string()));
+                }
+                // Список файлов модпака — наружу: ссылки собирает async-часть.
+                Ok((loader, manifest.files))
+            };
+            let (loader, files) = rollback_on_err(paths, &inst, post_save())?;
+            Ok((inst, loader, files))
         }
         ArchiveKind::MultiMc => {
             // mmc-pack.json → mc + loader; minecraft/ → наш каталог игры.
@@ -266,26 +303,31 @@ fn import_archive_blocking(
             let inst = Instance::new(name_override.unwrap_or("Импорт"), &mc);
             crate::instances::save(paths, &inst)?;
 
-            let game_dir = crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
-            // Содержимое minecraft/ (в zip это `<root>/minecraft/…` или
-            // `<root>/.minecraft/…`) — стриппинг срезает префикс, иначе
-            // файлы ложатся в minecraft/minecraft/ (двойная вложенность).
-            std::fs::File::open(crate::util::fs::long_path(archive))?.rewind()?;
-            let extracted = crate::util::zip::extract_zip_stripping(
-                std::fs::File::open(crate::util::fs::long_path(archive))?,
-                &game_dir,
-                "minecraft/",
-                |_| true,
-                |_| {},
-            )?;
-            let extracted2 = crate::util::zip::extract_zip_stripping(
-                std::fs::File::open(crate::util::fs::long_path(archive))?,
-                &game_dir,
-                ".minecraft/",
-                |_| true,
-                |_| {},
-            )?;
-            tracing::info!("MultiMC: {} файлов minecraft/", extracted.len() + extracted2.len());
+            // Всё ПОСЛЕ save: сбой распаковки откатывает инстанс-«призрак» (A29).
+            let post_save = || -> Result<()> {
+                let game_dir = crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
+                // Содержимое minecraft/ (в zip это `<root>/minecraft/…` или
+                // `<root>/.minecraft/…`) — стриппинг срезает префикс, иначе
+                // файлы ложатся в minecraft/minecraft/ (двойная вложенность).
+                std::fs::File::open(crate::util::fs::long_path(archive))?.rewind()?;
+                let extracted = crate::util::zip::extract_zip_stripping(
+                    std::fs::File::open(crate::util::fs::long_path(archive))?,
+                    &game_dir,
+                    "minecraft/",
+                    |_| true,
+                    |_| {},
+                )?;
+                let extracted2 = crate::util::zip::extract_zip_stripping(
+                    std::fs::File::open(crate::util::fs::long_path(archive))?,
+                    &game_dir,
+                    ".minecraft/",
+                    |_| true,
+                    |_| {},
+                )?;
+                tracing::info!("MultiMC: {} файлов minecraft/", extracted.len() + extracted2.len());
+                Ok(())
+            };
+            rollback_on_err(paths, &inst, post_save())?;
             Ok((inst, loader, Vec::new()))
         }
         ArchiveKind::Own => {
@@ -309,18 +351,23 @@ fn import_archive_blocking(
             inst.version_id = src.version_id.clone();
             crate::instances::save(paths, &inst)?;
 
-            let game_dir = crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
-            std::fs::File::open(crate::util::fs::long_path(archive))?.rewind()?;
-            // Стриппинг: `minecraft/<x>` → `<x>` в корне каталога игры
-            // (иначе двойная вложенность minecraft/minecraft).
-            let extracted = crate::util::zip::extract_zip_stripping(
-                std::fs::File::open(crate::util::fs::long_path(archive))?,
-                &game_dir,
-                "minecraft/",
-                |_| true,
-                |_| {},
-            )?;
-            tracing::info!("own-zip: {} файлов", extracted.len());
+            // Всё ПОСЛЕ save: сбой распаковки откатывает инстанс-«призрак» (A29).
+            let post_save = || -> Result<()> {
+                let game_dir = crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
+                std::fs::File::open(crate::util::fs::long_path(archive))?.rewind()?;
+                // Стриппинг: `minecraft/<x>` → `<x>` в корне каталога игры
+                // (иначе двойная вложенность minecraft/minecraft).
+                let extracted = crate::util::zip::extract_zip_stripping(
+                    std::fs::File::open(crate::util::fs::long_path(archive))?,
+                    &game_dir,
+                    "minecraft/",
+                    |_| true,
+                    |_| {},
+                )?;
+                tracing::info!("own-zip: {} файлов", extracted.len());
+                Ok(())
+            };
+            rollback_on_err(paths, &inst, post_save())?;
             Ok((inst, None, Vec::new()))
         }
     }
@@ -468,5 +515,65 @@ mod tests {
             }
         }
         None
+    }
+
+    /// Каталоги в `instances/` — «инстанс-призрак» виден именно здесь.
+    fn instance_dirs(paths: &Paths) -> Vec<String> {
+        let mut dirs: Vec<String> =
+            std::fs::read_dir(crate::util::fs::long_path(&paths.instances_dir()))
+                .map(|it| {
+                    it.flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+        dirs.sort();
+        dirs
+    }
+
+    /// A29-регресс: сбой распаковки ПОСЛЕ instances::save не должен оставлять
+    /// инстанс-«призрак» (битый, без контента, навсегда в списке). zip-slip-
+    /// запись внутри overrides/ либо minecraft/ роняет распаковку без сети —
+    /// для всех трёх импортёров: каталог и запись инстанса откатываются,
+    /// наружу уходит исходная ошибка.
+    #[test]
+    fn failed_extraction_rolls_back_ghost_instance() {
+        for (manifest_name, manifest_body, slip_entry) in [
+            (
+                "manifest.json",
+                r#"{"name":"CF","minecraft":{"version":"1.20.1"},"files":[]}"#,
+                "overrides/../evil.txt",
+            ),
+            (
+                "mmc-pack.json",
+                r#"{"components":[{"uid":"net.minecraft","version":"1.20.1"}]}"#,
+                "minecraft/../evil.txt",
+            ),
+            (
+                "instance.json",
+                r#"{"id":"src3","name":"Ghost","mcVersion":"1.20.1"}"#,
+                "minecraft/../evil.txt",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = test_paths(&dir);
+            let zip_path = dir.path().join(format!("{manifest_name}.zip"));
+            std::fs::write(
+                &zip_path,
+                build_zip(&[(manifest_name, manifest_body.as_bytes()), (slip_entry, b"X")]),
+            )
+            .unwrap();
+
+            let err = import_archive_blocking(&paths, &zip_path, None).unwrap_err();
+            assert_eq!(err.code(), "zip_slip", "{manifest_name}: {err}");
+            assert!(
+                crate::instances::list(&paths).is_empty(),
+                "{manifest_name}: инстанс-«призрак» не должен остаться в списке"
+            );
+            assert!(
+                instance_dirs(&paths).is_empty(),
+                "{manifest_name}: каталог несостоявшегося инстанса обязан быть удалён"
+            );
+        }
     }
 }

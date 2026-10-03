@@ -6,7 +6,7 @@
 use crate::errors::{LauncherError, Result};
 use crate::events::{DlProgress, DlQueueState, EventBus, LauncherEvent};
 use crate::net::http::{backoff_delay, retryable_wait, HttpClient};
-use crate::util::fs::{long_path, part_path, sha1_file};
+use crate::util::fs::{long_path, part_path, sha1_file, sha512_file};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -25,6 +25,10 @@ pub struct DownloadTask {
     pub dest: PathBuf,
     #[serde(default)]
     pub sha1: Option<String>,
+    /// SHA512 из доверенного манифеста: сверяется, когда sha1 не задан
+    /// (в index.json модпаков бывает только sha512).
+    #[serde(default)]
+    pub sha512: Option<String>,
     #[serde(default)]
     pub size: Option<u64>,
     pub group: String,
@@ -130,7 +134,10 @@ impl DownloadEngine {
         let mut added = 0;
         for t in tasks {
             let dup = guard.iter().any(|e| {
-                (e.task.dest == t.dest && e.task.sha1 == t.sha1) || e.task.url == t.url
+                (e.task.dest == t.dest
+                    && e.task.sha1 == t.sha1
+                    && e.task.sha512 == t.sha512)
+                    || e.task.url == t.url
             });
             if dup {
                 tracing::debug!("дедуп задачи: {}", t.url);
@@ -246,17 +253,21 @@ impl DownloadEngine {
     /// Транспортные повторы (сеть/429/битый хэш) — до MAX_ATTEMPTS внутри.
     async fn download_one(&self, task: &DownloadTask, cancel: &AtomicBool) -> Result<()> {
         if task.dest.exists() {
-            match &task.sha1 {
-                Some(sha) => match sha1_file(&task.dest) {
-                    Ok(actual) if &actual == sha => return Ok(()),
-                    // A26: битый файл может быть придержан Defender/OneDrive —
-                    // удаление с повторами вместо мгновенного отказа.
-                    _ => {
-                        let _ = crate::util::fs::remove_file_with_retry(&task.dest);
-                    }
-                },
-                None => return Ok(()),
+            // Валидный кэш: совпал sha1, при его отсутствии — sha512; оба не
+            // заданы — старое поведение, файл считается готовым.
+            let existing_ok = if let Some(sha) = &task.sha1 {
+                sha1_file(&task.dest).ok().is_some_and(|a| a == *sha)
+            } else if let Some(sha) = &task.sha512 {
+                sha512_file(&task.dest).ok().is_some_and(|a| a == *sha)
+            } else {
+                return Ok(());
+            };
+            if existing_ok {
+                return Ok(());
             }
+            // A26: битый файл может быть придержан Defender/OneDrive —
+            // удаление с повторами вместо мгновенного отказа.
+            let _ = crate::util::fs::remove_file_with_retry(&task.dest);
         }
         if let Some(parent) = task.dest.parent() {
             std::fs::create_dir_all(long_path(parent)).map_err(|e| {
@@ -283,21 +294,29 @@ impl DownloadEngine {
                 Ok(r) if r.status().is_success() => {
                     match self.stream_to_file(r, &part, cancel).await {
                         Ok(_) => {
-                            // Хэш-проверка обязательна для каждого байта (спека §3).
-                            if let Some(sha) = &task.sha1 {
+                            // Хэш-проверка обязательна для каждого байта (спека §3):
+                            // sha1, при его отсутствии — sha512 (index.json
+                            // модпаков); оба не заданы — без проверки.
+                            let mismatch: Option<(String, String)> = if let Some(sha) = &task.sha1 {
                                 let actual = sha1_file(&part)?;
-                                if &actual != sha {
-                                    let _ = crate::util::fs::remove_file_with_retry(&part);
-                                    if attempt == MAX_ATTEMPTS {
-                                        return Err(LauncherError::HashMismatch {
-                                            path: task.dest.to_string_lossy().into(),
-                                            expected: sha.clone(),
-                                            actual,
-                                        });
-                                    }
-                                    tokio::time::sleep(backoff_delay(attempt)).await;
-                                    continue;
+                                (actual != *sha).then_some((sha.clone(), actual))
+                            } else if let Some(sha) = &task.sha512 {
+                                let actual = sha512_file(&part)?;
+                                (actual != *sha).then_some((sha.clone(), actual))
+                            } else {
+                                None
+                            };
+                            if let Some((expected, actual)) = mismatch {
+                                let _ = crate::util::fs::remove_file_with_retry(&part);
+                                if attempt == MAX_ATTEMPTS {
+                                    return Err(LauncherError::HashMismatch {
+                                        path: task.dest.to_string_lossy().into(),
+                                        expected,
+                                        actual,
+                                    });
                                 }
+                                tokio::time::sleep(backoff_delay(attempt)).await;
+                                continue;
                             }
                             // A26: финальное переименование `.part` → цель
                             // ретраится — антивирус/OneDrive держат файл миг.
@@ -574,6 +593,7 @@ mod tests {
             url: "http://127.0.0.1:1/file.bin".into(),
             dest: dest.clone(),
             sha1: None,
+            sha512: None,
             size: None,
             group: "g".into(),
             priority: 0,

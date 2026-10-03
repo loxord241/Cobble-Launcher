@@ -23,6 +23,45 @@ pub mod util;
 
 use tracing_subscriber::EnvFilter;
 
+// D48: ярлык рабочего стола. Второй процесс умирает (single-instance), его
+// аргументы `instance-launch --id <id>` прилетают в первичный; если окно ещё
+// не готово принять событие — идентификатор ждёт здесь, Shell заберёт командой.
+static PENDING_SHORTCUT: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
+    std::sync::OnceLock::new();
+
+fn store_pending_shortcut(id: String) {
+    if let Ok(mut g) = PENDING_SHORTCUT.get_or_init(|| std::sync::Mutex::new(None)).lock() {
+        *g = Some(id);
+    }
+}
+
+fn take_pending_shortcut() -> Option<String> {
+    PENDING_SHORTCUT
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .ok()?
+        .take()
+}
+
+/// Аргументы ярлыка: `instance-launch --id <id> --no-wait` → Some(id).
+/// Чужой/битый хвост аргументов молча игнорируется.
+fn parse_shortcut_args(args: &[String]) -> Option<String> {
+    if !args.iter().any(|a| a == "instance-launch") {
+        return None;
+    }
+    let pos = args.iter().position(|a| a == "--id")?;
+    let id = args.get(pos + 1)?;
+    crate::instances::valid_id(id).ok()?;
+    Some(id.clone())
+}
+
+/// D48: идентификатор инстанса из ярлыка, пересланный вторым процессом, пока
+/// окно ещё не было готово принять событие `shortcut_launch`.
+#[tauri::command]
+fn shortcut_take_pending() -> Option<String> {
+    take_pending_shortcut()
+}
+
 /// MakeWriter с redaction (спека §11): токены → [REDACTED] до записи на диск.
 struct RedactingWriter<W: std::io::Write> {
     inner: W,
@@ -138,6 +177,22 @@ pub fn run() -> tauri::Result<()> {
     };
 
     tauri::Builder::default()
+        // D48: single-instance — регистрируется ПЕРВЫМ: второй процесс умирает,
+        // его аргументы (ярлык «запустить игру») приходят в этот колбэк.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if let Some(id) = parse_shortcut_args(&args) {
+                use tauri::Manager as _;
+                match app.get_webview_window("main") {
+                    Some(w) => {
+                        use tauri::Emitter as _;
+                        let _ = w.emit("shortcut_launch", id);
+                    }
+                    // Окно ещё не создано (старт по ярлыку) — Shell заберёт
+                    // идентификатор через shortcut_take_pending при монтировании.
+                    None => store_pending_shortcut(id),
+                }
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         // D46: авто-обновления — проверка и установка подписанных апдейтов
@@ -146,6 +201,7 @@ pub fn run() -> tauri::Result<()> {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
+            shortcut_take_pending,
             commands::instance_list,
             commands::instance_create,
             commands::instance_rename,

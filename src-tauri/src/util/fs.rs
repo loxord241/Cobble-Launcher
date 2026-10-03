@@ -2,7 +2,7 @@
 
 use crate::errors::Result;
 use sha1::{Digest, Sha1};
-use sha2::Sha256;
+use sha2::{Sha256, Sha512};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -168,6 +168,21 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// SHA512 файла, потоково (в index.json модпаков бывает только он).
+pub fn sha512_file(path: &Path) -> Result<String> {
+    let mut f = fs::File::open(long_path(path))?;
+    let mut hasher = Sha512::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
 /// SHA1 байтов в памяти.
 pub fn sha1_bytes(data: &[u8]) -> String {
     let mut hasher = Sha1::new();
@@ -211,6 +226,18 @@ mod tests {
         assert_eq!(
             sha1_file(&p).unwrap(),
             "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+    }
+
+    #[test]
+    fn sha512_file_matches_known() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x");
+        fs::write(&p, b"abc").unwrap();
+        assert_eq!(
+            sha512_file(&p).unwrap(),
+            "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a\
+             2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
         );
     }
 

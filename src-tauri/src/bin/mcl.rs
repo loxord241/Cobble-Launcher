@@ -343,10 +343,12 @@ async fn run(cli: Cli) -> Result<()> {
             let listener = std::net::TcpListener::bind("127.0.0.1:0")
                 .map_err(|e| LauncherError::network(format!("bind: {e}")))?;
             let port = listener.local_addr()?.port();
-            let url = mc_launcher_v2_lib::auth::msa::authorize_url(&client_id, port);
+            // CSRF-защита: листнер принимает только redirect с этим state.
+            let state = uuid::Uuid::new_v4().to_string();
+            let url = mc_launcher_v2_lib::auth::msa::authorize_url(&client_id, port, &state);
             println!("Открываю браузер для входа (localhost:{port})...");
             let _ = std::process::Command::new("explorer").arg(&url).spawn();
-            let code = mc_launcher_v2_lib::auth::msa::wait_auth_code(listener).await?;
+            let code = mc_launcher_v2_lib::auth::msa::wait_auth_code(listener, state.clone()).await?;
             let session = mc_launcher_v2_lib::auth::msa::finish_web_login(&client, &client_id, &code, port).await?;
             let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
             mc_launcher_v2_lib::auth::keyring_set(&ref_name, &session.refresh_token)?;
@@ -525,6 +527,7 @@ async fn cmd_launch(
                 url: a.url.clone(),
                 dest: paths.libraries_store().join(&a.rel_path),
                 sha1: a.sha1.clone(),
+                sha512: None,
                 size: a.size,
                 group: group.clone(),
                 priority: 10,
@@ -536,6 +539,7 @@ async fn cmd_launch(
                 url: n.url.clone(),
                 dest: paths.libraries_store().join(&n.rel_path),
                 sha1: n.sha1.clone(),
+                sha512: None,
                 size: n.size,
                 group: group.clone(),
                 priority: 15,
@@ -567,6 +571,7 @@ async fn cmd_launch(
                 url: lc.file.url.clone(),
                 dest: paths.cache_dir().join("log_configs").join(&lc.file.id),
                 sha1: Some(lc.file.sha1.clone()),
+                sha512: None,
                 size: lc.file.size,
                 group: group.clone(),
                 priority: 20,

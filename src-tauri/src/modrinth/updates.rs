@@ -249,8 +249,37 @@ pub async fn update_all(
             continue;
         };
 
-        // Старый файл → корзина инстанса (откат возможен вручную, спека §6.6).
-        // A26: перенос ретраится — файл может быть придержан антивирусом.
+        // Новый файл качаем во ВРЕМЕННОЕ имя: старый мод уезжает в корзину
+        // ТОЛЬКО после успешной скачки — иначе сбой сети/отмена оставляли бы
+        // инстанс сломанным (старый уже в .trash/, нового нет).
+        let dir = crate::modrinth::install::dir_for_kind(old_entry.kind);
+        let dest = game_dir.join(dir).join(&file.filename);
+        let temp = dest.with_file_name(format!(".update-{}", file.filename));
+        engine.add_tasks(vec![DownloadTask {
+            id: format!("update:{}", file.filename),
+            url: file.url.clone(),
+            dest: temp.clone(),
+            sha1: file.hashes.get("sha1").cloned(),
+            sha512: file.hashes.get("sha512").cloned(),
+            size: Some(file.size),
+            group: format!("instance:{}", inst.id),
+            priority: 25,
+        }]);
+        if let Err(e) = engine.run().await {
+            crate::util::fs::remove_file_ignore(&temp);
+            return Err(e);
+        }
+        let st = engine.queue_state();
+        if st.failed > 0 {
+            crate::util::fs::remove_file_ignore(&temp);
+            return Err(LauncherError::network(format!(
+                "обновление {} не скачалось",
+                file.filename
+            )));
+        }
+
+        // Скачалось: старый файл → корзина инстанса (откат возможен вручную,
+        // спека §6.6). A26: перенос ретраится — файл может придержать антивирус.
         let old_path = game_dir.join(&old_entry.file);
         if old_path.exists() {
             let name = old_path
@@ -262,26 +291,14 @@ pub async fn update_all(
                 &trash.join(format!("{}-{}", chrono_suffix(), name)),
             );
         }
-
-        // Новый файл.
-        let dir = crate::modrinth::install::dir_for_kind(old_entry.kind);
-        let dest = game_dir.join(dir).join(&file.filename);
-        engine.add_tasks(vec![DownloadTask {
-            id: format!("update:{}", file.filename),
-            url: file.url.clone(),
-            dest,
-            sha1: file.hashes.get("sha1").cloned(),
-            size: Some(file.size),
-            group: format!("instance:{}", inst.id),
-            priority: 25,
-        }]);
-        engine.run().await?;
-        let st = engine.queue_state();
-        if st.failed > 0 {
-            return Err(LauncherError::network(format!(
-                "обновление {} не скачалось",
-                file.filename
-            )));
+        // Старый файл уже уехал — финальное имя свободно, обычного rename
+        // достаточно. Сбой здесь: temp сносим, ошибку отдаём наружу (инстанс
+        // остаётся со старым модом, запись манифеста не тронута).
+        if let Err(e) =
+            std::fs::rename(crate::util::fs::long_path(&temp), crate::util::fs::long_path(&dest))
+        {
+            crate::util::fs::remove_file_ignore(&temp);
+            return Err(e.into());
         }
 
         // Манифест: заменить запись.
