@@ -74,10 +74,11 @@ export default function WorldsTab({
 
   const removeData = async (w: WorldInfo, scope: WorldScope) => {
     // Подтверждение на безвозвратное удаление: мир целиком или сброс Незера/Энда.
-    // D49: confirm в Tauri асинхронен — только await (см. ui/confirm.ts).
-    if (scope === "all" && !(await askConfirm(t("worlds.deleteConfirm", { name: w.name })))) return;
-    if (scope === "nether" && !(await askConfirm(t("worlds.resetNetherConfirm", { name: w.name })))) return;
-    if (scope === "end" && !(await askConfirm(t("worlds.resetEndConfirm", { name: w.name })))) return;
+    // D49: confirm в Tauri асинхронен; 2026-10-03: confirm свой внутри-UI (confirm.tsx).
+    const del = { danger: true, confirmLabel: t("common.delete") };
+    if (scope === "all" && !(await askConfirm(t("worlds.deleteConfirm", { name: w.name }), del))) return;
+    if (scope === "nether" && !(await askConfirm(t("worlds.resetNetherConfirm", { name: w.name }), del))) return;
+    if (scope === "end" && !(await askConfirm(t("worlds.resetEndConfirm", { name: w.name }), del))) return;
     void run(async () => {
       await api.worldDeleteData(instanceId, w.name, scope);
       await load();

@@ -435,5 +435,8 @@
   "logs.historyCount": "Прошлые логи ({n})",
   "instances.create.errorHint": "Проверьте имя инстанса и доступ к каталогу данных",
   "settings.resetOnboarding.desc": "Показать мастер первого запуска при следующем старте лаунчера",
-  "project.versions.open": "Открыть на Modrinth"
+  "project.versions.open": "Открыть на Modrinth",
+  "common.confirm": "Подтвердить",
+  "common.delete": "Удалить",
+  "accounts.deleteDetail": "Профиль будет удалён только из лаунчера — файлы игры не тронутся."
 }

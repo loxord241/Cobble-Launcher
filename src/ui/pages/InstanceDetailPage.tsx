@@ -275,7 +275,7 @@ export default function InstanceDetailPage({
 
   const removeEntry = async (file: string) => {
     // F8/D49: подтверждение удаления (confirm в Tauri асинхронен — await).
-    if (!(await askConfirm(t("mods.removeConfirm", { file })))) return;
+    if (!(await askConfirm(t("mods.removeConfirm", { file }), { danger: true, confirmLabel: t("common.delete") }))) return;
     setContentBusy(true);
     setError(null);
     try {

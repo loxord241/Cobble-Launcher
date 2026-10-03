@@ -39,6 +39,7 @@ import InstanceDetailPage from "../pages/InstanceDetailPage";
 import AccountsModal from "../components/AccountsModal";
 import CrashReportModal from "../components/CrashReportModal";
 import CommandPalette from "../components/CommandPalette";
+import { ConfirmHost } from "../confirm";
 
 type Page = "home" | "instances" | "settings";
 
@@ -571,6 +572,9 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
       {accountsModalOpen && (
         <AccountsModal onClose={() => setAccountsModalOpen(false)} />
       )}
+
+      {/* Глобальный confirm (askConfirm) — всегда смонтирован, поверх z-50 модалок. */}
+      <ConfirmHost />
 
       {/* F19: палитра команд. Открытие инстанса — через список, чтобы
           навигация закрыла прежнюю страницу; затем ставим целевой инстанс. */}

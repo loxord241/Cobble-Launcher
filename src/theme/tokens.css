@@ -233,7 +233,14 @@ body {
 .btn-ghost:disabled,
 .btn-danger-ghost:disabled {
   cursor: not-allowed;
-  opacity: 0.4;
+  opacity: 0.5;
+}
+/* Disabled primary — приглушённый, но читаемый: сплошная смесь с фоном вместо
+   просвечивающего акцента (судья 2026-10-03: «как битая кнопка»). */
+.btn-primary:disabled {
+  background: color-mix(in srgb, var(--accent) 35%, var(--surface-2));
+  color: var(--on-accent);
+  opacity: 1;
 }
 
 /* Квадратная иконка-кнопка 40px (кебаб, окно, действия строк) */

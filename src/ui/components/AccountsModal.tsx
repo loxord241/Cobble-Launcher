@@ -47,7 +47,9 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const activeId = settings?.accountsActiveId ?? accounts[0]?.id;
+  const activeId =
+    accounts.find((a) => a.id === (settings?.accountsActiveId ?? accounts[0]?.id))?.id ??
+    accounts[0]?.id;
   // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
   // busy-операции закрытие не блокируют (поведение до правки: onClose без
   // guard'а) — хук получает тот же onClose, что и кнопки/оверлей.
@@ -135,7 +137,13 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
 
   const handleDelete = async (id: string, name: string) => {
     // D49: window.confirm в Tauri асинхронен — только await (см. ui/confirm.ts).
-    if (await askConfirm(t("accounts.confirmDelete", { name }))) {
+    if (
+      await askConfirm(t("accounts.confirmDelete", { name }), {
+        danger: true,
+        confirmLabel: t("common.delete"),
+        detail: t("accounts.deleteDetail"),
+      })
+    ) {
       try {
         await remove(id);
       } catch (err) {
@@ -151,8 +159,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
         if (e.target === e.currentTarget) requestClose();
       }}
     >
-      {/* Персонаж+добавление выросли выше вьюпорта — контент модалки скроллится,
-          «Готово» всегда достижим (клавиатурой и мышью).
+      {/* Жёсткий каркас: шапка и «Готово» закреплены, середина скроллится.
           D41/F10: ref и anim-классы на карточке, не на оверлее — иначе
           .anim-closing схлопывает весь экран, а не только диалог. */}
       <div
@@ -161,9 +168,9 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
         role="dialog"
         aria-modal="true"
         aria-label={t("accounts.title")}
-        className="anim-dialog-in flex max-h-[90vh] w-[620px] max-w-full flex-col overflow-y-auto rounded-lg border border-border-app bg-card p-6 shadow-2xl"
+        className="anim-dialog-in flex max-h-[90vh] w-[620px] max-w-full flex-col rounded-lg border border-border-app bg-card shadow-2xl"
       >
-        <div className="flex items-center justify-between border-b border-border-app pb-3">
+        <div className="flex shrink-0 items-center justify-between border-b border-border-app px-6 pb-3 pt-5">
           <h2 className="text-lg font-semibold text-text">{t("accounts.title")}</h2>
           <button
             onClick={requestClose}
@@ -174,12 +181,15 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4">
         {/* Список существующих аккаунтов */}
-        <div className="mt-4">
+        <div>
           <div className="text-xs font-semibold uppercase tracking-wider text-text-muted">
             {t("accounts.currentList")} ({accounts.length})
           </div>
-          <div className="mt-2 flex max-h-44 flex-col gap-2 overflow-y-auto pr-1">
+          {/* Один скролл на всю середину: внутренний скролл списка давал
+              вторую дорожку рядом с дорожкой модалки (судья, 2026-10-03). */}
+          <div className="mt-2 flex flex-col gap-2">
             {accounts.length === 0 ? (
               <div className="rounded-md border border-border-app bg-bg p-3 text-center text-sm text-text-muted">
                 {t("accounts.noAccounts")}
@@ -503,8 +513,9 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
             {error}
           </p>
         )}
+        </div>
 
-        <div className="mt-5 flex justify-end border-t border-border-app pt-3">
+        <div className="flex shrink-0 justify-end border-t border-border-app px-6 py-4">
           <button onClick={onClose} className="btn-primary h-10 px-5 text-sm">
             {t("common.done")}
           </button>

@@ -1,55 +1,29 @@
 // Отрисовка скинов Minecraft (D34): голова — CSS-кроп текстуры, тело —
 // canvas (пиксель-в-пиксель, без сглаживания). Скин без текстуры (офлайн)
-// получает процедурную дефолтную 64×64 текстуру от имени игрока — это НЕ
-// текстуры Mojang, а наша генерация (никаких чужих ассетов).
+// получает дефолтную 64×64 текстуру в духе классического Стива — единая
+// узнаваемая палитра для всех (решение владельца 2026-10-03: раньше была
+// случайная палитра от имени, выглядели пёстро). Наша пиксельная генерация,
+// не текстуры Mojang.
 import { useEffect, useRef } from "react";
 import type { SkinInfo } from "../../api/types";
 
-/** Палитра дефолтного скина: детерминированная от имени (FNV-1a + mulberry32,
- * та же связка, что в defaultArt — разные игроки выглядят по-разному). */
-const DEFAULT_PALETTES: {
-  hair: string;
-  skin: string;
-  eye: string;
-  shirt: string;
-  shirtAlt: string;
-  pants: string;
-  shoe: string;
-}[] = [
-  { hair: "#4a3222", skin: "#c99873", eye: "#3a5fa0", shirt: "#2e8b57", shirtAlt: "#256b45", pants: "#3b4c8c", shoe: "#2b2b33" },
-  { hair: "#1e1e24", skin: "#8d6748", eye: "#4a3a2a", shirt: "#b0563a", shirtAlt: "#8f4430", pants: "#33333d", shoe: "#1f1f27" },
-  { hair: "#7a5a30", skin: "#e0b08a", eye: "#2f6b4f", shirt: "#3f6fae", shirtAlt: "#33578c", pants: "#5a4632", shoe: "#3a3028" },
-  { hair: "#5a2e28", skin: "#a9765a", eye: "#556b2f", shirt: "#7a5aa8", shirtAlt: "#63478c", pants: "#3d3d52", shoe: "#26263a" },
-];
-
-function hashName(name: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < name.length; i++) {
-    h ^= name.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
+/** Палитра дефолтного скина: классический Стив (тёмные волосы, бирюзовая
+ * футболка, синие штаны). */
+const STEVE = {
+  hair: "#3b2a17",
+  skin: "#bd8b72",
+  eye: "#4a3fa0",
+  shirt: "#0e8585",
+  pants: "#4040aa",
+  shoe: "#5f5f5f",
+};
 
 const defaultSkinCache = new Map<string, string>();
 
-/** Дефолтная текстура 64×64 (canvas → data URL): своя пиксельная генерация. */
+/** Дефолтная текстура 64×64 (canvas → data URL): Стив, одинаковый для всех. */
 function defaultSkinTexture(name: string): string {
   const memo = defaultSkinCache.get(name);
   if (memo) return memo;
-
-  const h = hashName(name || "Player");
-  const rand = (() => {
-    let a = h;
-    return () => {
-      a |= 0;
-      a = (a + 0x6d2b79f5) | 0;
-      let t = Math.imul(a ^ (a >>> 15), 1 | a);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  })();
-  const pal = DEFAULT_PALETTES[h % DEFAULT_PALETTES.length];
 
   const canvas = document.createElement("canvas");
   canvas.width = 64;
@@ -62,31 +36,33 @@ function defaultSkinTexture(name: string): string {
   };
 
   // Голова: верх/бока — волосы, лицо — кожа + глаза/рот (перед 8×8 в (8,8)).
-  px(8, 0, 8, 8, pal.hair); // верх головы
+  px(8, 0, 8, 8, STEVE.hair); // верх головы
   px(0, 8, 32, 8, "transparent"); // бока головы — ниже
-  px(0, 8, 8, 8, pal.skin);
-  px(16, 8, 8, 8, pal.skin);
-  px(24, 8, 8, 8, pal.skin);
-  px(8, 8, 8, 8, pal.skin); // лицо
-  px(8, 8, 8, 2, pal.hair); // чёлка
+  px(0, 8, 8, 8, STEVE.skin);
+  px(16, 8, 8, 8, STEVE.skin);
+  px(24, 8, 8, 8, STEVE.skin);
+  px(8, 8, 8, 8, STEVE.skin); // лицо
+  px(8, 8, 8, 2, STEVE.hair); // чёлка
   px(10, 11, 2, 2, "#ffffff"); // белки
   px(14, 11, 2, 2, "#ffffff");
-  px(11, 11, 1, 2, pal.eye); // радужка
-  px(14, 11, 1, 2, pal.eye);
-  px(11, 14, 6, 1, shade(pal.skin, -28)); // рот
-  // Тело (перед 8×12 в (20,20)): футболка с полосой шума.
-  px(20, 20, 8, 12, pal.shirt);
-  for (let i = 0; i < 6; i++) {
-    const x = 20 + Math.floor(rand() * 8);
-    const y = 20 + Math.floor(rand() * 10);
-    px(x, y, 1, 1, pal.shirtAlt);
-  }
+  px(11, 11, 1, 2, STEVE.eye); // радужка
+  px(14, 11, 1, 2, STEVE.eye);
+  px(11, 14, 6, 1, shade(STEVE.skin, -45)); // рот
+  // Тело (перед 8×12 в (20,20)): бирюзовая футболка.
+  px(20, 20, 8, 12, STEVE.shirt);
   // Руки (перед 4×12 в (44,20)): рукав 2px, дальше кожа.
-  px(44, 20, 4, 12, pal.skin);
-  px(44, 20, 4, 3, pal.shirt);
-  // Ноги (перед 4×12 в (4,20)): штаны + ботинки 2px.
-  px(4, 20, 4, 12, pal.pants);
-  px(4, 30, 4, 2, pal.shoe);
+  px(44, 20, 4, 12, STEVE.skin);
+  px(44, 20, 4, 3, STEVE.shirt);
+  // Ноги (перед 4×12 в (4,20)): синие штаны + серые ботинки 2px.
+  px(4, 20, 4, 12, STEVE.pants);
+  px(4, 30, 4, 2, STEVE.shoe);
+  // Левая рука/нога в современном layout 64×64: передние грани (36,52)/(20,52).
+  // Без них SkinBody при modern=true читает прозрачность — фигура «однорукая»
+  // (нашёл судья, 2026-10-03).
+  px(20, 52, 4, 12, STEVE.pants);
+  px(20, 62, 4, 2, STEVE.shoe);
+  px(36, 52, 4, 12, STEVE.skin);
+  px(36, 52, 4, 3, STEVE.shirt);
 
   const url = canvas.toDataURL("image/png");
   defaultSkinCache.set(name, url);

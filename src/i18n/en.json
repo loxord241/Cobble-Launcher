@@ -435,5 +435,8 @@
   "logs.historyCount": "Archived logs ({n})",
   "instances.create.errorHint": "Check the instance name and data directory access",
   "settings.resetOnboarding.desc": "Show the first-run wizard on the next launcher start",
-  "project.versions.open": "Open on Modrinth"
+  "project.versions.open": "Open on Modrinth",
+  "common.confirm": "Confirm",
+  "common.delete": "Delete",
+  "accounts.deleteDetail": "The profile is removed from the launcher only — game files stay untouched."
 }
