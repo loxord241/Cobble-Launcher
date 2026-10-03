@@ -364,6 +364,16 @@ pub async fn wait_auth_code_async(
         let code = extract_query_param(&req, "code");
         let state_ok =
             extract_query_param(&req, "state").as_deref() == Some(expected_state);
+        // SEC-3: пользователь нажал «Отмену» — Microsoft присылает error=access_denied
+        // без code. Раньше мы отвечали браузеру «готово» и продолжали ждать до
+        // таймаута; теперь честно прерываем ожидание с ошибкой.
+        if state_ok {
+            if let Some(err) = extract_query_param(&req, "error") {
+                let _ = stream.write_all(OAUTH_DONE_PAGE.as_bytes()).await;
+                let _ = stream.shutdown().await;
+                return Err(LauncherError::InvalidInput(format!("OAuth: {err}")));
+            }
+        }
         let page = if state_ok {
             OAUTH_DONE_PAGE
         } else {
@@ -402,6 +412,14 @@ pub async fn wait_auth_code(
             let code = extract_query_param(&req, "code");
             let state_ok =
                 extract_query_param(&req, "state").as_deref() == Some(expected_state.as_str());
+            // SEC-3: как в async-варианте — error от провайдера прерывает ожидание.
+            if state_ok {
+                if let Some(err) = extract_query_param(&req, "error") {
+                    let _ = std::io::Write::write_all(&mut stream, OAUTH_DONE_PAGE.as_bytes());
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    return Err(LauncherError::InvalidInput(format!("OAuth: {err}")));
+                }
+            }
             let page = if state_ok {
                 OAUTH_DONE_PAGE
             } else {

@@ -304,6 +304,7 @@
   "instances.java.test.ok": "Java {major} ({bits}-біт) працює",
   "instances.java.test.fail": "Java не запускається: {error}",
   "logs.share": "Надіслати на mclo.gs",
+  "logs.mclogs.confirm": "Лог буде завантажено на публічний сервіс mclo.gs. Він може містити імʼя користувача Windows, адреси серверів і список модів; токени авторизації видаляються автоматично. Продовжити?",
   "logs.share.done": "Лог завантажено: {url}",
   "logs.history": "Минулі логи",
   "logs.archive.empty": "Архівних логів немає",

@@ -14,6 +14,7 @@ import {
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../../api/client";
 import { apiErrorText, t } from "../../i18n";
+import { askConfirm } from "../confirm";
 import { useModalA11y } from "../hooks/useModalA11y";
 import { useInstances, type CrashReport } from "../../state/instances";
 import { useAccounts } from "../../state/accounts";
@@ -89,6 +90,8 @@ export default function CrashReportModal({
   };
 
   const share = async () => {
+    // SEC-4: публикация на mclo.gs — только с явного подтверждения.
+    if (!(await askConfirm(t("logs.mclogs.confirm")))) return;
     setShareBusy(true);
     setShareError(null);
     setShareUrl(null);

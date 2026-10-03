@@ -304,6 +304,7 @@
   "instances.java.test.ok": "Java {major} ({bits}-bit) works",
   "instances.java.test.fail": "Java does not start: {error}",
   "logs.share": "Share to mclo.gs",
+  "logs.mclogs.confirm": "The log will be uploaded to the public service mclo.gs. It may contain your Windows username, server addresses and the mod list; auth tokens are removed automatically. Continue?",
   "logs.share.done": "Log uploaded: {url}",
   "logs.history": "Past logs",
   "logs.archive.empty": "No archived logs",

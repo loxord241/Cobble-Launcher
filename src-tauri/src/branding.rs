@@ -50,6 +50,10 @@ pub fn builtin_png(logo: &str) -> Option<&'static [u8]> {
 /// Скопировать выбранный пользователем PNG в каталог данных (атомарно).
 /// Только PNG (иконки окна конвертируются нативно); ≤2 МБ.
 pub fn set_custom(paths: &Paths, src: &str) -> Result<()> {
+    // SEC-1: та же граница доверия, что у иконки инстанса (A16): путь только
+    // из домашнего каталога, канонизированный — иначе вебвью могло прочитать
+    // любой PNG системы (≤2 МБ) и получить оракул существования файлов.
+    crate::instances::content::ensure_icon_source_allowed(std::path::Path::new(src))?;
     let long = crate::util::fs::long_path(std::path::Path::new(src));
     let meta = std::fs::metadata(&long).map_err(LauncherError::from)?;
     if meta.len() > 2 * 1024 * 1024 {
@@ -142,5 +146,22 @@ mod tests {
         let bad = dir.path().join("bad.png");
         std::fs::write(&bad, b"not a png").unwrap();
         assert!(set_custom(&paths, bad.to_str().unwrap()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod sec_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn set_custom_rejects_paths_outside_home() {
+        // SEC-1: чтение PNG ограничено домашним каталогом (граница A16).
+        let paths = crate::paths::Paths::new(std::env::temp_dir().join("mcl-sec-branding"));
+        let outside = std::path::Path::new("C:\\Windows\\notepad.exe");
+        if outside.exists() {
+            let err = set_custom(&paths, outside.to_str().unwrap()).unwrap_err();
+            assert!(matches!(err, crate::errors::LauncherError::InvalidInput(_)));
+        }
     }
 }

@@ -163,7 +163,27 @@ pub fn test_java(java_exe: &str) -> Result<JavaTestInfo> {
     if exe.is_empty() {
         return Err(LauncherError::InvalidInput("путь к java пуст".into()));
     }
-    let mut cmd = Command::new(crate::util::fs::long_path(Path::new(exe)));
+    // SEC-2: вебвью не должно уметь запускать произвольные бинарники из PATH
+    // (примитив исполнения при XSS). Разрешены: абсолютный путь к java.exe/
+    // javaw.exe/java либо ровно имя «java»/«javaw» из PATH (легитимный кейс
+    // «системная джава»), любое другое имя — отказ.
+    let exe_path = Path::new(exe);
+    // Bare-имя — ровно один компонент без разделителей: иначе относительный
+    // путь «..eviljava.exe» проходил бы проверку file_name.
+    let bare = !exe_path.is_absolute() && !exe.contains("/") && !exe.contains("\\");
+    let allowed_name = matches!(
+        exe_path.file_name().and_then(|n| n.to_str()).map(|n| n.to_ascii_lowercase()),
+        Some(ref n) if n == "java.exe" || n == "javaw.exe" || n == "java" || n == "javaw"
+    );
+    if !allowed_name {
+        return Err(LauncherError::InvalidInput(format!(
+            "ожидался путь к java.exe/javaw.exe, а не: {exe}"
+        )));
+    }
+    if !bare && !exe_path.is_file() {
+        return Err(LauncherError::InvalidInput(format!("файл не найден: {exe}")));
+    }
+    let mut cmd = Command::new(crate::util::fs::long_path(exe_path));
     cmd.arg("-version")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -394,5 +414,21 @@ mod tests {
         assert_eq!(v["major"], 21);
         assert!(v.get("java_exe").is_none(), "snake_case не должен утекать в UI");
         assert!(v.get("arch_bits").is_none());
+    }
+}
+
+#[cfg(test)]
+mod sec_tests {
+    use super::*;
+
+    #[test]
+    fn test_java_rejects_arbitrary_names() {
+        // SEC-2: примитив запуска произвольных бинарников закрыт —
+        // имя не java → отказ ДО spawn (никакого процесса).
+        assert!(test_java("calc.exe").is_err());
+        assert!(test_java("powershell").is_err());
+        assert!(test_java("C:\\Windows\\System32\\cmd.exe").is_err());
+        // относительный путь с разделителями тоже мимо (маскировка под java.exe)
+        assert!(test_java("..\\evil\\java.exe").is_err());
     }
 }

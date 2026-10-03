@@ -1398,6 +1398,20 @@ pub async fn settings_export(
 ) -> Result<OkMsg> {
     let settings = state.settings.read().await.clone();
     let json = crate::settings::export_json(&settings);
+    // SEC-5: ограничить примитив записи — абсолютный путь и только .json
+    // (иначе IPC позволял бы перезаписать произвольный файл настройками).
+    let target = std::path::PathBuf::from(&path);
+    if !target.is_absolute()
+        || target
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("json"))
+            != Some(true)
+    {
+        return Err(LauncherError::InvalidInput(
+            "экспорт настроек — в абсолютный файл .json".into(),
+        ));
+    }
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(dir) = std::path::Path::new(&path).parent() {
             std::fs::create_dir_all(crate::util::fs::long_path(dir))?;

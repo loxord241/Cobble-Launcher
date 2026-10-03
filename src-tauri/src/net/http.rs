@@ -10,7 +10,7 @@ use std::time::Duration;
 pub const USER_AGENT: &str = concat!(
     "mc-launcher-v2/",
     env!("CARGO_PKG_VERSION"),
-    " (github:owner/mc-launcher-v2)"
+    " (github:loxord241/Cobble-Launcher)"
 );
 
 const MAX_RETRIES: u32 = 4;

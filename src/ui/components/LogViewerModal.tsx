@@ -19,6 +19,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useInstances } from "../../state/instances";
 import { api } from "../../api/client";
 import { apiErrorText, currentLanguage, plural, t } from "../../i18n";
+import { askConfirm } from "../confirm";
 import { useModalA11y } from "../hooks/useModalA11y";
 import type { Instance, LogFileInfo } from "../../api/types";
 
@@ -113,6 +114,9 @@ export default function LogViewerModal({
   };
 
   const share = async () => {
+    // SEC-4: mclo.gs — публичный сервис; лог может содержать имя пользователя
+    // Windows, адреса серверов и список модов (токены вычищает redact).
+    if (!(await askConfirm(t("logs.mclogs.confirm")))) return;
     setShareBusy(true);
     setError(null);
     setShareUrl(null);

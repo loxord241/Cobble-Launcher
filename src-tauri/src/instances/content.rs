@@ -285,7 +285,7 @@ pub fn export_mrpack(paths: &Paths, inst: &Instance) -> Result<ArchiveResult> {
 /// каталога пользователя (оттуда его и отдаёт нативный диалог выбора файла).
 /// Без этого рендер читал любой файл системы до 300 КБ (эксфильтрация) и
 /// получал оракул существования файлов по разнице ошибок.
-fn ensure_icon_source_allowed(path: &std::path::Path) -> Result<()> {
+pub(crate) fn ensure_icon_source_allowed(path: &std::path::Path) -> Result<()> {
     if !path.is_absolute() {
         return Err(LauncherError::InvalidInput(
             "путь к иконке должен быть абсолютным".into(),
