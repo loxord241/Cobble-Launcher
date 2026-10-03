@@ -441,5 +441,14 @@
   "accounts.deleteDetail": "Профіль буде видалено лише з лаунчера — файли гри не зачепляться.",
   "accounts.sort.label": "Сортування",
   "accounts.sort.name": "За імʼям",
-  "accounts.sort.added": "За додаванням"
+  "accounts.sort.added": "За додаванням",
+  "instance.optimizeHelp.button": "Як оптимізувати",
+  "instance.optimizeHelp.settings.title": "Налаштування гри (ваніль)",
+  "instance.optimizeHelp.settings.body": "Дальність промальовки — найбільший важіль: 8 чанків і менше. Далі за спаданням: симуляція 6–8 чанків, графіка «Швидка», згладжування та VSync вимкнути, Biome Blend 1, дистанція сутностей 75%, обмежити частоту кадрів і грати на весь екран.",
+  "instance.optimizeHelp.ram.title": "Памʼять",
+  "instance.optimizeHelp.ram.body": "Більше — не означає краще: 4–6 ГБ зазвичай достатньо, а виділяти понад половину памʼяті компʼютера шкідливо. Змінюється в налаштуваннях інстансу.",
+  "instance.optimizeHelp.mods.title": "Модифіковані збірки",
+  "instance.optimizeHelp.mods.body": "Найбільший приріст FPS дає Sodium-стек (Sodium + Lithium). Лаунчер встановлює їх з каталогу в один клік: Головна → Моди → пошук «sodium».",
+  "instance.optimizeHelp.system.title": "Навколо гри",
+  "instance.optimizeHelp.system.body": "Свіжі драйвери відеокарти, закритий браузер і фонові застосунки. Java лаунчер встановлює сам, окремо налаштовувати не потрібно."
 }

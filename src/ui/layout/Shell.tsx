@@ -19,6 +19,7 @@ import {
   ChevronDown,
   Check,
   Download,
+  LoaderCircle,
   UserPlus,
   Wifi,
   WifiOff,
@@ -79,6 +80,12 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   const searchRef = useRef<HTMLInputElement>(null);
   const updateInfo = useUpdateStore((s) => s.info);
   const silentUpdateCheck = useUpdateStore((s) => s.silentCheck);
+  // D54: попап установки у бейджа в футере (состояние общее со стором).
+  const [updateOpen, setUpdateOpen] = useState(false);
+  const updateInstalling = useUpdateStore((s) => s.installing);
+  const updateProgress = useUpdateStore((s) => s.progress);
+  const updateInstallError = useUpdateStore((s) => s.installError);
+  const updateInstall = useUpdateStore((s) => s.install);
   const noticeTimer = useRef<number | null>(null);
   const dropBusy = useRef(false);
   // A8: узкий селектор — сброс лог-буфера каждые 200 мс не должен
@@ -395,8 +402,12 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
                   className="anim-menu-in origin-top-right absolute right-0 top-11 z-50 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
                 >
                   {/* Тот же порядок, что в модалке аккаунтов: активный первый,
-                      дальше по предвыбранной сортировке (D53). */}
-                  {sortAccounts(accounts, accountSortPref(), active?.id).map((a) => (
+                      дальше по предвыбранной сортировке (D53). Список длинный —
+                      свой скролл с потолком, «Управление аккаунтами» и быстрый
+                      ник закреплены под ним (жалоба владельца: без максимизации
+                      окна до действий было не дотянуться). */}
+                  <div className="max-h-[45vh] overflow-y-auto overscroll-contain">
+                    {sortAccounts(accounts, accountSortPref(), active?.id).map((a) => (
                     <button
                       key={a.id}
                       role="menuitemradio"
@@ -414,6 +425,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
                       </span>
                     </button>
                   ))}
+                  </div>
                   <div className="my-1 border-t border-border-app" />
                   <button
                     role="menuitem"
@@ -534,17 +546,94 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
             </button>
           ))}
           <div className="mt-auto border-t border-border-app p-3 text-xs text-text-muted">
+            {/* D54: клик по бейджу открывает попап установки прямо здесь —
+                раньше перекидывал в настройки, владелец просил «не кидать». */}
             {updateInfo?.updateAvailable && updateInfo.latest && (
-              <button
-                type="button"
-                onClick={() => goToPage("settings")}
-                className="mb-2 flex w-full items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2 py-1.5 text-accent hover:bg-accent/15"
-                title={t("updates.availableBadge")}
-              >
-                <Download size={12} aria-hidden />
-                <span className="truncate">{t("updates.availableBadge")}</span>
-                <span className="ml-auto font-mono">{updateInfo.latest}</span>
-              </button>
+              <div className="relative mb-2">
+                <button
+                  type="button"
+                  onClick={() => setUpdateOpen((v) => !v)}
+                  aria-expanded={updateOpen}
+                  className="flex w-full items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2 py-1.5 text-accent hover:bg-accent/15"
+                  title={t("updates.availableBadge")}
+                >
+                  <Download size={12} aria-hidden />
+                  <span className="truncate">{t("updates.availableBadge")}</span>
+                  <span className="ml-auto font-mono">{updateInfo.latest}</span>
+                </button>
+                {updateOpen && (
+                  <>
+                    {/* Подложка: клик мимо закрывает (во время установки
+                        попап не закрываем — не дать сорвать скачивание). */}
+                    {!updateInstalling && (
+                      <div
+                        className="fixed inset-0 z-40"
+                        onClick={() => setUpdateOpen(false)}
+                        aria-hidden
+                      />
+                    )}
+                    <div
+                      role="dialog"
+                      aria-label={t("updates.availableBadge")}
+                      className="anim-fade-up absolute bottom-full left-0 z-50 mb-2 w-72 rounded-lg border border-border-app bg-card p-4 shadow-2xl"
+                    >
+                      <div className="flex items-center gap-2 text-sm font-semibold text-text">
+                        <Download size={14} aria-hidden className="text-accent" />
+                        {t("updates.availableBadge")}
+                        <span className="ml-auto font-mono text-xs text-text-muted">
+                          {updateInfo.latest}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void updateInstall()}
+                        disabled={updateInstalling}
+                        aria-busy={updateInstalling}
+                        className="btn-primary btn-sm mt-3 w-full"
+                      >
+                        {updateInstalling ? (
+                          <LoaderCircle size={14} aria-hidden className="animate-spin" />
+                        ) : (
+                          <Download size={14} aria-hidden />
+                        )}
+                        {updateInstalling ? t("updates.installing") : t("updates.installNow")}
+                      </button>
+                      {updateInstalling && updateProgress !== null && (
+                        <div className="mt-2 flex items-center gap-2">
+                          <div
+                            className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-2"
+                            role="progressbar"
+                            aria-valuenow={updateProgress}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                          >
+                            <div
+                              className="h-full rounded-full bg-success transition-[width] duration-300"
+                              style={{ width: `${updateProgress}%` }}
+                            />
+                          </div>
+                          <span className="font-mono text-xs">{updateProgress}%</span>
+                        </div>
+                      )}
+                      {updateInstallError && (
+                        <p role="alert" className="mt-2 text-xs leading-relaxed text-warning">
+                          {updateInstallError}
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUpdateOpen(false);
+                          goToPage("settings");
+                        }}
+                        className="mt-2 w-full text-left text-xs text-text-muted underline decoration-dotted underline-offset-2 hover:text-text hover:decoration-solid"
+                      >
+                        {t("updates.moreInSettings")}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
             {t("shell.footer.version")} <span className="font-mono">{version}</span>
             {/* A14: обязательный дисклеймер Mojang об неофициальном статусе. */}

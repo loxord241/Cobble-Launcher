@@ -441,5 +441,14 @@
   "accounts.deleteDetail": "The profile is removed from the launcher only — game files stay untouched.",
   "accounts.sort.label": "Sort",
   "accounts.sort.name": "By name",
-  "accounts.sort.added": "By added"
+  "accounts.sort.added": "By added",
+  "instance.optimizeHelp.button": "How to optimize",
+  "instance.optimizeHelp.settings.title": "In-game settings (vanilla)",
+  "instance.optimizeHelp.settings.body": "Render distance is the biggest lever: 8 chunks or fewer. Then, by decreasing effect: simulation distance 6–8, graphics “Fast”, smooth lighting and VSync off, Biome Blend 1, entity distance 75%, cap the frame rate and play fullscreen.",
+  "instance.optimizeHelp.ram.title": "Memory",
+  "instance.optimizeHelp.ram.body": "More is not better: 4–6 GB is usually enough, and allocating more than half of the system RAM hurts. Change it in instance settings.",
+  "instance.optimizeHelp.mods.title": "Modded setups",
+  "instance.optimizeHelp.mods.body": "The biggest FPS gain is the Sodium stack (Sodium + Lithium). The launcher installs it from the catalog in one click: Home → Mods → search “sodium”.",
+  "instance.optimizeHelp.system.title": "Around the game",
+  "instance.optimizeHelp.system.body": "Fresh GPU drivers, browser and background apps closed. The launcher installs a suitable Java on its own — no extra setup needed."
 }

@@ -2,7 +2,7 @@
 // сверху (своя иконка или процедурная «карта»), бейдж версии поверх арта,
 // ниже — имя и подпись; Play всплывает на арте при наведении, кебаб — в ноге.
 // aria-label кнопок прежние («Играть — …», «Остановить — …») — приёмки живут.
-import { memo } from "react";
+import { memo, useState } from "react";
 import { Play, Square } from "lucide-react";
 import { currentLanguage, t } from "../../i18n";
 import type { Instance } from "../../api/types";
@@ -46,12 +46,18 @@ function InstanceCard({
     ? `${inst.loader} ${inst.loaderVersion ?? ""}`
     : t("instances.loader.none");
 
+  // Битая иконка (файл-протух, крошечная 1×1 и т.п.) → процедурный арт,
+  // чтобы карточка не превращалась в пустой прямоугольник (D54).
+  const [iconBroken, setIconBroken] = useState(false);
+  const art = iconBroken || !inst.icon ? defaultArtwork(inst.name) : inst.icon;
+
   return (
     <div className="group flex h-full flex-col overflow-hidden rounded-lg border border-border-app bg-card transition-all duration-200 hover:border-accent/70 hover:shadow-lg hover:shadow-black/25">
       {/* Арт: своя иконка инстанса или процедурная «карта» от имени */}
       <div className="relative aspect-[4/3] w-full shrink-0 overflow-hidden bg-surface-2">
         <img
-          src={inst.icon ?? defaultArtwork(inst.name)}
+          src={art}
+          onError={() => setIconBroken(true)}
           alt=""
           draggable={false}
           className="size-full object-cover"

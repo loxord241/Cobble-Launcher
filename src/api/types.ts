@@ -13,7 +13,7 @@ export interface Account {
 }
 
 /** Откуда взят скин профиля (зеркало crate::auth::skins::SkinSource). */
-export type SkinSource = "ely" | "mojang";
+export type SkinSource = "ely" | "mojang" | "default";
 
 /** Скин профиля для показа в лаунчере (D34); None — скина нет, UI рисует дефолт. */
 export interface SkinInfo {

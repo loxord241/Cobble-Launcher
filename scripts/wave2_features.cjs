@@ -5,10 +5,12 @@ const path = require("path");
 const { chromium } = require("playwright-core");
 const fs = require("fs");
 
-// Минимальный валидный PNG 1x1.
+// Валидный PNG 8x8: картинки 1x1 WebView2 <img> не рендерит вовсе
+// (найдено в D54 — отсюда «битая» иконка на карточке), а суть приёмки —
+// проверить, что иконка видна в строке.
 const PNG_1PX = Buffer.from(
-  "89504e470d0a1a0a0000000d4948445200000001000000010806000001f15c4890000000d4944415478da63fcffff3f030005fe02fea72d1e480000000049454e44ae426082",
-  "hex",
+  'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGM4YWODFTEMLQkAZZlQAVIPr1MAAAAASUVORK5CYII=',
+  "base64",
 );
 
 async function main() {

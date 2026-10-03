@@ -441,5 +441,14 @@
   "accounts.deleteDetail": "Профиль будет удалён только из лаунчера — файлы игры не тронутся.",
   "accounts.sort.label": "Сортировка",
   "accounts.sort.name": "По имени",
-  "accounts.sort.added": "По добавлению"
+  "accounts.sort.added": "По добавлению",
+  "instance.optimizeHelp.button": "Как оптимизировать",
+  "instance.optimizeHelp.settings.title": "Настройки игры (ваниль)",
+  "instance.optimizeHelp.settings.body": "Прорисовка — самый большой рычаг: 8 чанков и меньше. Дальше по убыванию эффекта: симуляция 6–8 чанков, графика «Быстрая», сглаживание и VSync выключить, Biome Blend 1, дистанция сущностей 75%, ограничить частоту кадров и играть в полном экране.",
+  "instance.optimizeHelp.ram.title": "Память",
+  "instance.optimizeHelp.ram.body": "Больше — не значит лучше: 4–6 ГБ обычно достаточно, а выделять больше половины всей памяти компьютера вредно. Меняется в настройках инстанса.",
+  "instance.optimizeHelp.mods.title": "Модифицированные сборки",
+  "instance.optimizeHelp.mods.body": "Главный прирост FPS даёт Sodium-стек (Sodium + Lithium). Лаунчер ставит их из каталога в один клик: Главная → Моды → поиск «sodium».",
+  "instance.optimizeHelp.system.title": "Вокруг игры",
+  "instance.optimizeHelp.system.body": "Свежие драйверы видеокарты, закрытый браузер и фоновые приложения. Java лаунчер ставит подходящую сам, отдельно настраивать не нужно."
 }

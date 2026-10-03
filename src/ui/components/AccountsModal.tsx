@@ -327,7 +327,10 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
                         {t("accounts.skin.changeEly")}
                       </button>
                     )}
-                    {activeAccount.kind === "offline" && (
+                    {/* Подсказка «нет скина» — только когда скина реально нет
+                        (null). С source="default" (Стив из jar) она врала бы:
+                        скин-то показан (D54). */}
+                    {activeAccount.kind === "offline" && skinsById[activeAccount.id] === null && (
                       <div className="max-w-[300px] text-xs leading-relaxed text-text-muted">
                         {t("accounts.skin.offlineHint")}
                       </div>

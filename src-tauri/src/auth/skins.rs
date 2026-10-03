@@ -27,6 +27,9 @@ pub struct SkinInfo {
 pub enum SkinSource {
     Ely,
     Mojang,
+    /// D54: классический Стив, извлечённый из клиент-jar стора (тот же файл,
+    /// что игра использует по умолчанию). Зеркало — src/api/types.ts.
+    Default,
 }
 
 /// Откуда искать скин для аккаунта (без сети — тестируется юнитами).
@@ -176,7 +179,9 @@ pub async fn fetch_skin(
     account: &Account,
 ) -> Result<Option<SkinInfo>> {
     let (source, url) = match target(account) {
-        Target::None => return Ok(None),
+        // Офлайн/свой-без-профиля: настоящий Стив из клиент-jar (D54); нет
+        // jar в сторе — None, UI рисует процедурный запасной вариант.
+        Target::None => return Ok(default_skin(paths)),
         Target::Ely(name) => (SkinSource::Ely, ely_skin_url(&name)?),
         Target::Msa(uuid) => {
             let profile: SessionProfile = http.get_json_retry(&mojang_profile_url(&uuid)?).await?;
@@ -213,6 +218,68 @@ pub async fn fetch_skin(
 
     let data_url = format!("data:image/png;base64,{}", STANDARD.encode(&bytes));
     Ok(Some(SkinInfo { source, data_url }))
+}
+
+/// Настоящий Стив (D54, просьба владельца: «нельзя просто PNG лица и полного
+/// стива?»). Классическая текстура берётся из клиент-jar, уже лежащего в
+/// сторе: файл официальный, скачан по хэшу с сервера Mojang (спека §3),
+/// лаунчер только читает его локально — ничего не докачивает и не
+/// распространяет. Извлечённое кэшируется в cache/steve.png навсегда
+/// (текстура в игре не меняется). Нет ни кэша, ни jar — None.
+pub fn default_skin(paths: &Paths) -> Option<SkinInfo> {
+    let cache = paths.cache_dir().join("steve.png");
+    let bytes = match std::fs::read(crate::util::fs::long_path(&cache)) {
+        Ok(bytes) => bytes,
+        Err(_) => extract_steve_from_store(paths)?,
+    };
+    validate_png(&bytes).ok()?;
+    Some(SkinInfo {
+        source: SkinSource::Default,
+        data_url: format!("data:image/png;base64,{}", STANDARD.encode(&bytes)),
+    })
+}
+
+/// Ищем любой клиент-jar в сторе и вытаскиваем из него
+/// assets/minecraft/textures/entity/steve.png (extract_zip_filtered читает
+/// только нужную запись). Все ванильные jar содержат одну и ту же текстуру.
+fn extract_steve_from_store(paths: &Paths) -> Option<Vec<u8>> {
+    const STEVE_ENTRY: &str = "assets/minecraft/textures/entity/steve.png";
+    let store = crate::util::fs::long_path(&paths.clients_store());
+    let mut jars: Vec<std::path::PathBuf> = std::fs::read_dir(&store)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jar"))
+        .collect();
+    jars.sort();
+    let staging = crate::util::fs::long_path(&paths.cache_dir().join(".steve-staging"));
+    for jar in jars {
+        let file = match std::fs::File::open(&jar) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let _ = std::fs::remove_dir_all(&staging);
+        let extracted = crate::util::zip::extract_zip_filtered(
+            file,
+            &staging,
+            |name| name == STEVE_ENTRY,
+            |_| {},
+        );
+        let png = staging.join(STEVE_ENTRY);
+        let bytes = extracted.ok().and_then(|_| std::fs::read(&png).ok());
+        let _ = std::fs::remove_dir_all(&staging);
+        if let Some(bytes) = bytes {
+            if validate_png(&bytes).is_ok() {
+                let _ = std::fs::create_dir_all(paths.cache_dir());
+                let _ = std::fs::write(
+                    crate::util::fs::long_path(&paths.cache_dir().join("steve.png")),
+                    &bytes,
+                );
+                return Some(bytes);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -321,5 +388,35 @@ mod tests {
         let mut oversize = big.clone();
         oversize.resize(MAX_SKIN_BYTES + 1, 0);
         assert!(validate_png(&oversize).is_err());
+    }
+
+    /// D54: default_skin вытаскивает стива из клиент-jar стора, кэширует и
+    /// отдаёт с источником Default; без клиентов в сторе — честный None.
+    #[test]
+    fn default_skin_extracts_steve_from_client_jar() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        assert!(default_skin(&paths).is_none(), "нет jar — нет Стива");
+
+        let png_bytes = b"\x89PNG\r\n\x1a\nsteve-texture-bytes";
+        let jar_path = crate::util::fs::long_path(&paths.clients_store().join("abc123.jar"));
+        let file = std::fs::File::create(&jar_path).unwrap();
+        let mut zw = zip::ZipWriter::new(file);
+        zw.start_file(
+            "assets/minecraft/textures/entity/steve.png",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        std::io::Write::write_all(&mut zw, png_bytes).unwrap();
+        zw.finish().unwrap();
+
+        let skin = default_skin(&paths).expect("стив должен найтись в jar");
+        assert!(matches!(skin.source, SkinSource::Default));
+        assert!(skin.data_url.starts_with("data:image/png;base64,"));
+        // Кэш записан: повторный вызов работает уже без jar (сносим его).
+        assert!(paths.cache_dir().join("steve.png").exists());
+        std::fs::remove_file(&jar_path).unwrap();
+        assert!(default_skin(&paths).is_some(), "кэш переживает снос jar");
     }
 }

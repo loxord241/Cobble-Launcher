@@ -25,7 +25,7 @@ import {
   Settings as SettingsIcon,
   Share,
   ShieldCheck,
-  Sparkles,
+  HelpCircle,
   Square,
   Trash2,
 } from "lucide-react";
@@ -41,6 +41,7 @@ import AddContentModal from "../components/AddContentModal";
 import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
+import OptimizeHelpModal from "../components/OptimizeHelpModal";
 import WorldsTab from "../components/instance/WorldsTab";
 import ScreensTab from "../components/instance/ScreensTab";
 import ConfigsTab from "../components/instance/ConfigsTab";
@@ -96,7 +97,7 @@ export default function InstanceDetailPage({
   onBack: () => void;
 }) {
   // D8: узкие селекторы — страница не перерисовывается на каждую строку лога.
-  const { list, loaded, status, launch, stop, optimize, remove, duplicate, error, setError, load } =
+  const { list, loaded, status, launch, stop, remove, duplicate, error, setError, load } =
     useInstances(
       useShallow((s) => ({
         list: s.list,
@@ -104,7 +105,6 @@ export default function InstanceDetailPage({
         status: s.status,
         launch: s.launch,
         stop: s.stop,
-        optimize: s.optimize,
         remove: s.remove,
         duplicate: s.duplicate,
         error: s.error,
@@ -120,6 +120,10 @@ export default function InstanceDetailPage({
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
+  // D54: справка «Как оптимизировать» вместо автокнопки.
+  const [optimizeHelpOpen, setOptimizeHelpOpen] = useState(false);
+  // Битая иконка в шапке → процедурный арт (как на карточках).
+  const [heroIconBroken, setHeroIconBroken] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   // Поиск/установка модов в модалке прямо здесь, без перехода на страницу Модов.
   const [addOpen, setAddOpen] = useState(false);
@@ -366,7 +370,8 @@ export default function InstanceDetailPage({
       {/* Шапка в стиле CurseForge: иконка, имя, чипы и большая кнопка запуска. */}
       <section className="flex flex-wrap items-center gap-4 rounded-lg border border-border-app bg-card p-5">
         <img
-          src={inst.icon ?? defaultArtwork(inst.name)}
+          src={heroIconBroken ? defaultArtwork(inst.name) : (inst.icon ?? defaultArtwork(inst.name))}
+          onError={() => setHeroIconBroken(true)}
           alt=""
           aria-hidden
           className="size-16 shrink-0 rounded-lg border border-border-app object-cover"
@@ -425,12 +430,11 @@ export default function InstanceDetailPage({
             </button>
           )}
 
-          <button
-            onClick={() => void optimize(instanceId).catch((e) => setError(apiErrorText(e)))}
-            className="btn-ghost"
-          >
-            <Sparkles size={16} aria-hidden />
-            {t("instances.optimize")}
+          {/* D54: вместо автокнопки «Оптимизировать» — справка, как ускорить
+              руками (у ванили честной автотюнинговки нет). */}
+          <button onClick={() => setOptimizeHelpOpen(true)} className="btn-ghost">
+            <HelpCircle size={16} aria-hidden />
+            {t("instance.optimizeHelp.button")}
           </button>
 
           <div className="relative">
@@ -953,6 +957,8 @@ export default function InstanceDetailPage({
       )}
 
       {renameOpen && <RenameInstanceModal instance={inst} onClose={() => setRenameOpen(false)} />}
+
+      {optimizeHelpOpen && <OptimizeHelpModal onClose={() => setOptimizeHelpOpen(false)} />}
 
       {deleteOpen && (
         <DeleteInstanceDialog

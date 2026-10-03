@@ -323,7 +323,9 @@ export default function HomePage({ query }: { query: string }) {
             </option>
           ))}
         </select>
-        <button onClick={() => void doSearch()} disabled={busy} className="btn-primary btn-sm">
+        {/* Та же высота, что поиск/селекты (h-11 = .btn 44px) — раньше был
+            btn-sm 40px, кнопка «Найти» выглядела чужой в ряду (владелец). */}
+        <button onClick={() => void doSearch()} disabled={busy} className="btn-primary">
           <Search size={15} aria-hidden />
           {t("mods.search")}
         </button>

@@ -19,11 +19,11 @@ export default function UpdatesSection() {
   const error = useUpdateStore((s) => s.error);
   const check = useUpdateStore((s) => s.check);
   const checked = useUpdateStore((s) => s.checked);
-
-  const [installing, setInstalling] = useState(false);
-  // null = прогресс не определён (ContentLength не пришёл), иначе 0–100.
-  const [progress, setProgress] = useState<number | null>(null);
-  const [installError, setInstallError] = useState<string | null>(null);
+  // Установка — в сторе (D54): тот же поток, что и у попапа бейджа в сайдбаре.
+  const installing = useUpdateStore((s) => s.installing);
+  const progress = useUpdateStore((s) => s.progress);
+  const installError = useUpdateStore((s) => s.installError);
+  const install = useUpdateStore((s) => s.install);
 
   useEffect(() => {
     getVersion()
@@ -39,44 +39,8 @@ export default function UpdatesSection() {
     try {
       await openUrl(url);
     } catch (e) {
-      setInstallError(apiErrorText(e));
-    }
-  }, []);
-
-  // Установка: отдельная проверка updater-плагином даёт объект Update с
-  // подписью; качаем с прогрессом и перезапускаемся. Релизы без latest.json
-  // (до 0.2.1) дают ошибку — показываем честный ручной путь.
-  const install = useCallback(async () => {
-    setInstalling(true);
-    setInstallError(null);
-    setProgress(null);
-    try {
-      const { check: pluginCheck } = await import("@tauri-apps/plugin-updater");
-      const update = await pluginCheck();
-      if (!update) {
-        setInstallError(t("updates.installerUnavailable"));
-        return;
-      }
-      let total = 0;
-      let received = 0;
-      await update.downloadAndInstall((ev) => {
-        if (ev.event === "Started") {
-          total = ev.data.contentLength ?? 0;
-        } else if (ev.event === "Progress") {
-          received += ev.data.chunkLength ?? 0;
-          if (total > 0) {
-            setProgress(Math.min(100, Math.round((received * 100) / total)));
-          }
-        } else {
-          setProgress(100);
-        }
-      });
-      const { relaunch } = await import("@tauri-apps/plugin-process");
-      await relaunch();
-    } catch (e) {
-      setInstallError(t("updates.installerUnavailable"));
-    } finally {
-      setInstalling(false);
+      // Поломка opener — в тот же канал честных ошибок установки.
+      useUpdateStore.setState({ installError: apiErrorText(e) });
     }
   }, []);
 
