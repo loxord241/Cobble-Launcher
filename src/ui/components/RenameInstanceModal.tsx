@@ -42,17 +42,21 @@ export default function RenameInstanceModal({
 
   return (
     <div
-      ref={dialogRef}
       className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("instances.rename.title")}
-      tabIndex={-1}
       onClick={(e) => {
         if (e.target === e.currentTarget) requestClose();
       }}
     >
-      <div className="anim-dialog-in w-[420px] rounded-lg border border-border-app bg-card p-5 shadow-xl">
+      {/* D41/F10: ref и anim-классы на карточке, не на оверлее — иначе
+          .anim-closing схлопывает весь экран, а не только диалог. */}
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("instances.rename.title")}
+        className="anim-dialog-in w-[420px] rounded-lg border border-border-app bg-card p-5 shadow-xl"
+      >
         <div className="flex items-center justify-between border-b border-border-app pb-3">
           <h2 className="text-lg font-semibold text-text">{t("instances.rename.title")}</h2>
           <button

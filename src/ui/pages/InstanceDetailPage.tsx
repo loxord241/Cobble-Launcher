@@ -44,6 +44,8 @@ import RenameInstanceModal from "../components/RenameInstanceModal";
 import WorldsTab from "../components/instance/WorldsTab";
 import ScreensTab from "../components/instance/ScreensTab";
 import ConfigsTab from "../components/instance/ConfigsTab";
+import CopyContentDialog from "../components/instance/CopyContentDialog";
+import { askConfirm } from "../confirm";
 import PackArt from "../components/instance/PackArt";
 /** Логический путь файла контента → имя на диске (без .disabled). */
 export function fileBase(file: string): string {
@@ -110,7 +112,8 @@ export default function InstanceDetailPage({
         load: s.load,
       })),
     );
-  const { list: accounts } = useAccounts();
+  // F3/F11: setActive — запуск со страницы активирует профиль инстанса.
+  const { list: accounts, setActive } = useAccounts();
   const { settings } = useSettings();
 
   const [tab, setTab] = useState<Tab>("overview");
@@ -130,6 +133,8 @@ export default function InstanceDetailPage({
   const [snapshots, setSnapshots] = useState<SnapshotInfo[] | null>(null);
   // F10: файл, который копируем в другой инстанс (модалка выбора цели).
   const [copyFor, setCopyFor] = useState<string | null>(null);
+  // F6: несохранённые правки в табе «Конфиги» — спрашиваем при уходе с таба.
+  const [configsDirty, setConfigsDirty] = useState(false);
   // F6/F9: зависимости и конфликты модов; F25: обложки паков.
   const [modMeta, setModMeta] = useState<Record<string, ModMetadata>>({});
   const [packArts, setPackArts] = useState<Record<string, PackArtInfo>>({});
@@ -269,6 +274,8 @@ export default function InstanceDetailPage({
   };
 
   const removeEntry = async (file: string) => {
+    // F8/D49: подтверждение удаления (confirm в Tauri асинхронен — await).
+    if (!(await askConfirm(t("mods.removeConfirm", { file })))) return;
     setContentBusy(true);
     setError(null);
     try {
@@ -392,11 +399,24 @@ export default function InstanceDetailPage({
             </button>
           ) : (
             <button
-              onClick={() =>
-                void launch(instanceId, activeAccount?.name ?? "Player").catch((e) =>
-                  setError(apiErrorText(e)),
-                )
-              }
+              onClick={() => {
+                // F11: у инстанса свой профиль — запускаем от него (активируем,
+                // если он ещё не активен). Профиль удалён — глобальный активный.
+                void (async () => {
+                  const perInst =
+                    inst.accountId !== undefined
+                      ? accounts.find((a) => a.id === inst.accountId)
+                      : undefined;
+                  try {
+                    if (perInst && settings?.accountsActiveId !== perInst.id) {
+                      await setActive(perInst.id);
+                    }
+                    await launch(instanceId, perInst?.name ?? activeAccount?.name ?? "Player");
+                  } catch (e) {
+                    setError(apiErrorText(e));
+                  }
+                })();
+              }}
               aria-label={t("instance.play", { name: inst.name })}
               className="flex h-12 min-w-[168px] items-center justify-center gap-2 rounded-lg bg-accent px-6 text-[15px] font-semibold text-on-accent transition-colors hover:bg-accent-hover"
             >
@@ -594,7 +614,23 @@ export default function InstanceDetailPage({
             aria-selected={tab === id}
             // Панель в DOM одна (текущая): ссылаемся только на существующий id.
             aria-controls={tab === id ? `inst-panel-${id}` : undefined}
-            onClick={() => setTab(id)}
+            onClick={() => {
+              // F6: уход с таба «Конфиги» с несохранёнными правками — подтверждаем
+              // (D49: confirm в Tauri асинхронен, ждём ответа пользователя).
+              void (async () => {
+                if (
+                  tab === "configs" &&
+                  id !== "configs" &&
+                  configsDirty &&
+                  !(await askConfirm(t("instance.configs.unsaved")))
+                ) {
+                  return;
+                }
+                // Таб «Конфиги» размонтируется — dirty-флаг начинаем с чистого.
+                if (tab === "configs" || id === "configs") setConfigsDirty(false);
+                setTab(id);
+              })();
+            }}
             className={`h-9 rounded-lg px-3 text-sm font-medium transition-colors ${
               tab === id
                 ? "bg-accent text-on-accent"
@@ -663,8 +699,14 @@ export default function InstanceDetailPage({
 
         {tab === "screens" && <ScreensTab instanceId={instanceId} setError={setError} />}
 
+        {/* F6: ConfigsTab рапортует о несохранённых правках страницы. */}
         {tab === "configs" && (
-          <ConfigsTab instanceId={instanceId} setError={setError} setNotice={setNotice} />
+          <ConfigsTab
+            instanceId={instanceId}
+            setError={setError}
+            setNotice={setNotice}
+            onDirtyChange={setConfigsDirty}
+          />
         )}
 
         {tab === "mods" && (
@@ -924,59 +966,34 @@ export default function InstanceDetailPage({
         />
       )}
 
-      {/* F10: выбор целевого инстанса для копирования мода. */}
-      {copyFor && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label={t("mods.copy.choose", { file: fileBase(copyFor) })}
-          className="anim-fade-in fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setCopyFor(null);
+      {/* F10: выбор целевого инстанса для копирования мода. Логика копирования
+          остаётся на странице: диалог только выбирает цель и зовёт onPick. */}
+      {copyFor !== null && (
+        <CopyContentDialog
+          open={copyFor !== null}
+          file={copyFor}
+          targets={list.filter((i) => i.id !== instanceId)}
+          busy={contentBusy}
+          onPick={(toId) => {
+            const target = list.find((i) => i.id === toId);
+            setCopyFor(null);
+            setContentBusy(true);
+            setError(null);
+            api
+              .contentCopy(instanceId, toId, copyFor)
+              .then(() =>
+                setNotice(
+                  t("mods.copyTo.done", {
+                    file: fileBase(copyFor),
+                    instance: target?.name ?? toId,
+                  }),
+                ),
+              )
+              .catch((e) => setError(apiErrorText(e)))
+              .finally(() => setContentBusy(false));
           }}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setCopyFor(null);
-          }}
-        >
-          <div className="anim-dialog-in flex max-h-[70vh] w-[420px] max-w-full flex-col rounded-lg border border-border-app bg-card p-4 shadow-2xl">
-            <div className="text-sm font-semibold">
-              {t("mods.copy.choose", { file: fileBase(copyFor) })}
-            </div>
-            <div className="mt-3 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-              {list
-                .filter((i) => i.id !== instanceId)
-                .map((i) => (
-                  <button
-                    key={i.id}
-                    disabled={contentBusy}
-                    onClick={() => {
-                      const toId = i.id;
-                      setCopyFor(null);
-                      setContentBusy(true);
-                      setError(null);
-                      api
-                        .contentCopy(instanceId, toId, copyFor)
-                        .then(() => setNotice(t("mods.copyTo.done", { file: fileBase(copyFor), instance: i.name })))
-                        .catch((e) => setError(apiErrorText(e)))
-                        .finally(() => setContentBusy(false));
-                    }}
-                    className="flex h-10 items-center gap-2 rounded-md border border-border-app px-3 text-left text-sm hover:border-accent/60 hover:bg-card-hover disabled:opacity-50"
-                  >
-                    <span className="truncate font-semibold">{i.name}</span>
-                    <span className="chip-mono ml-auto">{i.mcVersion}</span>
-                  </button>
-                ))}
-              {list.filter((i) => i.id !== instanceId).length === 0 && (
-                <p className="px-1 py-3 text-[13px] text-text-muted">{t("instances.empty.title")}</p>
-              )}
-            </div>
-            <div className="mt-3 flex justify-end border-t border-border-app pt-2">
-              <button onClick={() => setCopyFor(null)} className="btn-ghost btn-sm">
-                {t("common.close")}
-              </button>
-            </div>
-          </div>
-        </div>
+          onClose={() => setCopyFor(null)}
+        />
       )}
     </div>
   );
@@ -1137,7 +1154,7 @@ function LogsPanel({
             {archive && (
               <button onClick={() => setArchive(null)} className="btn-ghost btn-sm mb-2">
                 <ArrowLeft size={14} aria-hidden />
-                {t("onboarding.back")}
+                {t("common.back")}
               </button>
             )}
             {archiveList === null ? null : archiveList.length === 0 ? (

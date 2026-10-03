@@ -5,6 +5,7 @@ import { useAccounts, accountKindLabelKey } from "../../state/accounts";
 import { useSkins } from "../../state/skins";
 import { useSettings } from "../../state/settings";
 import { useModalA11y } from "../hooks/useModalA11y";
+import { askConfirm } from "../confirm";
 import { SkinBody, SkinHead } from "./SkinViews";
 import { api } from "../../api/client";
 import { apiErrorText, t } from "../../i18n";
@@ -133,7 +134,8 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (window.confirm(t("accounts.confirmDelete", { name }))) {
+    // D49: window.confirm в Tauri асинхронен — только await (см. ui/confirm.ts).
+    if (await askConfirm(t("accounts.confirmDelete", { name }))) {
       try {
         await remove(id);
       } catch (err) {
@@ -144,19 +146,23 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      ref={dialogRef}
       className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("accounts.title")}
-      tabIndex={-1}
       onClick={(e) => {
         if (e.target === e.currentTarget) requestClose();
       }}
     >
       {/* Персонаж+добавление выросли выше вьюпорта — контент модалки скроллится,
-          «Готово» всегда достижим (клавиатурой и мышью). */}
-      <div className="anim-dialog-in flex max-h-[90vh] w-[620px] max-w-full flex-col overflow-y-auto rounded-lg border border-border-app bg-card p-6 shadow-2xl">
+          «Готово» всегда достижим (клавиатурой и мышью).
+          D41/F10: ref и anim-классы на карточке, не на оверлее — иначе
+          .anim-closing схлопывает весь экран, а не только диалог. */}
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("accounts.title")}
+        className="anim-dialog-in flex max-h-[90vh] w-[620px] max-w-full flex-col overflow-y-auto rounded-lg border border-border-app bg-card p-6 shadow-2xl"
+      >
         <div className="flex items-center justify-between border-b border-border-app pb-3">
           <h2 className="text-lg font-semibold text-text">{t("accounts.title")}</h2>
           <button
@@ -277,20 +283,24 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
                     )}
                   </>
                 )}
-                <button
-                  type="button"
-                  disabled={skinBusy}
-                  onClick={() => {
-                    setSkinBusy(true);
-                    void refreshSkin(activeAccount)
-                      .catch((e) => setError(apiErrorText(e)))
-                      .finally(() => setSkinBusy(false));
-                  }}
-                  className="btn-ghost h-8 w-fit gap-2 px-2.5 text-xs"
-                >
-                  <RefreshCw size={14} aria-hidden />
-                  {t("accounts.skin.refresh")}
-                </button>
+                {/* F4: офлайн-аккаунту обновлять скин нечего (см. offlineHint
+                    выше) — кнопку «Обновить» для него не показываем. */}
+                {activeAccount.kind !== "offline" && (
+                  <button
+                    type="button"
+                    disabled={skinBusy}
+                    onClick={() => {
+                      setSkinBusy(true);
+                      void refreshSkin(activeAccount)
+                        .catch((e) => setError(apiErrorText(e)))
+                        .finally(() => setSkinBusy(false));
+                    }}
+                    className="btn-ghost h-8 w-fit gap-2 px-2.5 text-xs"
+                  >
+                    <RefreshCw size={14} aria-hidden />
+                    {t("accounts.skin.refresh")}
+                  </button>
+                )}
               </div>
             </div>
           </div>

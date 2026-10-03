@@ -150,6 +150,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             <select
               value={version}
               onChange={(e) => setVersion(e.target.value)}
+              aria-label={t("onboarding.instance")}
               className="mt-3 w-full rounded-md border border-border-app bg-bg px-3 py-2"
             >
               {versions.map((v) => (

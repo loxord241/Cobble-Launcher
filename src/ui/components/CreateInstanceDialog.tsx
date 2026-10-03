@@ -96,17 +96,21 @@ export default function CreateInstanceDialog({
 
   return (
     <div
-      ref={dialogRef}
       className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("instances.create")}
-      tabIndex={-1}
       onClick={(e) => {
         if (e.target === e.currentTarget) requestClose();
       }}
     >
-      <div className="anim-dialog-in w-[440px] rounded-lg border border-border-app bg-card p-5">
+      {/* D41/F10: ref и anim-классы на карточке, не на оверлее — иначе
+          .anim-closing схлопывает весь экран, а не только диалог. */}
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("instances.create")}
+        className="anim-dialog-in w-[440px] rounded-lg border border-border-app bg-card p-5"
+      >
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">{t("instances.create")}</h2>
           <button onClick={requestClose} aria-label={t("common.close")} className="text-text-muted hover:text-text">

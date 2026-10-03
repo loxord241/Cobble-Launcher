@@ -338,27 +338,23 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
             />
           </Field>
 
-          <Field label={t("settings.snapshots")}>
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-sm font-medium">{t("settings.language")}</div>
-              </div>
-              <select
-                value={settings.language}
-                onChange={(e) => commit({ language: e.target.value })}
-                aria-label={t("settings.language")}
-                className="h-10 rounded-lg border border-border-strong bg-card px-3 text-sm"
-              >
-                <option value="en">English</option>
-                <option value="ru">Русский</option>
-                <option value="uk">Українська</option>
-              </select>
-            </div>
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-sm font-medium">{t("settings.uiScale")}</div>
-                <div className="text-[13px] text-text-muted">{t("settings.uiScale.hint")}</div>
-              </div>
+          {/* F7: язык, масштаб и снапшоты — три самостоятельных Field,
+              а не один Field «Снапшоты» с чужими контролами внутри. */}
+          <Field label={t("settings.language")}>
+            <select
+              value={settings.language}
+              onChange={(e) => commit({ language: e.target.value })}
+              aria-label={t("settings.language")}
+              className="h-10 rounded-lg border border-border-strong bg-card px-3 text-sm"
+            >
+              <option value="en">English</option>
+              <option value="ru">Русский</option>
+              <option value="uk">Українська</option>
+            </select>
+          </Field>
+
+          <Field label={t("settings.uiScale")}>
+            <div className="flex flex-col items-end gap-1">
               <select
                 value={String(settings.uiScale ?? 100)}
                 onChange={(e) => commit({ uiScale: Number(e.target.value) })}
@@ -371,7 +367,11 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
                   </option>
                 ))}
               </select>
+              <span className="text-[13px] text-text-muted">{t("settings.uiScale.hint")}</span>
             </div>
+          </Field>
+
+          <Field label={t("settings.snapshots")}>
             <Toggle
               checked={settings.showSnapshots}
               onChange={(v) => commit({ showSnapshots: v })}

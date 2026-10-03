@@ -219,7 +219,7 @@ export default function LogViewerModal({
                 className="btn-ghost flex h-8 items-center gap-1 px-2 text-xs"
               >
                 <ArrowLeft size={14} aria-hidden />
-                {t("onboarding.back")}
+                {t("common.back")}
               </button>
             )}
           </div>

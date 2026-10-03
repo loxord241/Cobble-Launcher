@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Archive, Globe, Trash2 } from "lucide-react";
 import { api } from "../../../api/client";
 import { apiErrorText, currentLanguage, t } from "../../../i18n";
+import { askConfirm } from "../../confirm";
 import type { WorldInfo, WorldScope } from "../../../api/types";
 
 /** Размер мира в строке списка: МБ с округлением (как fmtBytes в настройках). */
@@ -71,9 +72,12 @@ export default function WorldsTab({
       await load();
     });
 
-  const removeData = (w: WorldInfo, scope: WorldScope) => {
-    // Подтверждение — только на безвозвратное удаление мира целиком.
-    if (scope === "all" && !window.confirm(t("worlds.deleteConfirm", { name: w.name }))) return;
+  const removeData = async (w: WorldInfo, scope: WorldScope) => {
+    // Подтверждение на безвозвратное удаление: мир целиком или сброс Незера/Энда.
+    // D49: confirm в Tauri асинхронен — только await (см. ui/confirm.ts).
+    if (scope === "all" && !(await askConfirm(t("worlds.deleteConfirm", { name: w.name })))) return;
+    if (scope === "nether" && !(await askConfirm(t("worlds.resetNetherConfirm", { name: w.name })))) return;
+    if (scope === "end" && !(await askConfirm(t("worlds.resetEndConfirm", { name: w.name })))) return;
     void run(async () => {
       await api.worldDeleteData(instanceId, w.name, scope);
       await load();

@@ -1,7 +1,7 @@
 // Стейт настроек (zustand). Спека §8: темы/язык применяются мгновенно.
 import { create } from "zustand";
 import { api } from "../api/client";
-import { hasStoredLanguage, setLanguage } from "../i18n";
+import { apiErrorText, hasStoredLanguage, setLanguage } from "../i18n";
 import { setTheme, isThemeId } from "../theme/theme";
 import type { Settings } from "../api/types";
 
@@ -117,9 +117,9 @@ export const useSettings = create<SettingsState>((set, get) => ({
       applySideEffects(settings);
       set({ settings, loaded: true, error: null });
     } catch (e) {
-      // Честная ошибка вместо вечного спиннера (D6).
+      // Честная ошибка вместо вечного спиннера (D6); B11 — локализованный текст.
       set({
-        error: (e as { message?: string })?.message ?? String(e),
+        error: apiErrorText(e),
         loaded: false,
       });
     }

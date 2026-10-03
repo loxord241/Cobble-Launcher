@@ -5,7 +5,7 @@
 // Миниатюру ядро отдаёт только для файлов до 300 КБ — большие карточки
 // показывают серый плейсхолдер с иконкой.
 import { useCallback, useEffect, useState } from "react";
-import { Image, Trash2 } from "lucide-react";
+import { Folder, Image, Trash2 } from "lucide-react";
 import { api } from "../../../api/client";
 import { apiErrorText, t } from "../../../i18n";
 import type { ShotInfo } from "../../../api/types";
@@ -39,6 +39,11 @@ export default function ScreensTab({
     void load();
   }, [load]);
 
+  // Открыть папку скриншотов в проводнике (большие файлы иначе не посмотреть).
+  const openFolder = () => {
+    void api.instanceScreensOpen(instanceId).catch((e) => setError(apiErrorText(e)));
+  };
+
   const remove = (s: ShotInfo) => {
     void (async () => {
       setBusy(true);
@@ -62,6 +67,10 @@ export default function ScreensTab({
         <>
           <div className="mb-2 flex items-center gap-2">
             <span className="chip-mono">{shots.length}</span>
+            <button onClick={openFolder} className="btn-ghost btn-sm ml-auto">
+              <Folder size={14} aria-hidden />
+              {t("screens.open")}
+            </button>
           </div>
           <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-2">
             {shots.map((s) => (
@@ -69,7 +78,11 @@ export default function ScreensTab({
                 key={s.name}
                 className="group overflow-hidden rounded-md border border-border-app transition-colors hover:border-accent/60"
               >
-                <div className="flex aspect-video items-center justify-center bg-bg">
+                <div
+                  className={`flex aspect-video items-center justify-center bg-bg${s.thumb ? "" : " cursor-pointer"}`}
+                  onClick={s.thumb ? undefined : openFolder}
+                  title={s.thumb ? undefined : t("screens.open")}
+                >
                   {s.thumb ? (
                     <img
                       src={s.thumb}

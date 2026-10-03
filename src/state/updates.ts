@@ -5,6 +5,7 @@
 // выпрыгивают никуда, честный результат виден в Настройках → «Обновления».
 import { create } from "zustand";
 import { api } from "../api/client";
+import { apiErrorText } from "../i18n";
 import type { UpdateInfo } from "../api/types";
 
 interface UpdateState {
@@ -31,7 +32,8 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       const info = await api.updateCheck();
       set({ info, checked: true });
     } catch (e) {
-      set({ info: null, checked: true, error: String(e) });
+      // B11: текст ошибки локализуется по языку UI, а не сырой из ядра.
+      set({ info: null, checked: true, error: apiErrorText(e) });
     } finally {
       set({ busy: false });
     }

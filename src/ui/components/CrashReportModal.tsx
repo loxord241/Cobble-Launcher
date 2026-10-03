@@ -112,17 +112,21 @@ export default function CrashReportModal({
 
   return (
     <div
-      ref={dialogRef}
       className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-      role="alertdialog"
-      aria-modal="true"
-      aria-label={t("crash.title")}
-      tabIndex={-1}
       onClick={(e) => {
         if (e.target === e.currentTarget) requestClose();
       }}
     >
-      <div className="anim-dialog-in flex max-h-[90vh] w-[640px] max-w-full flex-col rounded-lg border border-error/50 bg-card p-6 shadow-2xl">
+      {/* D41/F10: ref и anim-классы на карточке, не на оверлее — иначе
+          .anim-closing схлопывает весь экран, а не только диалог. */}
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={t("crash.title")}
+        className="anim-dialog-in flex max-h-[90vh] w-[640px] max-w-full flex-col rounded-lg border border-error/50 bg-card p-6 shadow-2xl"
+      >
         <div className="flex items-center justify-between border-b border-border-app pb-3">
           <div className="flex items-center gap-3">
             <span className="grid size-10 place-items-center rounded-lg bg-error/15 text-error">

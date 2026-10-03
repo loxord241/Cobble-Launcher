@@ -30,6 +30,7 @@ import { useSettings } from "../../state/settings";
 import { useAccounts, accountKindLabelKey } from "../../state/accounts";
 import { useSkins } from "../../state/skins";
 import { useUpdateStore } from "../../state/updates";
+import { resolveLaunchTarget } from "../../state/launch";
 import { SkinHead } from "../components/SkinViews";
 import HomePage from "../pages/HomePage";
 import InstancesPage from "../pages/InstancesPage";
@@ -199,12 +200,14 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   const launchFromShortcut = useCallback(
     async (id: string) => {
       try {
-        await launch(id, active?.name ?? "Player");
+        // F11: привязанный к инстансу профиль активируется и идёт в запуск.
+        const player = await resolveLaunchTarget(id);
+        await launch(id, player);
       } catch {
         // launch сам кладёт ошибку в стор статусов — тут глушить нечего.
       }
     },
-    [launch, active?.name],
+    [launch],
   );
 
   useEffect(() => {
@@ -526,7 +529,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
             {updateInfo?.updateAvailable && updateInfo.latest && (
               <button
                 type="button"
-                onClick={() => setPage("settings")}
+                onClick={() => goToPage("settings")}
                 className="mb-2 flex w-full items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2 py-1.5 text-accent hover:bg-accent/15"
                 title={t("updates.availableBadge")}
               >

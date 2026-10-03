@@ -1,8 +1,8 @@
 // F19: палитра команд — модалка над всем UI (z-[60]): навигация по разделам,
 // инстансы («Открыть»/«Запустить»), управление аккаунтами. Фильтр — подстрока
-// без учёта регистра, максимум 10 результатов. Данные (инстансы, статусы,
-// профили) палитра читает из сторов сама — как CrashReportModal; Shell
-// передаёт только колбэки-переходы и onClose.
+// без учёта регистра, максимум 10 результатов. Данные (инстансы, статусы)
+// палитра читает из сторов сама — как CrashReportModal; Shell передаёт только
+// колбэки-переходы и onClose.
 import { useMemo, useState } from "react";
 import {
   Box,
@@ -14,8 +14,7 @@ import {
 } from "lucide-react";
 import { t } from "../../i18n";
 import { useInstances } from "../../state/instances";
-import { useAccounts } from "../../state/accounts";
-import { useSettings } from "../../state/settings";
+import { resolveLaunchTarget } from "../../state/launch";
 import { useModalA11y } from "../hooks/useModalA11y";
 
 type PalettePage = "home" | "instances" | "settings";
@@ -56,12 +55,6 @@ export default function CommandPalette({
 
   const list = useInstances((s) => s.list);
   const status = useInstances((s) => s.status);
-  const accounts = useAccounts((s) => s.list);
-  const settings = useSettings((s) => s.settings);
-  // Профиль запуска — как в Shell и CrashReportModal: активный из настроек,
-  // иначе первый в списке.
-  const active =
-    accounts.find((a) => a.id === settings?.accountsActiveId) ?? accounts[0] ?? null;
 
   const items = useMemo<PaletteItem[]>(() => {
     // (а) Навигация по разделам (те же ключи, что в сайдбаре Shell).
@@ -78,8 +71,9 @@ export default function CommandPalette({
       run: () => onNavigate(page),
     }));
 
-    // (б) Инстансы: «Открыть {name}» + «Запустить {name}» (не для running
-    // и только если есть профиль — без него запуск невозможен).
+    // (б) Инстансы: «Открыть {name}» + «Запустить {name}» (не для running).
+    // Профиль запуска резолвит resolveLaunchTarget: привязанный к инстансу
+    // аккаунт активируется сам — глобальный активный для гейта не нужен.
     const instanceItems: PaletteItem[] = list.flatMap((inst) => {
       const result: PaletteItem[] = [
         {
@@ -89,12 +83,18 @@ export default function CommandPalette({
           run: () => onOpenInstance(inst.id),
         },
       ];
-      if (active && status[inst.id]?.phase !== "running") {
+      if (status[inst.id]?.phase !== "running") {
         result.push({
           key: `launch-${inst.id}`,
           icon: Play,
           label: t("shell.palette.launch", { name: inst.name }),
-          run: () => onLaunchInstance(inst.id, active.name),
+          run: () => {
+            // Ошибок здесь показать негде (у палитры нет setError), но и
+            // висячий reject не нужен: launch_state доложит о сбое запуска.
+            void resolveLaunchTarget(inst.id)
+              .then((player) => onLaunchInstance(inst.id, player))
+              .catch(() => undefined);
+          },
         });
       }
       return result;
@@ -125,7 +125,6 @@ export default function CommandPalette({
     query,
     list,
     status,
-    active,
     onNavigate,
     onOpenInstance,
     onLaunchInstance,
@@ -156,17 +155,21 @@ export default function CommandPalette({
 
   return (
     <div
-      ref={dialogRef}
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("shell.palette.open")}
-      tabIndex={-1}
       className="anim-fade-in fixed inset-0 z-[60] flex items-start justify-center bg-black/70 p-4 pt-[12vh]"
       onClick={(e) => {
         if (e.target === e.currentTarget) requestClose();
       }}
     >
-      <div className="anim-dialog-in flex w-[560px] max-w-full flex-col overflow-hidden rounded-lg border border-border-strong bg-card shadow-2xl">
+      {/* F10: ref/role/aria — на карточке диалога (как в ProjectDetailModal),
+          чтобы .anim-closing при закрытии анимировал её, а не подложку. */}
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("shell.palette.open")}
+        className="anim-dialog-in flex w-[560px] max-w-full flex-col overflow-hidden rounded-lg border border-border-strong bg-card shadow-2xl"
+      >
         {/* Combobox-паттерн ARIA: ввод + listbox с aria-activedescendant. */}
         <input
           type="text"

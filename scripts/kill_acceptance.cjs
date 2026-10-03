@@ -12,7 +12,7 @@ async function main() {
 
   // Ждём shell (приложение уже онбордингнуто).
   await page.waitForSelector("text=Инстансы", { timeout: 20000 });
-  await page.getByRole("navigation").getByRole("button", { name: /^Главная/ }).click().catch(() => {});
+  await page.getByRole("navigation").getByRole("button", { name: /^Инстансы/ }).click().catch(() => {}); // D40: каталог на Главной, кнопки «Играть —» только на Инстансах
   await page.waitForTimeout(500);
 
   // Кнопка Play в строке инстанса (не в hero — у hero просто «Играть»).

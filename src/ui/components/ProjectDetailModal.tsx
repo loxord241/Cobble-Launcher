@@ -7,6 +7,7 @@ import { Clock, Download, ExternalLink, HardDrive, Heart, LoaderCircle, Scale, X
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../../api/client";
 import { apiErrorText, currentLanguage, plural, t } from "../../i18n";
+import { useInstances } from "../../state/instances";
 import { useModalA11y } from "../hooks/useModalA11y";
 import { Markdown } from "./markdown";
 import type {
@@ -163,6 +164,10 @@ export default function ProjectDetailModal({
       if (isPack) {
         // Модпак всегда ставится в НОВЫЙ инстанс (само ядро).
         const inst = await api.modpackInstall(hit.project_id);
+        // F1: обновляем глобальный стор инстансов, иначе новая сборка —
+        // «фантом»: в ядре есть, а на странице «Сборки» появится только
+        // после перезапуска (стор уже загружен и сам не перечитывается).
+        await useInstances.getState().load();
         setBanner({ ok: true, text: t("project.installDone", { name: inst.name }) });
       } else {
         await api.contentInstall(targetId, hit.project_id, versionId);
