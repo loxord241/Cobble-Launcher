@@ -1,0 +1,51 @@
+[
+  {
+    "id": "m1version",
+    "project_id": "AANobbMI",
+    "version_number": "0.6.0+fabric.1.21.1",
+    "version_type": "release",
+    "game_versions": ["1.21.1"],
+    "loaders": ["fabric"],
+    "dependencies": [
+      {
+        "version_id": null,
+        "project_id": "P7dR8mSH",
+        "dependency_type": "required"
+      },
+      {
+        "version_id": null,
+        "project_id": "optProj",
+        "dependency_type": "optional"
+      }
+    ],
+    "files": [
+      {
+        "hashes": { "sha1": "aaa111", "sha512": "xxx" },
+        "url": "https://cdn.modrinth.com/data/AANobbMI/versions/m1version/sodium-0.6.0.jar",
+        "filename": "sodium-0.6.0.jar",
+        "primary": true,
+        "size": 1234567
+      }
+    ],
+    "changelog": "Initial 1.21.1 support"
+  },
+  {
+    "id": "m0version",
+    "project_id": "AANobbMI",
+    "version_number": "0.5.11+fabric.1.20.6",
+    "version_type": "release",
+    "game_versions": ["1.20.6"],
+    "loaders": ["fabric"],
+    "dependencies": [],
+    "files": [
+      {
+        "hashes": { "sha1": "bbb222", "sha512": "yyy" },
+        "url": "https://cdn.modrinth.com/data/AANobbMI/versions/m0version/sodium-0.5.11.jar",
+        "filename": "sodium-0.5.11.jar",
+        "primary": true,
+        "size": 1234567
+      }
+    ],
+    "changelog": null
+  }
+]
