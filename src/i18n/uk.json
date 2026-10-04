@@ -422,6 +422,8 @@
   "addContent.open": "Додати моди",
   "home.searchPacks": "Пошук модпаків на Modrinth…",
   "home.searchMods": "Пошук модів на Modrinth…",
+  "home.lucky": "Мені пощастить",
+  "home.luckyRolling": "Вибираю…",
   "mods.downloads.one": "{n} завантаження",
   "mods.downloads.few": "{n} завантаження",
   "mods.downloads.many": "{n} завантажень",

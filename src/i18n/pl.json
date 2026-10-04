@@ -422,6 +422,8 @@
   "addContent.open": "Dodaj mody",
   "home.searchPacks": "Szukaj paczek modów na Modrinth…",
   "home.searchMods": "Szukaj modów na Modrinth…",
+  "home.lucky": "Szczęśliwy traf",
+  "home.luckyRolling": "Wybieram…",
   "mods.downloads.one": "{n} pobranie",
   "mods.downloads.few": "{n} pobrania",
   "mods.downloads.many": "{n} pobrań",

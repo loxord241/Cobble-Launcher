@@ -3,7 +3,7 @@
 // строк. Клик по строке/кнопке «Установить» открывает окно проекта —
 // установка происходит внутри окна. Инстансы живут на странице «Инстансы».
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
-import { Download, Search, SearchX } from "lucide-react"
+import { Dices, Download, Search, SearchX } from "lucide-react"
 import { api } from "../../api/client"
 import { apiErrorText, currentLanguage, plural, t } from "../../i18n"
 import type { SearchHit } from "../../api/types"
@@ -149,6 +149,7 @@ export default function HomePage({ query }: { query: string }) {
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<SearchHit | null>(null)
+  const [luckyBusy, setLuckyBusy] = useState(false)
   const sentinelRef = useRef<HTMLDivElement>(null)
   const stuckRef = useRef<HTMLDivElement>(null)
   const [stuck, setStuck] = useState(false)
@@ -184,6 +185,25 @@ export default function HomePage({ query }: { query: string }) {
     void doSearch()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, sort, loader])
+
+  // «Мне повезёт»: случайный проект активного типа (модпак/мод) без учёта
+  // текста запроса и фильтров. Два запроса: total_hits → случайная страница
+  // из одного проекта; открывается окно проекта, установка — как из каталога.
+  const feelingLucky = async () => {
+    setLuckyBusy(true)
+    setError(null)
+    try {
+      const count = await api.modrinthSearch("", undefined, undefined, tab, "relevance", 1, 0)
+      if (count.total_hits === 0) return
+      const offset = Math.floor(Math.random() * count.total_hits)
+      const r = await api.modrinthSearch("", undefined, undefined, tab, "relevance", 1, offset)
+      if (r.hits[0]) setDetail(r.hits[0])
+    } catch (e) {
+      setError(apiErrorText(e))
+    } finally {
+      setLuckyBusy(false)
+    }
+  }
 
   // Дозагрузка следующей страницы (offset = сколько уже загрузили, дедуп по project_id).
   const loadMore = useCallback(async () => {
@@ -328,6 +348,18 @@ export default function HomePage({ query }: { query: string }) {
         <button onClick={() => void doSearch()} disabled={busy} className="btn-primary">
           <Search size={15} aria-hidden />
           {t("mods.search")}
+        </button>
+        {/* «Мне повезёт» (D58): случайный проект активного таба — окно проекта
+            открывается сразу, установка обычным путём. Отдельный busy — не
+            мешает обычному поиску. */}
+        <button
+          onClick={() => void feelingLucky()}
+          disabled={busy || luckyBusy}
+          className="btn"
+          aria-label={t("home.lucky")}
+        >
+          <Dices size={15} aria-hidden />
+          {luckyBusy ? t("home.luckyRolling") : t("home.lucky")}
         </button>
       </div>
       {/* Тень под панелью — только когда панель реально залипла (.sticky-fade
