@@ -11,7 +11,6 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Cobble Launcher",
@@ -19,8 +18,7 @@
         "height": 820,
         "minWidth": 720,
         "minHeight": 480,
-        "decorations": false,
-        "additionalBrowserArgs": "--remote-debugging-port=9223"
+        "decorations": false
       }
     ],
     "security": {

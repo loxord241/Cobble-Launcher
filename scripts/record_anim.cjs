@@ -43,8 +43,9 @@ async function main() {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const main = page.locator("main");
 
-  // 1. Главная: вход страницы + каскад строк
-  await sleep(3500);
+  // 1. Главная: вход страницы + каскад строк (перезагрузка выше уже
+  //    отыграла вход — длинная статичная пауза в ролике не нужна)
+  await sleep(1800);
   // 2. Прокрутка: дозагрузка (stagger) + sticky-панель
   await main.evaluate((m) => m.scrollTo(0, 1400));
   await sleep(3000);
