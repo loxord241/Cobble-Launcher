@@ -86,6 +86,33 @@ fn open_mrpack(path: &Path) -> Result<MrpackIndex> {
     Ok(index)
 }
 
+/// Загрузчик из dependencies .mrpack (спека §6.2): у Forge/NeoForge ключ —
+/// `forge`/`neoforge` БЕЗ суффикса `-loader` (пример BMC4:
+/// {"minecraft":"1.20.1","forge":"47.3.0"}), у Fabric/Quilt —
+/// `fabric-loader`/`quilt-loader`. Значение — точная версия загрузчика.
+/// Раньше ключи искались фильтром `ends_with("-loader")`, и forge/neoforge
+/// молча пропускались — пак вставал как vanilla без загрузчика.
+/// Неизвестный `*-loader` — честная ошибка ДО скачиваний (спека §15: не падать
+/// молча), остальные ключи (кроме `minecraft` — версия игры) игнорируются.
+pub fn resolve_loader(deps: &HashMap<String, String>) -> Result<Option<(&str, &str)>> {
+    for (key, name) in [
+        ("fabric-loader", "fabric"),
+        ("quilt-loader", "quilt"),
+        ("forge", "forge"),
+        ("neoforge", "neoforge"),
+    ] {
+        if let Some(v) = deps.get(key) {
+            return Ok(Some((name, v.as_str())));
+        }
+    }
+    if let Some(other) = deps.keys().find(|k| k.ends_with("-loader")) {
+        return Err(LauncherError::InvalidInput(format!(
+            "неизвестный загрузчик модпака: {other}"
+        )));
+    }
+    Ok(None)
+}
+
 /// Хосты, с которых .mrpack имеет право тянуть файлы (A24). Чужой архив мог
 /// указать `http://127.0.0.1:8080/...` или адрес метаданных облака — лаунчер
 /// сходил бы туда из процесса пользователя (SSRF). Разрешены только
@@ -150,38 +177,13 @@ pub async fn install_mrpack(
         LauncherError::InvalidInput("в модпаке нет зависимости minecraft".into())
     })?;
     let mut inst = Instance::new(name_override.unwrap_or(&index.name), mc);
-    // Загрузчик: fabric/quilt — через profile JSON, neoforge — инсталлятор,
-    // forge — честный отказ до M7 (спека §15: не падать молча).
-    let loader_entry = index
-        .dependencies
-        .iter()
-        .find(|(k, _)| k.ends_with("-loader"))
-        .map(|(k, v)| (k.clone(), v.clone()));
     inst.mc_version = mc.clone();
 
-    // 2. Загрузчик разбираем ДО скачивания: «Forge пока нет» не должен стоить
-    //    пользователю сотен мегабайт трафика (спека §15).
-    let loader: Option<(&str, &str)> = match &loader_entry {
-        None => None,
-        Some((key, version)) => Some((
-            match key.as_str() {
-                "fabric-loader" => "fabric",
-                "quilt-loader" => "quilt",
-                "neoforge" => "neoforge",
-                "forge" => {
-                    return Err(LauncherError::InvalidInput(
-                        "модпак на Forge: поддержка Forge появится на этапе M7".into(),
-                    ));
-                }
-                other => {
-                    return Err(LauncherError::InvalidInput(format!(
-                        "неизвестный загрузчик модпака: {other}"
-                    )));
-                }
-            },
-            version.as_str(),
-        )),
-    };
+    // 2. Загрузчик разбираем ДО скачивания: неизвестный загрузчик не должен
+    //    стоить пользователю сотен мегабайт трафика (спека §15). fabric/quilt —
+    //    профиль JSON, forge/neoforge — headless-инсталлятор, оба пути ведёт
+    //    run::install_loader.
+    let loader: Option<(&str, &str)> = resolve_loader(&index.dependencies)?;
 
     // 3. Файлы модпака в очередь (до создания инстанса на диске — каталоги
     //    создаст движок).
@@ -437,10 +439,51 @@ pub async fn install_modpack_project(
         }
     }
 
-    let result =
-        install_mrpack(paths, settings, engine, client, group, &tmp_path, name_override).await;
+    let installed = install_mrpack(
+        paths,
+        settings,
+        engine,
+        client.clone(),
+        group,
+        &tmp_path,
+        name_override,
+    )
+    .await;
     let _ = std::fs::remove_file(&tmp_path);
-    result
+    let inst = installed?;
+
+    // Иконка проекта — некритичный шаг: любой сбой (нет icon_url, HTTP,
+    // размер/формат) оставляет инстанс со стандартной заглушкой и НЕ роняет
+    // установку (спека §15). В самом .mrpack иконки нет по спеке, поэтому
+    // install_mrpack (drag&drop) этот шаг не делает.
+    apply_project_icon(paths, &client, project_id, &inst.id).await;
+    Ok(inst)
+}
+
+/// Иконка проекта Modrinth → data-URL в instance.json. Любая ошибка — warn и
+/// продолжение без иконки: иконка не стоит сорванной установки.
+async fn apply_project_icon(paths: &Paths, client: &HttpClient, project_id: &str, instance_id: &str) {
+    if let Err(e) = download_project_icon(paths, client, project_id, instance_id).await {
+        tracing::warn!("иконка модпака {project_id} не установлена: {e}");
+    }
+}
+
+async fn download_project_icon(
+    paths: &Paths,
+    client: &HttpClient,
+    project_id: &str,
+    instance_id: &str,
+) -> Result<()> {
+    let project = crate::modrinth::api::project(client, project_id).await?;
+    let icon_url = project
+        .get("icon_url")
+        .and_then(|v| v.as_str())
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| LauncherError::NotFound(format!("у модпака {project_id} нет icon_url")))?;
+    let resp = client.raw().get(icon_url).send().await?.error_for_status()?;
+    let bytes = resp.bytes().await?;
+    crate::instances::content::set_icon_from_bytes(paths, instance_id, &bytes)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -521,6 +564,64 @@ mod tests {
                 .unwrap_or_default();
         dirs.sort();
         dirs
+    }
+
+    /// Регрессия: ключи `forge`/`neoforge` в dependencies (спека §6.2, без
+    /// суффикса `-loader` — пример BMC4: {"minecraft":"1.20.1","forge":"47.3.0"})
+    /// резолвятся в загрузчик с версией, а не молча пропускались (пак вставал
+    /// как vanilla). Реальную установку Forge не гоняем — ей нужна сеть.
+    #[test]
+    fn resolves_forge_and_neoforge_loaders() {
+        let deps: HashMap<String, String> =
+            serde_json::from_str(r#"{"minecraft":"1.20.1","forge":"47.3.0"}"#).unwrap();
+        let (name, version) = resolve_loader(&deps).unwrap().unwrap();
+        assert_eq!(name, "forge");
+        assert_eq!(version, "47.3.0");
+
+        let deps: HashMap<String, String> =
+            serde_json::from_str(r#"{"minecraft":"1.20.4","neoforge":"20.4.237"}"#).unwrap();
+        let (name, version) = resolve_loader(&deps).unwrap().unwrap();
+        assert_eq!(name, "neoforge");
+        assert_eq!(version, "20.4.237");
+    }
+
+    /// Прежнее поведение не сломано: fabric/quilt через `*-loader`, пакет без
+    /// загрузчика — None.
+    #[test]
+    fn resolves_fabric_quilt_and_loaderless_pack() {
+        for (key, name) in [("fabric-loader", "fabric"), ("quilt-loader", "quilt")] {
+            let deps: HashMap<String, String> = serde_json::from_str(&format!(
+                r#"{{"minecraft":"1.21.1","{key}":"0.16.0"}}"#
+            ))
+            .unwrap();
+            let (n, v) = resolve_loader(&deps).unwrap().unwrap();
+            assert_eq!(n, name);
+            assert_eq!(v, "0.16.0");
+        }
+        let deps: HashMap<String, String> =
+            serde_json::from_str(r#"{"minecraft":"1.21.1"}"#).unwrap();
+        assert!(
+            resolve_loader(&deps).unwrap().is_none(),
+            "без загрузчика — None (vanilla)"
+        );
+    }
+
+    /// Неизвестный `*-loader` — честная ошибка ДО скачиваний (спека §15),
+    /// посторонние ключи зависимостей резолвер не смущают.
+    #[test]
+    fn unknown_loader_key_is_honest_error() {
+        let deps: HashMap<String, String> =
+            serde_json::from_str(r#"{"minecraft":"1.21.1","weird-loader":"1.0"}"#).unwrap();
+        let err = resolve_loader(&deps).unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+        assert!(err.to_string().contains("weird-loader"), "{err}");
+
+        let deps: HashMap<String, String> =
+            serde_json::from_str(r#"{"minecraft":"1.21.1","custom":"1.0"}"#).unwrap();
+        assert!(
+            resolve_loader(&deps).unwrap().is_none(),
+            "посторонний ключ без -loader игнорируется"
+        );
     }
 
     /// Битый .mrpack: инстанса не появляется вовсе.

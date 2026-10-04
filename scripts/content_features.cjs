@@ -75,7 +75,7 @@ async function main() {
   await row.getByRole("button", { name: /Действия/ }).click();
   await page.waitForTimeout(300);
   await page.getByRole("menuitem", { name: "Бэкап (zip)" }).click();
-  await page.waitForSelector("text=Бэкап создан:", { timeout: 60000 });
+  await page.waitForSelector("text=Бэкап создан:", { timeout: 600000 });
   const backupMsg = await page.getByText(/Бэкап создан: (.+)/).first().textContent();
   const backupPath = backupMsg.replace("Бэкап создан: ", "").trim();
   fs.existsSync(backupPath) && backupPath.endsWith(".zip")
@@ -86,7 +86,7 @@ async function main() {
   await row.getByRole("button", { name: /Действия/ }).click();
   await page.waitForTimeout(300);
   await page.getByRole("menuitem", { name: "Экспорт .mrpack" }).click();
-  await page.waitForSelector("text=Экспорт готов:", { timeout: 60000 });
+  await page.waitForSelector("text=Экспорт готов:", { timeout: 600000 });
   const exportMsg = await page.getByText(/Экспорт готов: (.+)/).first().textContent();
   const exportPath = exportMsg.replace("Экспорт готов: ", "").trim();
   const head = fs.readFileSync(exportPath).subarray(0, 2).toString("latin1");

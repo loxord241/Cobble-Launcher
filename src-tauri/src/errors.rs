@@ -21,6 +21,13 @@ pub enum LauncherError {
     #[error("сеть: {0}")]
     Network(String),
 
+    /// Не-2xx от HTTP API со структурным статусом и URL: вызывающий отличает
+    /// «проект удалён/скрыт» (404/410) от реальной сетевой проблемы, не парся
+    /// текст. Для фронта неотличим от Network: тот же code "network", то же
+    /// сообщение «HTTP {status} для {url}», хинта нет.
+    #[error("HTTP {status} для {url}")]
+    HttpStatus { status: u16, url: String },
+
     #[error("хэш не совпал для {path}: ожидался {expected}, получен {actual}")]
     HashMismatch {
         path: String,
@@ -101,6 +108,7 @@ impl LauncherError {
     pub fn code(&self) -> &'static str {
         match self {
             LauncherError::Network(_) => "network",
+            LauncherError::HttpStatus { .. } => "network",
             LauncherError::HashMismatch { .. } => "hash_mismatch",
             LauncherError::NotFound(_) => "not_found",
             LauncherError::InvalidInput(_) => "invalid_input",
@@ -202,6 +210,26 @@ mod tests {
         assert!(p["hint"].is_null(), "хинт сети теперь на стороне i18n");
         // Display для логов сохраняет префикс.
         assert!(e.to_string().starts_with("сеть: "));
+    }
+
+    /// HttpStatus: для фронта неотличим от прежнего Network — code "network",
+    /// прежний формат текста «HTTP {status} для {url}», хинта нет. Фронт и
+    /// i18n не меняются; статус нужен только вызывающему внутри ядра.
+    #[test]
+    fn http_status_payload_is_backward_compatible() {
+        let e = LauncherError::HttpStatus {
+            status: 404,
+            url: "https://api.modrinth.com/v2/project/gone/version".into(),
+        };
+        let p = serde_json::to_value(e.payload()).unwrap();
+        assert_eq!(p["code"], "network");
+        assert_eq!(
+            p["message"],
+            "HTTP 404 для https://api.modrinth.com/v2/project/gone/version"
+        );
+        assert!(p["hintCode"].is_null());
+        // Статус структурно доступен вызывающему (404/410 — «проект удалён»).
+        assert!(matches!(e, LauncherError::HttpStatus { status: 404 | 410, .. }));
     }
 
     /// ENV-15: подменная цепочка ошибок — верхний уровень без слова

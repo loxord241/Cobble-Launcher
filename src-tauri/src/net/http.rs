@@ -102,10 +102,14 @@ impl HttpClient {
                     tokio::time::sleep(wait).await;
                 }
                 Ok(resp) => {
-                    return Err(LauncherError::network(format!(
-                        "HTTP {} для {url}",
-                        resp.status()
-                    )));
+                    // Не-2xx без ретрая (например, 404 у снятого с Modrinth
+                    // проекта): статус структурно в ошибке — вызывающий
+                    // отличает «нет на сервере» от сетевого сбоя, не парся
+                    // текст. Для фронта сериализуется по-прежнему как network.
+                    return Err(LauncherError::HttpStatus {
+                        status: resp.status().as_u16(),
+                        url: url.to_string(),
+                    });
                 }
                 Err(e) => {
                     if attempt >= MAX_RETRIES {
@@ -205,6 +209,32 @@ mod tests {
         assert!(c2.offline());
         c.set_offline(false);
         assert!(!c2.offline());
+    }
+
+    /// Регресс: не-2xx без ретрая несёт статус и URL структурно
+    /// (LauncherError::HttpStatus), но сериализуется по-прежнему как
+    /// network с текстом «HTTP {status} для {url}» — фронт не меняется.
+    #[tokio::test]
+    async fn get_json_non_2xx_carries_structural_status() {
+        let app = axum::Router::new().route(
+            "/v2/project/gone/version",
+            axum::routing::get(|| async { axum::http::StatusCode::NOT_FOUND }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let c = HttpClient::new(None).unwrap();
+        let url = format!("http://{addr}/v2/project/gone/version");
+        let r: Result<serde_json::Value> = c.get_json_retry(&url).await;
+        let err = r.expect_err("404 должен дать ошибку без ретраев");
+        assert!(
+            matches!(err, LauncherError::HttpStatus { status: 404, .. }),
+            "ожидался HttpStatus(404), получен {err:?}"
+        );
+        let p = serde_json::to_value(err.payload()).unwrap();
+        assert_eq!(p["code"], "network");
+        assert_eq!(p["message"], format!("HTTP 404 для {url}"));
     }
 
     #[tokio::test]

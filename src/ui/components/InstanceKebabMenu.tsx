@@ -1,6 +1,7 @@
 // Кебаб-меню действий инстанса (переиспользуется карточкой инстанса; вынесено
 // из InstanceRow при переходе на карточки D35). Все действия — с клавиатуры.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Sparkles,
   FolderOpen,
@@ -40,6 +41,14 @@ export type KebabCallbacks = {
   onIconClear?: () => void;
 };
 
+// Зазор между кебабом и меню; минимальный отступ меню от краёв окна.
+const MENU_GAP = 6;
+const VIEWPORT_MARGIN = 8;
+
+// Fixed-координаты меню (рендерится порталом в body): right — отступ правого
+// края меню от правого края окна; вниз — top, при флипе вверх — bottom.
+type MenuCoords = { right: number; top?: number; bottom?: number };
+
 export default function InstanceKebabMenu({
   inst,
   busy,
@@ -52,6 +61,11 @@ export default function InstanceKebabMenu({
   const [menuOpen, setMenuOpen] = useState(false);
   const firstItemRef = useRef<HTMLButtonElement>(null);
   const kebabRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // Прямоугольник кебаба на момент открытия: меню закрывается на скролл,
+  // поэтому координаты не успевают протухнуть, пока меню открыто.
+  const kebabRectRef = useRef<DOMRect | null>(null);
+  const [coords, setCoords] = useState<MenuCoords | null>(null);
 
   // Фокус на первый пункт меню при открытии — навигация стрелками/Tab.
   useEffect(() => {
@@ -62,6 +76,56 @@ export default function InstanceKebabMenu({
     setMenuOpen(false);
     if (refocus) kebabRef.current?.focus();
   };
+
+  const openMenu = () => {
+    const rect = kebabRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    kebabRectRef.current = rect;
+    // Правый край меню прижат к правому краю кнопки — за правый край окна
+    // меню не вылезает по построению.
+    setCoords({ right: window.innerWidth - rect.right, top: rect.bottom + MENU_GAP });
+    setMenuOpen(true);
+  };
+
+  // Высота меню известна только после монтирования: измеряем в layout-эффекте
+  // (до отрисовки кадра). Влезает снизу — открываем вниз; влезает сверху —
+  // флип вверх; не влезает ни там ни там (меню выше окна) — прижимаем к нижней
+  // кромке с отступом, чтобы был виден максимум пунктов.
+  useLayoutEffect(() => {
+    if (!menuOpen) return;
+    const rect = kebabRectRef.current;
+    const menu = menuRef.current;
+    if (!rect || !menu) return;
+    const height = menu.offsetHeight;
+    const fitsBelow = rect.bottom + MENU_GAP + height <= window.innerHeight - VIEWPORT_MARGIN;
+    const fitsAbove = rect.top - MENU_GAP - height >= VIEWPORT_MARGIN;
+    if (fitsBelow) return;
+    if (fitsAbove) {
+      setCoords({
+        right: window.innerWidth - rect.right,
+        bottom: window.innerHeight - rect.top + MENU_GAP,
+      });
+      return;
+    }
+    setCoords({
+      right: window.innerWidth - rect.right,
+      top: Math.max(VIEWPORT_MARGIN, window.innerHeight - VIEWPORT_MARGIN - height),
+    });
+  }, [menuOpen]);
+
+  // Меню позиционное: при скролле/ресайзе окна координаты устаревают —
+  // закрываем. scroll ловим в capture-фазе, чтобы видеть скролл любых
+  // прокручиваемых контейнеров, а не только window.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = () => closeMenu();
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [menuOpen]);
 
   const {
     onSettings,
@@ -84,7 +148,10 @@ export default function InstanceKebabMenu({
     <div className="relative">
       <button
         ref={kebabRef}
-        onClick={() => setMenuOpen((v) => !v)}
+        onClick={() => {
+          if (menuOpen) closeMenu();
+          else openMenu();
+        }}
         aria-label={t("instances.actions", { name: inst.name })}
         aria-expanded={menuOpen}
         aria-haspopup="menu"
@@ -92,16 +159,30 @@ export default function InstanceKebabMenu({
       >
         <MoreVertical size={18} aria-hidden />
       </button>
-      {menuOpen && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => closeMenu()} />
-          <div
-            role="menu"
-            onKeyDown={(e) => {
-              if (e.key === "Escape") closeMenu(true);
-            }}
-            className="anim-menu-in origin-top-right absolute right-0 top-11 z-50 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
-          >
+      {/* Меню и бэкдроп рендерятся порталом в body с fixed-координатами:
+          карточка с overflow-hidden больше не срезает меню. */}
+      {menuOpen &&
+        coords !== null &&
+        createPortal(
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => closeMenu()} />
+            <div
+              ref={menuRef}
+              role="menu"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") closeMenu(true);
+              }}
+              style={{
+                position: "fixed",
+                right: coords.right,
+                ...(coords.bottom !== undefined
+                  ? { bottom: coords.bottom }
+                  : { top: coords.top }),
+              }}
+              className={`anim-menu-in ${
+                coords.bottom !== undefined ? "origin-bottom-right" : "origin-top-right"
+              } z-50 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg`}
+            >
             {onSettings && (
               <MenuItem
                 ref={firstItemRef}
@@ -248,9 +329,10 @@ export default function InstanceKebabMenu({
                 onDelete();
               }}
             />
-          </div>
-        </>
-      )}
+            </div>
+          </>,
+          document.body,
+        )}
     </div>
   );
 }

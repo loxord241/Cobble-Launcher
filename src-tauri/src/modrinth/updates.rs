@@ -102,6 +102,22 @@ async fn batch_latest_versions(
     Ok(raw.into_iter().filter_map(|(k, v)| Some((k, v?))).collect())
 }
 
+/// Проект снят с Modrinth (404/410 у `/project/{id}/version`): такая запись
+/// пропускается («обновление проверить не удалось»), остальные досматриваются.
+/// Прочие ошибки — реальная сеть, 429 после ретраев — падают как раньше.
+fn project_gone(err: &LauncherError) -> bool {
+    matches!(err, LauncherError::HttpStatus { status: 404 | 410, .. })
+}
+
+/// Поштучный запрос версий: тот же эндпоинт и `get_json_retry`, что в
+/// `api::project_versions`, но через `api_base()` — как у батча
+/// (`batch_latest_versions`), иначе тестовый mock-сервер (TEST_API_BASE) этот
+/// путь не перехватывает и тесты уходят во внешнюю сеть.
+async fn project_versions(client: &HttpClient, project_id: &str) -> Result<Vec<api::Version>> {
+    let url = format!("{}/project/{project_id}/version", api_base());
+    client.get_json_retry(&url).await
+}
+
 /// Проверить обновления для всех записей манифеста с source=modrinth.
 ///
 /// A25: вместо N последовательных запросов идём батчем `/version_files/update`
@@ -154,7 +170,20 @@ pub async fn check_updates(
             Some(v) => Some(v),
             None => {
                 // Батч эту запись не покрыл — прежний путь (один запрос на проект).
-                let versions = api::project_versions(client, &c.project_id).await?;
+                // Снятый с Modrinth проект (404/410) не роняет всю проверку:
+                // запись пропускается, остальные проверяются дальше.
+                let versions = match project_versions(client, &c.project_id).await {
+                    Ok(v) => v,
+                    Err(e) if project_gone(&e) => {
+                        tracing::warn!(
+                            "проверка обновлений: {} — проект {} недоступен ({e}), пропускаю",
+                            c.file,
+                            c.project_id
+                        );
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                };
                 let loader_filter = if c.kind == ContentKind::Mod {
                     loader.as_deref()
                 } else {
@@ -253,7 +282,20 @@ pub async fn update_all(
         let latest = match from_batch {
             Some(v) => v,
             None => {
-                let versions = api::project_versions(&client, &check.project_id).await?;
+                // Снятый с Modrinth проект (404/410) не роняет пачку — запись
+                // пропускается, как в check_updates.
+                let versions = match project_versions(&client, &check.project_id).await {
+                    Ok(v) => v,
+                    Err(e) if project_gone(&e) => {
+                        tracing::warn!(
+                            "обновление {}: проект {} недоступен ({e}), пропускаю",
+                            check.file,
+                            check.project_id
+                        );
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                };
                 match versions.into_iter().find(|v| v.id == check.latest_version_id) {
                     Some(v) => v,
                     None => continue,
@@ -553,9 +595,12 @@ mod tests {
     async fn check_updates_uses_single_batch_request() {
         let batch_calls = Arc::new(AtomicUsize::new(0));
         let project_calls = Arc::new(AtomicUsize::new(0));
+        let gone_calls = Arc::new(AtomicUsize::new(0));
+        let ok_calls = Arc::new(AtomicUsize::new(0));
         let seen_body: Arc<Mutex<serde_json::Value>> = Arc::new(Mutex::new(serde_json::Value::Null));
         let (batch_srv, project_srv, body_srv) =
             (batch_calls.clone(), project_calls.clone(), seen_body.clone());
+        let (gone_srv, ok_srv) = (gone_calls.clone(), ok_calls.clone());
         let app = axum::Router::new()
             .route(
                 "/v2/version_files/update",
@@ -572,14 +617,34 @@ mod tests {
                     }
                 }),
             )
-            // Поштучный эндпоинт: если код в него пойдёт — счётчик это покажет.
+            // Поштучный эндпоинт: покрытые батчем записи сюда не ходят
+            // (счётчик это показывает). «proj-gone» — 404 (проект снят с
+            // Modrinth), «proj-forbidden» — 403 (прочие ошибки остаются
+            // фатальными), «proj-ok» — нормальный список версий.
             .route(
                 "/v2/project/{id}/version",
-                axum::routing::get(move || {
-                    let c = project_srv.clone();
+                axum::routing::get(move |path: axum::extract::Path<String>| {
+                    let (calls, gone, ok) = (project_srv.clone(), gone_srv.clone(), ok_srv.clone());
                     async move {
-                        c.fetch_add(1, Ordering::SeqCst);
-                        axum::Json(serde_json::json!([]))
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        match path.as_str() {
+                            "proj-gone" => {
+                                gone.fetch_add(1, Ordering::SeqCst);
+                                Err(axum::http::StatusCode::NOT_FOUND)
+                            }
+                            "proj-forbidden" => Err(axum::http::StatusCode::FORBIDDEN),
+                            "proj-ok" => {
+                                ok.fetch_add(1, Ordering::SeqCst);
+                                Ok(axum::Json(serde_json::json!([version_json(
+                                    "ok-new",
+                                    "3.0.0",
+                                    "proj-ok",
+                                    "HASH-OK",
+                                    "живой проект"
+                                )])))
+                            }
+                            _ => Ok(axum::Json(serde_json::json!([]))),
+                        }
                     }
                 }),
             );
@@ -637,6 +702,71 @@ mod tests {
         assert_eq!(updates[0].latest_version_id, "new-1");
         assert_eq!(updates[0].latest_version_number, "2.0.0");
         assert_eq!(updates[0].changelog.as_deref(), Some("починили"));
+
+        // Кейс «проект снят с Modrinth» (A43: тот же сервер — TEST_API_BASE
+        // глобальный на процесс, отдельный mock мешал бы параллельным тестам):
+        // gone.jar ссылается на удалённый проект (поштучный запрос → 404),
+        // ok.jar — на живой. Вся проверка обязана пройти (Ok): удалённый
+        // пропущен, живой проверен и попал в результат.
+        let dir_gone = tempfile::tempdir().unwrap();
+        let paths_gone = test_paths(&dir_gone);
+        let mut inst_gone = Instance::new("Тест-удалённый", "1.21.1");
+        inst_gone.loader = Some("fabric".into());
+        crate::instances::save_content_manifest(
+            &paths_gone,
+            &inst_gone.id,
+            &[
+                entry(ContentKind::Mod, "mods/gone.jar", "proj-gone", "gone-1", "HASH-GONE"),
+                entry(ContentKind::Mod, "mods/ok.jar", "proj-ok", "ok-old", "HASH-OK"),
+            ],
+        )
+        .unwrap();
+
+        let updates_gone = check_updates(&paths_gone, &client, &inst_gone)
+            .await
+            .unwrap_or_else(|e| panic!("удалённый проект не должен ронять проверку: {e}"));
+        assert_eq!(
+            gone_calls.load(Ordering::SeqCst),
+            1,
+            "404 не ретраится: ровно один поштучный запрос к удалённому проекту"
+        );
+        assert_eq!(
+            updates_gone.len(),
+            1,
+            "в результате только живой проект: {updates_gone:?}"
+        );
+        assert_eq!(updates_gone[0].file, "mods/ok.jar");
+        assert_eq!(updates_gone[0].project_id, "proj-ok");
+        assert_eq!(updates_gone[0].current_version_id, "ok-old");
+        assert_eq!(updates_gone[0].latest_version_id, "ok-new");
+        assert_eq!(updates_gone[0].latest_version_number, "3.0.0");
+
+        // Прочие ошибки (403 — не 404/410) остаются фатальными для команды:
+        // реальная сеть и лимиты должны быть видимы, как раньше.
+        let dir_frb = tempfile::tempdir().unwrap();
+        let paths_frb = test_paths(&dir_frb);
+        let inst_frb = Instance::new("Тест-запрещённый", "1.21.1");
+        crate::instances::save_content_manifest(
+            &paths_frb,
+            &inst_frb.id,
+            &[entry(
+                ContentKind::Mod,
+                "mods/frb.jar",
+                "proj-forbidden",
+                "frb-1",
+                "HASH-FRB",
+            )],
+        )
+        .unwrap();
+        let err = match check_updates(&paths_frb, &client, &inst_frb).await {
+            Ok(v) => panic!("не-404/410 ошибка должна ронять проверку, а вернулся {v:?}"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, LauncherError::HttpStatus { status: 403, .. }),
+            "{err:?}"
+        );
+        assert_eq!(err.code(), "network", "контракт для фронта прежний");
     }
 }
 

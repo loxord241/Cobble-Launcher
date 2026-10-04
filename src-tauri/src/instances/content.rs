@@ -311,20 +311,29 @@ pub(crate) fn ensure_icon_source_allowed(path: &std::path::Path) -> Result<()> {
 /// с диска: PNG/JPEG/WebP, до ~300 КБ (чтобы instance.json не раздувать).
 /// Data-URL — фронт не зависит от asset-протокола и его областей доступа.
 pub fn set_icon(paths: &Paths, id: &str, path: &str) -> Result<Instance> {
-    const MAX_ICON_BYTES: usize = 300 * 1024;
     let p = std::path::Path::new(path);
     ensure_icon_source_allowed(p)?;
     let data = std::fs::read(crate::util::fs::long_path(p))
         .map_err(|_| LauncherError::NotFound(format!("файл иконки: {path}")))?;
+    set_icon_from_bytes(paths, id, &data)
+}
+
+/// Та же иконка, но из готовых байт — установка модпака (скачанный icon_url
+/// проекта Modrinth, в т.ч. webp). Проверки как у set_icon: лимит ~300 КБ и
+/// снифф формата по сигнатуре (не по расширению), результат — data-URL в
+/// instance.json. Байты приходят из сети, а не из произвольного пути, поэтому
+/// ensure_icon_source_allowed здесь не применяется.
+pub fn set_icon_from_bytes(paths: &Paths, id: &str, data: &[u8]) -> Result<Instance> {
+    const MAX_ICON_BYTES: usize = 300 * 1024;
     if data.len() > MAX_ICON_BYTES {
         return Err(LauncherError::InvalidInput(
-            "иконка больше 300 КБ — выберите файл поменьше".into(),
+            "иконка больше 300 КБ".into(),
         ));
     }
-    let mime = sniff_image(&data)
+    let mime = sniff_image(data)
         .ok_or_else(|| LauncherError::InvalidInput("поддерживаются PNG, JPEG и WebP".into()))?;
     use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
     let mut inst = crate::instances::load(paths, id)?;
     inst.icon = Some(format!("data:{mime};base64,{b64}"));
     crate::instances::save(paths, &inst)?;
@@ -549,6 +558,37 @@ mod tests {
         std::fs::write(&bad, b"not an image at all").unwrap();
         assert!(set_icon(&paths, &inst.id, bad.to_str().unwrap()).is_err());
         assert!(set_icon(&paths, &inst.id, _d.path().join("nope.png").to_str().unwrap()).is_err());
+    }
+
+    /// Иконка из готовых байт (установка модпака: icon_url проекта Modrinth):
+    /// data-URL как у set_icon, webp принимается; не-изображение и >300 КБ —
+    /// честные ошибки.
+    #[test]
+    fn icon_from_bytes_sets_and_validates() {
+        let (_d, paths, inst) = setup();
+        let png = [0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let updated = set_icon_from_bytes(&paths, &inst.id, &png).unwrap();
+        assert!(
+            updated.icon.expect("иконка установлена").starts_with("data:image/png;base64,"),
+            "png → data-URL"
+        );
+        // WebP — частый формат иконок Modrinth (снифф по RIFF/WEBP, len > 12).
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&[0u8; 4]);
+        webp.extend_from_slice(b"WEBPVP8X");
+        let updated = set_icon_from_bytes(&paths, &inst.id, &webp).unwrap();
+        assert!(
+            updated.icon.expect("webp установлен").starts_with("data:image/webp;base64,"),
+            "webp → data-URL"
+        );
+        // Не-изображение.
+        let err = set_icon_from_bytes(&paths, &inst.id, b"not an image at all").unwrap_err();
+        assert_eq!(err.code(), "invalid_input");
+        // Больше 300 КБ — отказ, даже если сигнатура валидная.
+        let mut big = png.to_vec();
+        big.resize(300 * 1024 + 1, 0);
+        let err = set_icon_from_bytes(&paths, &inst.id, &big).unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
     }
 
     /// A16: относительный путь и путь вне домашнего каталога отклоняются до
