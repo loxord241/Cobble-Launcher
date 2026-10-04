@@ -15,6 +15,7 @@
 **[Скачать последнюю версию](https://github.com/loxord241/Cobble-Launcher/releases/latest)** ·
 [Сообщить о проблеме](https://github.com/loxord241/Cobble-Launcher/issues) ·
 [Демо-видео](docs/anim-demo.mp4)
+· [Сайт Cobble Launcher](https://loxord241.github.io/Cobble-Launcher/)
 
 <img src="docs/screenshots/home.png" alt="Каталог Modrinth на главной странице" width="820">
 
