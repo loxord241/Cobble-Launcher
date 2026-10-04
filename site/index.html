@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#16181c">
+  <title>Cobble Launcher — лаунчер Minecraft для Windows</title>
+  <meta name="description" content="Быстрый и честный лаунчер Minecraft для Windows. Каталог Modrinth, отдельные инстансы, подписанные обновления. Бесплатно, открытый код, без телеметрии.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Cobble Launcher — лаунчер Minecraft для Windows">
+  <meta property="og:description" content="Нативное ядро на Rust, моды и модпаки Modrinth, проверка файлов по хэшу. Бесплатно и без телеметрии.">
+  <meta property="og:url" content="https://loxord241.github.io/Cobble-Launcher/">
+  <meta property="og:image" content="https://loxord241.github.io/Cobble-Launcher/assets/img/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta property="og:locale:alternate" content="uk_UA">
+  <meta property="og:locale:alternate" content="pl_PL">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Cobble Launcher">
+  <meta name="twitter:description" content="Быстрый и честный лаунчер Minecraft для Windows.">
+  <meta name="twitter:image" content="https://loxord241.github.io/Cobble-Launcher/assets/img/og.png">
+  <link rel="canonical" href="https://loxord241.github.io/Cobble-Launcher/">
+  <link rel="icon" type="image/png" href="./assets/img/favicon.png">
+  <link rel="stylesheet" href="./assets/css/site.css?v=2">
+  <script defer src="./assets/js/i18n.js?v=3"></script>
+  <script defer src="./assets/js/main.js"></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Cobble Launcher",
+    "operatingSystem": "Windows 10 / 11 (x64)",
+    "applicationCategory": "UtilitiesApplication",
+    "description": "Открытый лаунчер Minecraft для Windows: установка игры и Java, отдельные инстансы, моды и модпаки Modrinth, офлайн-режим.",
+    "url": "https://loxord241.github.io/Cobble-Launcher/",
+    "screenshot": "https://loxord241.github.io/Cobble-Launcher/assets/img/og.png",
+    "license": "https://github.com/loxord241/Cobble-Launcher/blob/main/LICENSE",
+    "sameAs": ["https://github.com/loxord241/Cobble-Launcher"],
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    }
+  }
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main" data-i18n="skip">К содержимому</a>
+  <header class="header">
+    <div class="header-inner container">
+      <a class="brand" href="#main" aria-label="Cobble Launcher" data-i18n-aria="brand">
+        <img src="./assets/img/grass.png" width="32" height="32" alt="">
+        <span data-i18n="brand">Cobble Launcher</span>
+      </a>
+      <div class="preferences">
+        <label class="sr-only" for="language" data-i18n="language.label">Язык</label>
+        <select id="language" name="language">
+          <option value="ru" data-i18n="language.ru">RU</option>
+          <option value="en" data-i18n="language.en">EN</option>
+          <option value="uk" data-i18n="language.uk">UK</option>
+          <option value="pl" data-i18n="language.pl">PL</option>
+        </select>
+        <div class="themes" role="group" aria-label="Палитра" data-i18n-aria="theme.label">
+          <button type="button" class="swatch" data-theme-choice="dark" aria-pressed="true" aria-label="Сланец: тёмная" data-i18n-aria="theme.dark" data-i18n-title="theme.dark" title="Сланец: тёмная"><span></span></button>
+          <button type="button" class="swatch" data-theme-choice="light" aria-pressed="false" aria-label="Сланец: светлая" data-i18n-aria="theme.light" data-i18n-title="theme.light" title="Сланец: светлая"><span></span></button>
+          <button type="button" class="swatch" data-theme-choice="cb-dark" aria-pressed="false" aria-label="Для дальтоников: тёмная" data-i18n-aria="theme.cb-dark" data-i18n-title="theme.cb-dark" title="Для дальтоников: тёмная"><span></span></button>
+          <button type="button" class="swatch" data-theme-choice="cb-light" aria-pressed="false" aria-label="Для дальтоников: светлая" data-i18n-aria="theme.cb-light" data-i18n-title="theme.cb-light" title="Для дальтоников: светлая"><span></span></button>
+          <button type="button" class="swatch" data-theme-choice="mc" aria-pressed="false" aria-label="Глубинный сланец" data-i18n-aria="theme.mc" data-i18n-title="theme.mc" title="Глубинный сланец"><span></span></button>
+        </div>
+        <a class="github-link" href="https://github.com/loxord241/Cobble-Launcher" data-i18n="github">GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="container" tabindex="-1">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <h1 id="hero-title" data-i18n="hero.title">Быстрый и честный лаунчер Minecraft для Windows</h1>
+        <p class="hero-description" data-i18n="hero.description">Нативное ядро на Rust. Лёгкий интерфейс. Официальные источники и проверка каждого скачанного файла по хэшу.</p>
+        <a class="download" data-download href="https://github.com/loxord241/Cobble-Launcher/releases/latest">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg>
+          <span data-i18n="hero.download">Скачать для Windows</span>
+        </a>
+        <p class="download-meta"><span id="release-version" aria-live="polite" data-i18n="release.loading">Проверяем версию…</span><span aria-hidden="true"> · </span><span data-i18n="hero.platform">Windows 10 / 11 · x64</span></p>
+        <a class="source-link" href="https://github.com/loxord241/Cobble-Launcher" data-i18n="hero.source">Бесплатно. Открытый код под MIT.</a>
+      </div>
+      <figure class="hero-media">
+        <div class="video-frame">
+          <video id="demo" autoplay muted loop playsinline preload="metadata" poster="./assets/img/poster.png?v=3" aria-label="Демонстрация Cobble Launcher" data-i18n-aria="hero.video">
+            <source src="./assets/video/anim-demo.mp4?v=3" type="video/mp4">
+          </video>
+          <button id="video-toggle" class="video-toggle" type="button" aria-label="Приостановить видео" data-i18n-aria="video.pause" aria-pressed="false">
+            <svg class="pause-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>
+            <svg class="play-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m8 4 12 8-12 8Z"/></svg>
+          </button>
+        </div>
+        <figcaption><span data-i18n="hero.videoCaption">Посмотрите, как всё устроено</span><span class="video-duration" data-i18n="hero.videoDuration">42 с</span></figcaption>
+      </figure>
+    </section>
+
+    <section class="gallery section" id="gallery" aria-labelledby="gallery-title" data-reveal>
+      <div class="section-heading"><h2 id="gallery-title" data-i18n="gallery.title">Всё на своём месте</h2><p data-i18n="gallery.description">От первого модпака до своей коллекции миров.</p></div>
+      <div class="gallery-grid">
+        <button class="gallery-item" type="button" data-gallery="home" aria-label="Открыть снимок: каталог Modrinth" data-i18n-aria="gallery.home.open"><img src="./assets/img/home.png" alt="Главная страница с каталогом модпаков Modrinth" data-i18n-alt="gallery.home.alt" loading="lazy" width="1240" height="820"><span data-i18n="gallery.home">Каталог Modrinth</span></button>
+        <button class="gallery-item" type="button" data-gallery="instances" aria-label="Открыть снимок: инстансы" data-i18n-aria="gallery.instances.open"><img src="./assets/img/instances.png" alt="Сетка отдельных инстансов с версиями и загрузчиками" data-i18n-alt="gallery.instances.alt" loading="lazy" width="1240" height="820"><span data-i18n="gallery.instances">Ваши инстансы</span></button>
+        <button class="gallery-item" type="button" data-gallery="instance" aria-label="Открыть снимок: настройки инстанса" data-i18n-aria="gallery.instance.open"><img src="./assets/img/instance.png" alt="Страница инстанса с запуском, мирами и настройками" data-i18n-alt="gallery.instance.alt" loading="lazy" width="1240" height="820"><span data-i18n="gallery.instance">Каждая сборка — отдельно</span></button>
+        <button class="gallery-item" type="button" data-gallery="accounts" aria-label="Открыть снимок: профили" data-i18n-aria="gallery.accounts.open"><img src="./assets/img/accounts.png" alt="Управление аккаунтами и персонажами" data-i18n-alt="gallery.accounts.alt" loading="lazy" width="1240" height="820"><span data-i18n="gallery.accounts">Аккаунты и профили</span></button>
+        <button class="gallery-item" type="button" data-gallery="settings" aria-label="Открыть снимок: настройки" data-i18n-aria="gallery.settings.open"><img src="./assets/img/settings.png" alt="Настройки интерфейса с пятью цветовыми палитрами" data-i18n-alt="gallery.settings.alt" loading="lazy" width="1240" height="820"><span data-i18n="gallery.settings">Настройки под вас</span></button>
+      </div>
+    </section>
+
+    <section class="section" id="features" aria-labelledby="features-title" data-reveal>
+      <div class="section-heading"><h2 id="features-title" data-i18n="features.title">Меньше настройки. Больше игры.</h2><p data-i18n="features.description">Нужные инструменты уже внутри.</p></div>
+      <div class="features-grid">
+        <article class="feature"><svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 8v9l9 5 9-5V8M12 13v9"/></svg><h3 data-i18n="feature.catalog.title">Каталог Modrinth</h3><p data-i18n="feature.catalog.text">Моды, ресурспаки и шейдеры — в два клика.</p></article>
+        <article class="feature"><svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M14 3H5v18h14V8l-5-5ZM14 3v5h5M12 11v7m-3-3 3 3 3-3"/></svg><h3 data-i18n="feature.import.title">Импорт .mrpack</h3><p data-i18n="feature.import.text">Перенесите готовый модпак в новый инстанс.</p></article>
+        <article class="feature"><svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><h3 data-i18n="feature.instances.title">Инстансы и профили</h3><p data-i18n="feature.instances.text">Свои версии, моды и настройки для каждой сборки.</p></article>
+        <article class="feature"><svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M20 7a9 9 0 0 0-15-2L3 7m0-5v5h5m-4 10a9 9 0 0 0 15 2l2-2m0 5v-5h-5"/></svg><h3 data-i18n="feature.updates.title">Подписанные обновления</h3><p data-i18n="feature.updates.text">Автоматическая проверка. Установка одной кнопкой.</p></article>
+        <article class="feature"><svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m9 5 11 7-11 7V5ZM3 3v18"/></svg><h3 data-i18n="feature.offline.title">Офлайн-режим</h3><p data-i18n="feature.offline.text">Запускайте уже скачанные сборки без подключения.</p></article>
+        <article class="feature"><svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="7" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><h3 data-i18n="feature.accounts.title">Три способа входа</h3><p data-i18n="feature.accounts.text">Microsoft, ely.by или офлайн. Статус Microsoft — в FAQ.</p></article>
+        <article class="feature"><svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 4h16v13H8l-4 4V4ZM8 9h8M8 13h5"/></svg><h3 data-i18n="feature.discord.title">Discord RPC</h3><p data-i18n="feature.discord.text">Название активного инстанса в вашем статусе Discord.</p></article>
+        <article class="feature"><svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a18 18 0 0 1 0 18 18 18 0 0 1 0-18Z"/></svg><h3 data-i18n="feature.languages.title">Четыре языка</h3><p data-i18n="feature.languages.text">Русский, English, українська и polski во всём интерфейсе.</p></article>
+      </div>
+    </section>
+
+    <section class="section safety" id="safety" aria-labelledby="safety-title" data-reveal>
+      <div class="section-heading"><h2 id="safety-title" data-i18n="safety.title">Доверие можно проверить</h2><p data-i18n="safety.description">Понятные источники. Проверяемые файлы. Доступный код.</p></div>
+      <div class="safety-grid">
+        <article><h3 data-i18n="safety.files.title">Официальные источники</h3><p data-i18n="safety.files.text">Mojang, Modrinth, Adoptium. Каждый скачанный файл проверяется по хэшу перед использованием.</p></article>
+        <article><h3 data-i18n="safety.privacy.title">Ноль телеметрии</h3><p data-i18n="safety.privacy.text">Лаунчер не собирает статистику использования. На этом сайте тоже нет аналитики и трекеров.</p></article>
+        <article><h3 data-i18n="safety.source.title">Открытый код</h3><p data-i18n="safety.source.text">Исходники доступны на GitHub. Вы можете прочитать код, собрать лаунчер и сообщить об ошибке.</p><a href="https://github.com/loxord241/Cobble-Launcher" data-i18n="safety.source.link">Посмотреть исходники</a></article>
+      </div>
+    </section>
+
+    <section class="section faq" id="faq" aria-labelledby="faq-title" data-reveal>
+      <div class="section-heading"><h2 id="faq-title" data-i18n="faq.title">Перед первым запуском</h2><p data-i18n="faq.description">Коротко о том, что стоит знать.</p></div>
+      <div class="faq-list">
+        <details><summary data-i18n="faq.requirements.q">Какие системные требования?</summary><p data-i18n="faq.requirements.a">Windows 10 или 11, 64-битная система. Для первой загрузки игры нужен интернет. Подходящая Java устанавливается автоматически через Adoptium. Требования к памяти зависят от версии Minecraft и модов.</p></details>
+        <details><summary data-i18n="faq.safe.q">Это безопасно?</summary><p data-i18n="faq.safe.a">Лаунчер использует официальные источники и проверяет хэши скачанных файлов. Обновления лаунчера подписаны. Код открыт для проверки. Выбирайте моды внимательно: лаунчер не может гарантировать безопасность стороннего кода.</p></details>
+        <details><summary data-i18n="faq.path.q">Где хранятся данные?</summary><p><span data-i18n="faq.path.before">По умолчанию инстансы, кэш и настройки находятся в </span><code data-i18n="faq.path.value">%LOCALAPPDATA%\mc-launcher-v2</code><span data-i18n="faq.path.after">. Это каталог данных, а не путь установщика.</span></p></details>
+        <details><summary data-i18n="faq.updates.q">Как обновлять лаунчер?</summary><p data-i18n="faq.updates.a">Лаунчер сам проверяет новые версии и сообщает об обновлении. Нажмите кнопку установки: подпись проверяется, затем лаунчер перезапускается. Инстансы и профили сохраняются. Проверить вручную можно в настройках.</p></details>
+        <details><summary data-i18n="faq.microsoft.q">Почему вход Microsoft может не работать?</summary><p data-i18n="faq.microsoft.a">Приложению требуется одобрение Mojang для доступа к Minecraft API. Заявка подана, одобрение ожидается. Пока доступны ely.by и офлайн-профили; они не заменяют лицензию Minecraft и доступ к серверам с проверкой Microsoft.</p></details>
+        <details><summary data-i18n="faq.cost.q">Сколько это стоит?</summary><p data-i18n="faq.cost.a">Cobble Launcher бесплатен и распространяется под лицензией MIT. Лицензия Minecraft приобретается отдельно. Платных функций в лаунчере нет.</p></details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer container">
+    <div><a class="brand footer-brand" href="#main"><img src="./assets/img/grass.png" width="28" height="28" alt=""><span data-i18n="brand">Cobble Launcher</span></a><p data-i18n="footer.disclaimer">Не является официальным продуктом Minecraft. Не одобрено и не связано с Mojang или Microsoft.</p></div>
+    <nav aria-label="Ссылки проекта" data-i18n-aria="footer.links"><a href="https://github.com/loxord241/Cobble-Launcher/blob/main/LICENSE" data-i18n="footer.license">Лицензия MIT</a><a href="https://github.com/loxord241/Cobble-Launcher" data-i18n="github">GitHub</a></nav>
+  </footer>
+
+  <dialog id="lightbox" role="dialog" aria-modal="true" aria-labelledby="lightbox-caption">
+    <div class="lightbox-toolbar"><p id="lightbox-caption"></p><button class="close-button" type="button" aria-label="Закрыть снимок" data-i18n-aria="lightbox.close"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+    <img id="lightbox-image" src="./assets/img/home.png" alt="">
+  </dialog>
+</body>
+</html>
