@@ -43,6 +43,9 @@ import type {
   Settings,
   SnapshotInfo,
   SkinInfo,
+  SkinLibraryItem,
+  SkinModel,
+  SkinUserItem,
   StorageStats,
   UpdateCheck,
   UpdateInfo,
@@ -165,6 +168,19 @@ export const api = {
   accountActiveSet: (id: string) => invoke<{ ok: boolean }>("account_active_set", { id }),
   // Скин профиля (D34): null — скина нет (offline/404), UI показывает дефолт
   accountSkin: (accountId: string) => invoke<SkinInfo | null>("account_skin", { accountId }),
+
+  // ---------- Скины (D59): вкладка «Скины» ----------
+  // Библиотека дефолтов (Steve/Alex classic/slim из клиент-jar, как D54).
+  skinLibraryList: () => invoke<SkinLibraryItem[]>("skin_library_list"),
+  // Скины пользователя из каталога данных (skins/).
+  skinUserList: () => invoke<SkinUserItem[]>("skin_user_list"),
+  // Загрузить PNG (выбор файла — системный диалог, как instance_icon_set).
+  skinUserSave: (path: string, name: string) =>
+    invoke<SkinUserItem>("skin_user_save", { path, name }),
+  skinUserDelete: (skinId: string) => invoke<{ ok: boolean }>("skin_user_delete", { skinId }),
+  // Применить скин к активному аккаунту (msa → Mojang, ely/authlib → Ely.by).
+  skinApply: (accountId: string, skinId: string, model: SkinModel) =>
+    invoke<{ ok: boolean }>("skin_apply", { accountId, skinId, model }),
 
   // Рекомендуемая мажорная версия Java для версии MC (F14)
   javaRecommended: (mcVersion: string) => invoke<number>("java_recommended", { mcVersion }),

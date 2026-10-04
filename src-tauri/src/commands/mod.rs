@@ -961,6 +961,76 @@ pub async fn account_skin(
     crate::auth::skins::fetch_skin(&http, &state.paths, &account).await
 }
 
+// ---------- скины (D59) ----------
+
+/// Библиотека дефолтных скинов из клиент-jar стора: Steve/Alex × classic/slim
+/// (D54-механизм извлечения); jar в сторе нет — пустой список.
+#[tauri::command]
+pub async fn skin_library_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::auth::skins::SkinInfo>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(crate::auth::skins::list_library_skins(&paths))
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Пользовательские скины (каталог skins/ в данных лаунчера).
+#[tauri::command]
+pub async fn skin_user_list(state: State<'_, AppState>) -> Result<Vec<crate::auth::skins::SkinInfo>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(crate::auth::skins::list_user_skins(&paths)))
+        .await
+        .map_err(join_err)?
+}
+
+/// Сохранить PNG как пользовательский скин. Файл выбирается нативным
+/// диалогом на фронте (path), чтение — с ограничением домашним каталогом,
+/// как у иконок (A16). Валидация: PNG 64×64/64×32, ≤ 50 КБ.
+#[tauri::command]
+pub async fn skin_user_save(
+    state: State<'_, AppState>,
+    name: String,
+    path: String,
+) -> Result<crate::auth::skins::SkinInfo> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = std::path::Path::new(&path);
+        crate::instances::content::ensure_icon_source_allowed(p)?;
+        let data = std::fs::read(crate::util::fs::long_path(p))
+            .map_err(|_| LauncherError::NotFound(format!("файл скина: {path}")))?;
+        crate::auth::skins::save_user_skin(&paths, &name, &data)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Удалить пользовательский скин по id (id = имя файла каталога skins/).
+#[tauri::command]
+pub async fn skin_user_delete(state: State<'_, AppState>, skin_id: String) -> Result<OkMsg> {
+    crate::auth::skins::delete_user_skin(&state.paths, &skin_id)?;
+    Ok(OkMsg { ok: true })
+}
+
+/// Применить скин (по id из каталога пользователя или библиотеки) аккаунту:
+/// msa → PUT Mojang profile/skins; ely → API ely.by; offline/authlib —
+/// честный отказ (D59).
+#[tauri::command]
+pub async fn skin_apply(
+    state: State<'_, AppState>,
+    account_id: String,
+    skin_id: String,
+    model: crate::auth::skins::SkinModel,
+) -> Result<OkMsg> {
+    let skin = crate::auth::skins::find_skin_by_id(&state.paths, &skin_id)
+        .ok_or_else(|| LauncherError::NotFound(format!("скин {skin_id}")))?;
+    let http = state.http().await;
+    crate::auth::skins::apply_skin(&state.paths, &http, &account_id, &skin, model).await?;
+    Ok(OkMsg { ok: true })
+}
+
 // ---------- импорт и диагностика (спека §6.11, §6.10) ----------
 
 #[tauri::command]

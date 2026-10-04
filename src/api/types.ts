@@ -13,13 +13,33 @@ export interface Account {
 }
 
 /** Откуда взят скин профиля (зеркало crate::auth::skins::SkinSource). */
-export type SkinSource = "ely" | "mojang" | "default";
+export type SkinSource = "ely" | "mojang" | "default" | "user";
 
 /** Скин профиля для показа в лаунчере (D34); None — скина нет, UI рисует дефолт. */
 export interface SkinInfo {
   source: SkinSource;
   dataUrl: string;
 }
+
+// ---------- D59: вкладка «Скины» ----------
+
+/** Модель персонажа: классические руки 4 px или стройные 3 px. */
+export type SkinModel = "classic" | "slim";
+
+/** Элемент списка скинов — зеркало crate::auth::skins::SkinInfo
+ *  (библиотека и каталог пользователя отдают одинаковую форму). */
+export interface SkinItemInfo {
+  source: SkinSource;
+  /** PNG как data-URL для превью. */
+  dataUrl: string;
+  /** id в библиотеке ("steve-classic"…) или каталоге пользователя (= имя файла). */
+  id?: string;
+  /** Фиксированная модель; нет — модель выбирает пользователь. */
+  model?: SkinModel;
+}
+
+export type SkinLibraryItem = SkinItemInfo;
+export type SkinUserItem = SkinItemInfo;
 
 export interface Instance {
   schemaVersion: number;

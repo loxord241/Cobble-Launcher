@@ -4,8 +4,9 @@
 // узнаваемая палитра для всех (решение владельца 2026-10-03: раньше была
 // случайная палитра от имени, выглядели пёстро). Наша пиксельная генерация,
 // не текстуры Mojang.
-import { useEffect, useRef } from "react";
-import type { SkinInfo } from "../../api/types";
+import { useCallback, useEffect, useRef } from "react";
+import type { SkinInfo, SkinModel } from "../../api/types";
+import { t } from "../../i18n";
 
 /** Палитра дефолтного скина: классический Стив (тёмные волосы, бирюзовая
  * футболка, синие штаны). */
@@ -190,5 +191,227 @@ export function SkinBody({
       className={className ?? ""}
       style={{ imageRendering: "pixelated", width: 64, height: 128 }}
     />
+  );
+}
+
+// ---------- D59: полный персонаж с вращением (страница «Скины») ----------
+
+/** Прямоугольник в текстуре 64×64: [sx, sy, sw, sh]. */
+type TexRect = [number, number, number, number];
+
+/** Четыре боковые грани бокса в развёртке скина (плюс верх/низ не рисуем — камера прямо). */
+interface BoxFaces {
+  front: TexRect;
+  back: TexRect;
+  /** Щека ПРАВОЙ руки персонажа (у зрителя слева анфас), регион (0,8)-семейства. */
+  right: TexRect;
+  left: TexRect;
+}
+
+const HEAD_FACES: BoxFaces = {
+  front: [8, 8, 8, 8],
+  back: [24, 8, 8, 8],
+  right: [0, 8, 8, 8],
+  left: [16, 8, 8, 8],
+};
+const HAT_FACES: BoxFaces = {
+  front: [40, 8, 8, 8],
+  back: [56, 8, 8, 8],
+  right: [32, 8, 8, 8],
+  left: [48, 8, 8, 8],
+};
+const BODY_FACES: BoxFaces = {
+  front: [20, 20, 8, 12],
+  back: [32, 20, 8, 12],
+  right: [16, 20, 4, 12],
+  left: [28, 20, 4, 12],
+};
+const ARM_R_Y = 20;
+const ARM_L_Y = 52;
+const LEG_R_FACES: BoxFaces = {
+  front: [4, 20, 4, 12],
+  back: [12, 20, 4, 12],
+  right: [0, 20, 4, 12],
+  left: [8, 20, 4, 12],
+};
+const LEG_L_FACES: BoxFaces = {
+  front: [20, 52, 4, 12],
+  back: [28, 52, 4, 12],
+  right: [16, 52, 4, 12],
+  left: [24, 52, 4, 12],
+};
+
+/** Развёртка руки: [front][right][left][back] подряд по x (slim — 3 px). */
+function armFaces(slim: boolean, y: number): BoxFaces {
+  const w = slim ? 3 : 4;
+  const frontX = y === ARM_L_Y ? 36 : 44;
+  return {
+    front: [frontX, y, w, 12],
+    back: [frontX + 2 * w, y, w, 12],
+    right: [frontX - w, y, w, 12],
+    left: [frontX + w, y, w, 12],
+  };
+}
+
+interface BoxPart {
+  /** Центр бокса по горизонтали, лог. px (0 — ось персонажа; право персонажа — минус). */
+  x: number;
+  /** Верх бокса от макушки, лог. px. */
+  top: number;
+  w: number;
+  h: number;
+  d: number;
+  faces: BoxFaces;
+  /** Легаси 64×32: левую конечность зералим из правой (как в SkinBody). */
+  mirror?: boolean;
+}
+
+/**
+ * Полный персонаж с вращением (D59): псевдо-3D проекция боксов на canvas.
+ * Математика UV — из SkinBody (те же регионы передних граней; легаси 64×32
+ * зералим), добавлены бока/спина/шапка. Поворот перетаскиванием по X вокруг
+ * вертикальной оси; ортографическая проекция без наклона камеры, поэтому
+ * каждая грань остаётся прямоугольником — рисуем её drawImage без искажений.
+ */
+export function FullSkinPreview({
+  name,
+  skin,
+  model = "classic",
+  scale = 8,
+  className,
+}: {
+  name: string;
+  skin?: SkinInfo | null;
+  model?: SkinModel;
+  /** Экранных пикселей на логический px текстуры. */
+  scale?: number;
+  className?: string;
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const yawRef = useRef(0);
+  const dragRef = useRef<{ pointerId: number; startX: number; startYaw: number } | null>(null);
+  const tex = textureOf(name, skin);
+  // Персонаж 16×32 лог.px; запас по ширине — чтобы голова при повороте не резалась.
+  const W = 20;
+  const H = 33;
+
+  const draw = useCallback(() => {
+    const canvas = ref.current;
+    const img = imgRef.current;
+    if (!canvas || !img) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const S = scale;
+    canvas.width = W * S;
+    canvas.height = H * S;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Легаси-текстуры 64×32 не имеют отдельных левых рук/ног — зералим правые.
+    const modern = img.height >= 64;
+    const slim = model === "slim";
+    const parts: BoxPart[] = [
+      { x: -(4 + (slim ? 1.5 : 2)), top: 8, w: slim ? 3 : 4, h: 12, d: 4, faces: armFaces(slim, ARM_R_Y) },
+      { x: 4 + (slim ? 1.5 : 2), top: 8, w: slim ? 3 : 4, h: 12, d: 4, faces: armFaces(slim, ARM_L_Y), mirror: !modern },
+      { x: 0, top: 8, w: 8, h: 12, d: 4, faces: BODY_FACES },
+      { x: -2, top: 20, w: 4, h: 12, d: 4, faces: LEG_R_FACES },
+      { x: 2, top: 20, w: 4, h: 12, d: 4, faces: modern ? LEG_L_FACES : LEG_R_FACES, mirror: !modern },
+      { x: 0, top: 0, w: 8, h: 8, d: 8, faces: HEAD_FACES },
+      { x: 0, top: 0, w: 8, h: 8, d: 8, faces: HAT_FACES },
+    ];
+
+    const yaw = yawRef.current;
+    const cos = Math.cos(yaw);
+    const sin = Math.sin(yaw);
+    const cx = (W / 2) * S;
+    const margin = Math.round(S);
+
+    // Художник: сначала дальние боксы. z детали после поворота: -x·sin (z центров = 0).
+    const ordered = parts
+      .map((p, i) => ({ p, i, depth: -p.x * sin }))
+      .sort((a, b) => a.depth - b.depth || a.i - b.i);
+
+    for (const { p } of ordered) {
+      // Грани с наружной нормалью; для каждой — горизонтальный отрезок (x1,z1)→(x2,z2),
+      // начало отрезка совпадает с u=0 развёртки (проверено по шаблону скина).
+      const hw = p.w / 2;
+      const hd = p.d / 2;
+      const faces: { nz: number; nx: number; rect: TexRect; seg: [number, number, number, number] }[] = [
+        { nz: 1, nx: 0, rect: p.faces.front, seg: [-hw, hd, hw, hd] },
+        { nz: -1, nx: 0, rect: p.faces.back, seg: [hw, -hd, -hw, -hd] },
+        { nz: 0, nx: -1, rect: p.faces.right, seg: [-hw, -hd, -hw, hd] },
+        { nz: 0, nx: 1, rect: p.faces.left, seg: [hw, hd, hw, -hd] },
+      ];
+      const topPx = margin + Math.round(p.top * S);
+      const hPx = Math.round(p.h * S);
+      // Легаси: левую конечность зералим целиком (регионы правой).
+      const mirror = p.mirror === true;
+      for (const f of faces) {
+        // Видимость: повернутая нормаль смотрит на зрителя.
+        const facing = f.nz * cos - f.nx * sin;
+        if (facing <= 0.01) continue;
+        const px1 = cx + (f.seg[0] * cos + f.seg[1] * sin) * S;
+        const px2 = cx + (f.seg[2] * cos + f.seg[3] * sin) * S;
+        const left = Math.round(Math.min(px1, px2));
+        const width = Math.round(Math.max(px1, px2)) - left;
+        if (width <= 0) continue;
+        const [sx, sy, sw, sh] = f.rect;
+        if (mirror) {
+          ctx.save();
+          ctx.translate(left + width, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(img, sx, sy, sw, sh, 0, topPx, width, hPx);
+          ctx.restore();
+        } else {
+          ctx.drawImage(img, sx, sy, sw, sh, left, topPx, width, hPx);
+        }
+      }
+    }
+  }, [model, scale]);
+
+  useEffect(() => {
+    const img = new Image();
+    img.onload = () => {
+      imgRef.current = img;
+      draw();
+    };
+    img.src = tex;
+  }, [tex, draw]);
+
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startYaw: yawRef.current };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    yawRef.current = drag.startYaw + (e.clientX - drag.startX) * 0.012;
+    draw();
+  };
+  const onPointerEnd = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (dragRef.current?.pointerId === e.pointerId) dragRef.current = null;
+  };
+
+  return (
+    <div className={className}>
+      <canvas
+        ref={ref}
+        aria-hidden
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerEnd}
+        onPointerCancel={onPointerEnd}
+        style={{
+          imageRendering: "pixelated",
+          width: W * scale,
+          height: H * scale,
+          touchAction: "none",
+          cursor: "grab",
+        }}
+        className="mx-auto block"
+      />
+      <div className="mt-2 text-center text-xs text-text-muted">{t("skins.rotateHint")}</div>
+    </div>
   );
 }

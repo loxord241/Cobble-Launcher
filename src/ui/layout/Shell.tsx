@@ -10,6 +10,7 @@ import {
   House,
   FolderOpen,
   Settings as SettingsIcon,
+  Shirt,
   Box,
   Command,
   Search,
@@ -40,6 +41,7 @@ import { resolveLaunchTarget } from "../../state/launch";
 import { SkinHead } from "../components/SkinViews";
 import HomePage from "../pages/HomePage";
 import InstancesPage from "../pages/InstancesPage";
+import SkinsPage from "../pages/SkinsPage";
 import SettingsPage from "../pages/SettingsPage";
 import InstanceDetailPage from "../pages/InstanceDetailPage";
 import AccountsModal from "../components/AccountsModal";
@@ -47,11 +49,12 @@ import CrashReportModal from "../components/CrashReportModal";
 import CommandPalette from "../components/CommandPalette";
 import { ConfirmHost } from "../confirm";
 
-type Page = "home" | "instances" | "settings";
+type Page = "home" | "instances" | "skins" | "settings";
 
 const NAV: { id: Page; icon: typeof House; label: string }[] = [
   { id: "home", icon: House, label: "nav.home" },
   { id: "instances", icon: FolderOpen, label: "nav.instances" },
+  { id: "skins", icon: Shirt, label: "nav.skins" },
   { id: "settings", icon: SettingsIcon, label: "nav.settings" },
 ];
 
@@ -658,6 +661,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
                 {page === "instances" && (
                   <InstancesPage query={query} onOpenInstance={setOpenInstanceId} />
                 )}
+                {page === "skins" && <SkinsPage />}
                 {page === "settings" && <SettingsPage onOnboardingReset={onLogout} />}
               </>
             )}

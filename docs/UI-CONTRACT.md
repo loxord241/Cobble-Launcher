@@ -17,7 +17,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 ## Команды (invoke)
 
-Все 77 команд `invoke_handler` (`src-tauri/src/lib.rs:104`), обработчики —
+Все 82 команды `invoke_handler` (`src-tauri/src/lib.rs:211`), обработчики —
 `src-tauri/src/commands/mod.rs`.
 
 ### Инстансы и процессы
@@ -108,6 +108,11 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `settings_import` | `{path}` | `Settings` (validate+migrate; секреты из файла → None; офлайн-флаг применяется) | invalid_input, io |
 | `instance_force_unlock` | `{id}` | `{ok}` (мёртвый .lock без живого PID удаляется + событие Exited; запущено → instance_running) | not_found, instance_running, io |
 | `account_skin` | `{accountId}` | `SkinInfo \| null` ({source: `ely`\|`mojang`, dataUrl} — PNG как data-URL; `null` — скина нет: offline/404. Источники allowlist: skinsystem.ely.by, textures.minecraft.net; дисковый кэш 1 ч) | not_found, invalid_input, network, http, json, internal, io |
+| `skin_library_list` | — | `SkinInfo[]` (source `default`, D59: Steve/Alex × classic/slim из клиент-jar стора; id `steve-classic`/`alex-classic`/`steve-slim`/`alex-slim`; jar в сторе нет — `[]`) | — |
+| `skin_user_list` | — | `SkinInfo[]` (source `user`; каталог `skins/` в данных лаунчера) | — |
+| `skin_user_save` | `{name, path}` (path — PNG-файл из нативного диалога, только домашний каталог) | `SkinInfo` (валидация: PNG 64×64 или legacy 64×32, ≤ 50 КБ; имя санитизируется в id) | invalid_input, not_found, io, internal |
+| `skin_user_delete` | `{skinId}` | `{ok}` (id — имя файла каталога `skins/`, traversal отсечён) | invalid_input, not_found, io |
+| `skin_apply` | `{accountId, skinId, model: "classic"\|"slim"}` | `{ok}` (skinId — из `skin_user_list` или `skin_library_list`; msa → PUT Mojang `profile/skins` (403 = нет разрешения приложения — код `network`); ely → API ely.by; offline → invalid_input «только через бесплатный Ely.by», authlib → invalid_input; офлайн-режим → `offline_mode` до любых IO) | not_found, invalid_input, offline_mode, network, http, json, internal, io |
 
 ### Диагностика, Java, настройки
 
@@ -154,6 +159,9 @@ RamGuide { totalMb, recommendedMb, warning? }
 Diagnosis { ruleId, title, advice }
 DeviceCodeStart { device_code, user_code, verification_uri, interval, expires_in }
                     // исключение: без camelCase (поля протокола OAuth)
+SkinInfo { source: "ely"|"mojang"|"default"|"user", dataUrl, id?, model?: "classic"|"slim" }
+                    // id/model — только у скинов библиотеки (D59) и каталога skins/;
+                    // source "user" появляется вместе с вкладкой «Скины» (D59)
 ```
 
 Язык интерфейса по умолчанию — `en`; при старте его перекрывает ключ

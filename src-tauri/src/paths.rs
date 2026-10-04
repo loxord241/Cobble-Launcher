@@ -102,6 +102,11 @@ impl Paths {
         self.root.join("accounts.json")
     }
 
+    /// Пользовательские скины (D59): `skins/` в данных лаунчера.
+    pub fn skins_dir(&self) -> PathBuf {
+        self.root.join("skins")
+    }
+
     /// Инстансы (M2+).
     pub fn instances_dir(&self) -> PathBuf {
         self.root.join("instances")
@@ -135,6 +140,7 @@ impl Paths {
             self.assets_indexes(),
             self.runtime_dir(),
             self.logs_dir(),
+            self.skins_dir(),
             self.instances_dir(),
             self.backups_dir(),
             self.exports_dir(),

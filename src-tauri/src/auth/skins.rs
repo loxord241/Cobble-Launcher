@@ -14,12 +14,39 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 use std::time::{Duration, SystemTime};
 
+/// Модель игрока (геометрия рук): classic — широкие (Steve), slim — узкие
+/// (Alex). Так её называют Mojang (`variant`) и ely.by (`model`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkinModel {
+    Classic,
+    Slim,
+}
+
+impl SkinModel {
+    /// Значение `variant` для API Mojang/ely.by («classic» | «slim»).
+    pub fn variant(self) -> &'static str {
+        match self {
+            SkinModel::Classic => "classic",
+            SkinModel::Slim => "slim",
+        }
+    }
+}
+
 /// Скин для показа в UI (camelCase — зеркало src/api/types.ts).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkinInfo {
     pub source: SkinSource,
     pub data_url: String,
+    /// D59: id в библиотеке дефолтных или каталоге пользовательских скинов
+    /// (None — скин аккаунта, id у него не запрашивается).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// D59: модель для превью/применения. Библиотека задаёт её точно;
+    /// у скина аккаунта и пользовательского PNG она неизвестна — решает фронт.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<SkinModel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -30,6 +57,9 @@ pub enum SkinSource {
     /// D54: классический Стив, извлечённый из клиент-jar стора (тот же файл,
     /// что игра использует по умолчанию). Зеркало — src/api/types.ts.
     Default,
+    /// D59: пользовательский PNG из каталога skins/ в данных лаунчера.
+    /// Зеркало src/api/types.ts пополняется фронтом (вне этой полосы).
+    User,
 }
 
 /// Откуда искать скин для аккаунта (без сети — тестируется юнитами).
@@ -217,7 +247,12 @@ pub async fn fetch_skin(
     };
 
     let data_url = format!("data:image/png;base64,{}", STANDARD.encode(&bytes));
-    Ok(Some(SkinInfo { source, data_url }))
+    Ok(Some(SkinInfo {
+        source,
+        data_url,
+        id: None,
+        model: None,
+    }))
 }
 
 /// Настоящий Стив (D54, просьба владельца: «нельзя просто PNG лица и полного
@@ -236,6 +271,8 @@ pub fn default_skin(paths: &Paths) -> Option<SkinInfo> {
     Some(SkinInfo {
         source: SkinSource::Default,
         data_url: format!("data:image/png;base64,{}", STANDARD.encode(&bytes)),
+        id: None,
+        model: None,
     })
 }
 
@@ -280,6 +317,393 @@ fn extract_steve_from_store(paths: &Paths) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+// ---------- библиотека дефолтных скинов (D59) ----------
+
+/// Описание скина библиотеки: id для UI, запись в клиент-jar (та же схема
+/// источников, что D54: файл официальный, скачан по хэшу, лаунчер только
+/// читает его локально — спеке §3 не противоречит) и модель игрока.
+struct LibSkinDef {
+    id: &'static str,
+    entry: &'static str,
+    model: SkinModel,
+}
+
+/// Библиотека (D59): Steve/Alex × classic/slim. Пути — layout 1.19.3+
+/// (`textures/entity/player/{wide,slim}`); в более старых jar таких записей
+/// нет, и списке этих скинов честно нет (докачивать их запрещено — спека §3).
+const LIBRARY_SKINS: &[LibSkinDef] = &[
+    LibSkinDef {
+        id: "steve-classic",
+        entry: "assets/minecraft/textures/entity/player/wide/steve.png",
+        model: SkinModel::Classic,
+    },
+    LibSkinDef {
+        id: "alex-classic",
+        entry: "assets/minecraft/textures/entity/player/wide/alex.png",
+        model: SkinModel::Classic,
+    },
+    LibSkinDef {
+        id: "steve-slim",
+        entry: "assets/minecraft/textures/entity/player/slim/steve.png",
+        model: SkinModel::Slim,
+    },
+    LibSkinDef {
+        id: "alex-slim",
+        entry: "assets/minecraft/textures/entity/player/slim/alex.png",
+        model: SkinModel::Slim,
+    },
+];
+
+/// Постоянный кэш извлечённых библиотечных скинов (текстура в jar не меняется).
+fn library_cache_dir(paths: &Paths) -> std::path::PathBuf {
+    paths.cache_dir().join("skins").join("library")
+}
+
+/// Библиотечные скины в порядке LIBRARY_SKINS: сперва кэш, недостающее —
+/// одним проходом по jar стора. Нет ни кэша, ни jar с нужными записями —
+/// список честно пуст (D54: ничего не докачиваем).
+pub fn list_library_skins(paths: &Paths) -> Vec<SkinInfo> {
+    let cache = crate::util::fs::long_path(&library_cache_dir(paths));
+    let mut found: Vec<(&'static str, SkinModel, Vec<u8>)> = Vec::new();
+    let mut missing: Vec<&LibSkinDef> = Vec::new();
+    for def in LIBRARY_SKINS {
+        match std::fs::read(cache.join(format!("{}.png", def.id)))
+            .ok()
+            .filter(|bytes| validate_png(bytes).is_ok())
+        {
+            Some(bytes) => found.push((def.id, def.model, bytes)),
+            None => missing.push(def),
+        }
+    }
+    if !missing.is_empty() {
+        if let Some(extracted) = extract_library_from_store(paths, &missing) {
+            for (def, bytes) in extracted {
+                let _ = std::fs::create_dir_all(&cache);
+                let _ = std::fs::write(cache.join(format!("{}.png", def.id)), &bytes);
+                found.push((def.id, def.model, bytes));
+            }
+        }
+    }
+    found.sort_by_key(|(id, _, _)| {
+        LIBRARY_SKINS
+            .iter()
+            .position(|def| def.id == *id)
+            .unwrap_or(usize::MAX)
+    });
+    found
+        .into_iter()
+        .map(|(id, model, bytes)| SkinInfo {
+            source: SkinSource::Default,
+            id: Some(id.into()),
+            model: Some(model),
+            data_url: format!("data:image/png;base64,{}", STANDARD.encode(&bytes)),
+        })
+        .collect()
+}
+
+/// Ищем любой клиент-jar в сторе и вытаскиваем из него нужные записи
+/// (extract_zip_filtered читает только их). Первый jar, где нашлась хоть одна
+/// текстура, — источник для всех: текстуры из разных jar не смешиваем.
+fn extract_library_from_store<'a>(
+    paths: &Paths,
+    wanted: &[&'a LibSkinDef],
+) -> Option<Vec<(&'a LibSkinDef, Vec<u8>)>> {
+    let store = crate::util::fs::long_path(&paths.clients_store());
+    let mut jars: Vec<std::path::PathBuf> = std::fs::read_dir(&store)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jar"))
+        .collect();
+    jars.sort();
+    let staging = crate::util::fs::long_path(&paths.cache_dir().join(".skins-library-staging"));
+    for jar in jars {
+        let file = match std::fs::File::open(&jar) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let _ = std::fs::remove_dir_all(&staging);
+        let extracted = crate::util::zip::extract_zip_filtered(
+            file,
+            &staging,
+            |name| wanted.iter().any(|def| def.entry == name),
+            |_| {},
+        );
+        let found: Vec<(&LibSkinDef, Vec<u8>)> = match extracted {
+            Ok(_) => wanted
+                .iter()
+                .filter_map(|def| match std::fs::read(staging.join(def.entry)) {
+                    Ok(bytes) if validate_png(&bytes).is_ok() => Some((*def, bytes)),
+                    _ => None,
+                })
+                .collect(),
+            // Битый jar — пробуем следующий (как в D54).
+            Err(_) => Vec::new(),
+        };
+        let _ = std::fs::remove_dir_all(&staging);
+        if !found.is_empty() {
+            return Some(found);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&staging);
+    None
+}
+
+// ---------- пользовательские скины (D59) ----------
+
+/// Пользовательский PNG — картинка 64×64/64×32, в instance.json не живёт:
+/// лимит скромнее, чем у иконок/аккаунтных скинов.
+const USER_SKIN_MAX_BYTES: usize = 50 * 1024;
+
+/// id скина = имя файла без расширения. Только [A-Za-z0-9_-]: отсекает
+/// разделители путей и `..` (сами точки запрещены), т.е. любой traversal.
+fn valid_skin_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Имя скина от пользователя → безопасный id (имя файла): посторонние
+/// символы схлопываются в `-`, повторы и краевые `-` срезаются.
+fn sanitize_skin_name(name: &str) -> Result<String> {
+    let mut out = String::new();
+    let mut prev_dash = true; // ведущие '-' не нужны
+    for c in name.chars() {
+        let c = if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            c
+        } else {
+            '-'
+        };
+        if c == '-' && prev_dash {
+            continue;
+        }
+        prev_dash = c == '-';
+        out.push(c);
+    }
+    let mut out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        return Err(LauncherError::InvalidInput(
+            "некорректное имя скина (нужны латиница, цифры, «-» или «_»)".into(),
+        ));
+    }
+    // Выход ASCII, значит truncate не режет посреди символа.
+    const MAX_NAME: usize = 64;
+    if out.len() > MAX_NAME {
+        out.truncate(MAX_NAME);
+    }
+    Ok(out)
+}
+
+/// PNG-скин для загрузки на сервер/показа: сигнатура + IHDR с размером
+/// 64×64 (современный) или 64×32 (legacy) + лимит. IHDR разбирается вручную,
+/// крейт изображений не нужен: 8 (сигнатура) + 8 (len+«IHDR») + 4×2 (стороны).
+fn validate_skin_png(bytes: &[u8]) -> Result<()> {
+    validate_png(bytes)?;
+    if bytes.len() > USER_SKIN_MAX_BYTES {
+        return Err(LauncherError::InvalidInput(format!(
+            "скин больше лимита {} байт",
+            USER_SKIN_MAX_BYTES
+        )));
+    }
+    if bytes.len() < 24 || &bytes[12..16] != b"IHDR" {
+        return Err(LauncherError::InvalidInput("PNG без IHDR".into()));
+    }
+    let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    if width != 64 || (height != 64 && height != 32) {
+        return Err(LauncherError::InvalidInput(format!(
+            "скин должен быть 64×64 или 64×32 (сейчас {width}×{height})"
+        )));
+    }
+    Ok(())
+}
+
+fn user_skin_path(paths: &Paths, id: &str) -> std::path::PathBuf {
+    paths.skins_dir().join(format!("{id}.png"))
+}
+
+/// Сохранить пользовательский скин: валидация → skins/<id>.png (атомарно,
+/// перезапись того же id — обновление скина).
+pub fn save_user_skin(paths: &Paths, name: &str, data: &[u8]) -> Result<SkinInfo> {
+    let id = sanitize_skin_name(name)?;
+    validate_skin_png(data)?;
+    std::fs::create_dir_all(crate::util::fs::long_path(&paths.skins_dir()))?;
+    crate::util::fs::atomic_write(&user_skin_path(paths, &id), data)?;
+    Ok(SkinInfo {
+        source: SkinSource::User,
+        id: Some(id),
+        model: None,
+        data_url: format!("data:image/png;base64,{}", STANDARD.encode(data)),
+    })
+}
+
+/// Удалить пользовательский скин по id. id обязан быть безопасным именем
+/// файла из каталога skins/ — «../x» и прочий traversal отсечён до io.
+pub fn delete_user_skin(paths: &Paths, skin_id: &str) -> Result<()> {
+    if !valid_skin_id(skin_id) {
+        return Err(LauncherError::InvalidInput(format!(
+            "некорректный id скина: {skin_id}"
+        )));
+    }
+    let long = crate::util::fs::long_path(&user_skin_path(paths, skin_id));
+    if !long.exists() {
+        return Err(LauncherError::NotFound(format!("скин {skin_id}")));
+    }
+    std::fs::remove_file(&long)?;
+    Ok(())
+}
+
+/// Каталог пользовательских скинов: *.png из skins/, битые пропускаются
+/// с предупреждением (как битые instance.json в instance_list).
+pub fn list_user_skins(paths: &Paths) -> Vec<SkinInfo> {
+    let dir = crate::util::fs::long_path(&paths.skins_dir());
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .extension()
+            .is_some_and(|x| x.eq_ignore_ascii_case("png"))
+        {
+            continue;
+        }
+        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !valid_skin_id(id) {
+            tracing::warn!("skins: файл с небезопасным именем пропущен: {id}");
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        match validate_skin_png(&bytes) {
+            Ok(()) => out.push(SkinInfo {
+                source: SkinSource::User,
+                id: Some(id.to_string()),
+                model: None,
+                data_url: format!("data:image/png;base64,{}", STANDARD.encode(&bytes)),
+            }),
+            Err(e) => tracing::warn!("skins: битый скин {id} пропущен: {e}"),
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// Скин по id для skin_apply: сперва пользовательский каталог, потом
+/// библиотека дефолтов. Не найден ни там, ни там — None (NotFound на границе).
+pub fn find_skin_by_id(paths: &Paths, skin_id: &str) -> Option<SkinInfo> {
+    list_user_skins(paths)
+        .into_iter()
+        .chain(list_library_skins(paths))
+        .find(|skin| skin.id.as_deref() == Some(skin_id))
+}
+
+// ---------- применение скина аккаунту (D59) ----------
+
+/// Официальный эндпоинт смены скина Mojang (вики «Microsoft authentication»).
+const MSA_SKINS_URL: &str = "https://api.minecraftservices.com/minecraft/profile/skins";
+
+/// SkinInfo несёт PNG как data-URL (тот же, что уходит в UI) — для применения
+/// байты достаются обратно и проходят ту же валидацию, что при загрузке.
+fn decode_skin_data_url(skin: &SkinInfo) -> Result<Vec<u8>> {
+    const PREFIX: &str = "data:image/png;base64,";
+    let b64 = skin
+        .data_url
+        .strip_prefix(PREFIX)
+        .ok_or_else(|| LauncherError::InvalidInput("скин без data-URL PNG".into()))?;
+    let png = STANDARD
+        .decode(b64)
+        .map_err(|e| LauncherError::InvalidInput(format!("скин: base64: {e}")))?;
+    validate_skin_png(&png)?;
+    Ok(png)
+}
+
+/// Применить скин аккаунту по типу профиля (D59). Офлайн-гейты — ДО любых
+/// сетевых вызовов и обращений к keyring (паттерн D43/A61).
+pub async fn apply_skin(
+    paths: &Paths,
+    client: &HttpClient,
+    account_id: &str,
+    skin: &SkinInfo,
+    model: SkinModel,
+) -> Result<()> {
+    let account = crate::auth::list(paths)
+        .into_iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| LauncherError::NotFound(format!("аккаунт {account_id}")))?;
+    match account.kind {
+        // D59: скин offline-профилю в игру не ставим (никаких инжекций) —
+        // легальный пиратский путь уже есть: ely.by.
+        AccountKind::Offline => Err(LauncherError::InvalidInput(
+            "скин offline-профилю ставится только через бесплатный аккаунт Ely.by".into(),
+        )),
+        // Свой authlib-сервер (F13): единого API скинов у таких серверов нет.
+        AccountKind::Authlib => Err(LauncherError::InvalidInput(
+            "у своего authlib-сервера нет единого API скинов — загрузите скин на ely.by или на сервере вручную".into(),
+        )),
+        AccountKind::Msa => {
+            // F16/D43: офлайн — честный отказ до keyring и сети.
+            if client.offline() {
+                return Err(LauncherError::OfflineMode("смена скина Mojang".into()));
+            }
+            let png = decode_skin_data_url(skin)?;
+            let Some(rr) = &account.refresh_ref else {
+                return Err(LauncherError::InvalidInput(
+                    "у MSA-аккаунта нет refresh-токена".into(),
+                ));
+            };
+            let refresh = crate::auth::keyring_get(rr)?;
+            let settings = crate::settings::Settings::load(&paths.settings_file())?;
+            let cid = settings.azure_client_id.ok_or_else(|| {
+                LauncherError::InvalidInput(
+                    "нет azureClientId в настройках — укажите его в Настройках (MSA-вход)".into(),
+                )
+            })?;
+            // Свежий access_token (как в launch_identity): скины требуют валидный токен.
+            let session = crate::auth::msa::refresh_session(client, &refresh, &cid).await?;
+            let resp = client
+                .raw()
+                .put(MSA_SKINS_URL)
+                .bearer_auth(&session.access_token)
+                .json(&serde_json::json!({
+                    "variant": model.variant(),
+                    "file": STANDARD.encode(&png),
+                }))
+                .send()
+                .await?;
+            let status = resp.status();
+            if status.is_success() {
+                return Ok(()); // 200/204 = скин применён
+            }
+            if status.as_u16() == 403 {
+                // Новый код не заводим: 403 = смена скина запрещена (у
+                // саморегистрированного Azure-приложения нет разрешения
+                // Minecraft API до одобрения заявки — как login_with_xbox, D44).
+                return Err(LauncherError::network(
+                    "Mojang skins: HTTP 403 — смена скина отклонена (у приложения нет разрешения на Minecraft API, ожидайте одобрения заявки aka.ms/mce-reviewappid)",
+                ));
+            }
+            Err(LauncherError::network(format!("Mojang skins: HTTP {status}")))
+        }
+        AccountKind::Ely => {
+            // D59: POST account.ely.by/api/account/v1/skins/upload принимает
+            // ТОЛЬКО multipart/form-data (file + model), JSON-варианта у API
+            // нет, а фича multipart reqwest не включена (без апгрейдов
+            // зависимостей). Честный отказ вместо сломанной загрузки: скин
+            // ставится на ely.by вручную, в игре он виден через их
+            // authlib-injector.
+            if client.offline() {
+                return Err(LauncherError::OfflineMode("загрузка скина ely.by".into()));
+            }
+            Err(LauncherError::InvalidInput(
+                "загрузка скина через API ely.by пока недоступна в лаунчере — загрузите скин на ely.by".into(),
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -418,5 +842,276 @@ mod tests {
         assert!(paths.cache_dir().join("steve.png").exists());
         std::fs::remove_file(&jar_path).unwrap();
         assert!(default_skin(&paths).is_some(), "кэш переживает снос jar");
+    }
+
+    /// Минимальный PNG с нужным IHDR: сигнатура + IHDR-чанк. CRC и IDAT не
+    /// имитируем — валидация смотрит только сигнатуру и стороны из IHDR.
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+        v.extend_from_slice(&13u32.to_be_bytes());
+        v.extend_from_slice(b"IHDR");
+        v.extend_from_slice(&width.to_be_bytes());
+        v.extend_from_slice(&height.to_be_bytes());
+        v.extend_from_slice(&[8, 6, 0, 0, 0]); // глубина 8, RGBA
+        v.extend_from_slice(&[0; 4]); // CRC (не проверяется)
+        v.extend_from_slice(b"IDAT");
+        v
+    }
+
+    fn test_skin() -> SkinInfo {
+        SkinInfo {
+            source: SkinSource::User,
+            id: Some("test".into()),
+            model: None,
+            data_url: format!(
+                "data:image/png;base64,{}",
+                STANDARD.encode(png_bytes(64, 64))
+            ),
+        }
+    }
+
+    #[test]
+    fn skin_png_validation_rules() {
+        assert!(validate_skin_png(&png_bytes(64, 64)).is_ok());
+        assert!(validate_skin_png(&png_bytes(64, 32)).is_ok(), "legacy 64×32");
+        assert!(validate_skin_png(&png_bytes(128, 128)).is_err());
+        assert!(validate_skin_png(&png_bytes(64, 96)).is_err());
+        assert!(validate_skin_png(b"\x89PNG\r\n\x1a\nno-ihdr").is_err());
+    }
+
+    #[test]
+    fn sanitize_skin_name_rules() {
+        assert_eq!(sanitize_skin_name("My Skin.png").unwrap(), "My-Skin-png");
+        assert_eq!(sanitize_skin_name("--a__b--").unwrap(), "a__b");
+        assert_eq!(sanitize_skin_name("a!!!b").unwrap(), "a-b");
+        assert!(sanitize_skin_name("").is_err());
+        assert!(sanitize_skin_name("///").is_err());
+        assert_eq!(
+            sanitize_skin_name(&"a".repeat(100)).unwrap().len(),
+            64,
+            "id обрезается до разумной длины"
+        );
+    }
+
+    #[test]
+    fn save_user_skin_happy_legacy_and_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+
+        let saved = save_user_skin(&paths, "My Skin", &png_bytes(64, 64)).unwrap();
+        assert_eq!(saved.id.as_deref(), Some("My-Skin"), "имя санитизируется в id");
+        assert!(matches!(saved.source, SkinSource::User));
+        assert!(saved.data_url.starts_with("data:image/png;base64,"));
+        assert!(
+            paths.skins_dir().join("My-Skin.png").exists(),
+            "файл лежит в skins/ под безопасным именем"
+        );
+
+        // Legacy-формат 64×32 тоже валиден.
+        save_user_skin(&paths, "legacy", &png_bytes(64, 32)).unwrap();
+        let ids: Vec<_> = list_user_skins(&paths)
+            .into_iter()
+            .map(|s| s.id.unwrap())
+            .collect();
+        assert_eq!(ids, vec!["My-Skin".to_string(), "legacy".to_string()]);
+
+        // Перезапись того же имени — обновление того же id, а не дубль.
+        save_user_skin(&paths, "My Skin", &png_bytes(64, 32)).unwrap();
+        assert_eq!(list_user_skins(&paths).len(), 2);
+    }
+
+    #[test]
+    fn save_user_skin_rejects_bad_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+
+        // Не-PNG (сигнатура JPEG).
+        assert!(save_user_skin(&paths, "jpeg", b"\xFF\xD8\xFF\xE0jpeg").is_err());
+        // Не те стороны.
+        assert!(save_user_skin(&paths, "dims", &png_bytes(128, 128)).is_err());
+        // Больше лимита ~50 КБ.
+        let mut oversize = png_bytes(64, 64);
+        oversize.resize(USER_SKIN_MAX_BYTES + 1, 0);
+        assert!(save_user_skin(&paths, "huge", &oversize).is_err());
+        // Имя без допустимых символов.
+        assert!(save_user_skin(&paths, "скин", &png_bytes(64, 64)).is_err());
+        assert!(list_user_skins(&paths).is_empty(), "ничего не сохранено");
+    }
+
+    /// id скина — строго имя файла каталога skins/: traversal и разделители
+    /// отсечены до io, файл-жертва остаётся на месте.
+    #[test]
+    fn delete_user_skin_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        save_user_skin(&paths, "victim", &png_bytes(64, 64)).unwrap();
+
+        for bad in ["../victim", "..", ".", "a/b", "a\\b", ""] {
+            let err = delete_user_skin(&paths, bad).unwrap_err();
+            assert!(
+                matches!(err, LauncherError::InvalidInput(_)),
+                "id {bad:?}: {err:?}"
+            );
+        }
+        assert!(
+            paths.skins_dir().join("victim.png").exists(),
+            "валидация отсекла traversal — жертва не удалена"
+        );
+
+        delete_user_skin(&paths, "victim").unwrap();
+        assert!(!paths.skins_dir().join("victim.png").exists());
+        assert!(matches!(
+            delete_user_skin(&paths, "victim").unwrap_err(),
+            LauncherError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn find_skin_prefers_user_catalog_then_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        save_user_skin(&paths, "mine", &png_bytes(64, 64)).unwrap();
+        assert_eq!(
+            find_skin_by_id(&paths, "mine").unwrap().id.as_deref(),
+            Some("mine"),
+            "пользовательский скин находится по id"
+        );
+        // Библиотечный без jar в сторе отсутствует — find отдаст None.
+        assert!(find_skin_by_id(&paths, "steve-classic").is_none());
+    }
+
+    /// Библиотека (D59): 4 скина из jar (layout 1.19.3+), кэш переживает снос
+    /// jar; старый jar без player/{wide,slim} — честно пустой список.
+    #[test]
+    fn library_skins_come_from_client_jar() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        assert!(list_library_skins(&paths).is_empty(), "нет jar — список пуст");
+
+        let jar_path = crate::util::fs::long_path(&paths.clients_store().join("def123.jar"));
+        let file = std::fs::File::create(&jar_path).unwrap();
+        let mut zw = zip::ZipWriter::new(file);
+        for def in LIBRARY_SKINS {
+            zw.start_file(def.entry, zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut zw, &png_bytes(64, 64)).unwrap();
+        }
+        zw.finish().unwrap();
+
+        let skins = list_library_skins(&paths);
+        assert_eq!(skins.len(), LIBRARY_SKINS.len(), "все четыре из одного jar");
+        for (skin, def) in skins.iter().zip(LIBRARY_SKINS) {
+            assert_eq!(skin.id.as_deref(), Some(def.id));
+            assert_eq!(skin.model, Some(def.model));
+            assert!(matches!(skin.source, SkinSource::Default));
+            assert!(skin.data_url.starts_with("data:image/png;base64,"));
+        }
+        // Кэш записан: список живёт и после сноса jar.
+        std::fs::remove_file(&jar_path).unwrap();
+        assert_eq!(list_library_skins(&paths).len(), LIBRARY_SKINS.len());
+
+        // Legacy-layout (только entity/steve.png): записи player/{wide,slim}
+        // отсутствуют — из такого jar скинов библиотеки честно нет.
+        let dir2 = tempfile::tempdir().unwrap();
+        let paths2 = Paths::new(dir2.path().to_path_buf());
+        paths2.ensure_dirs().unwrap();
+        let jar2 = crate::util::fs::long_path(&paths2.clients_store().join("legacy.jar"));
+        let file2 = std::fs::File::create(&jar2).unwrap();
+        let mut zw2 = zip::ZipWriter::new(file2);
+        zw2.start_file(
+            "assets/minecraft/textures/entity/steve.png",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        std::io::Write::write_all(&mut zw2, &png_bytes(64, 64)).unwrap();
+        zw2.finish().unwrap();
+        assert!(
+            list_library_skins(&paths2).is_empty(),
+            "нет записей layout 1.19.3+ — пусто, ничего не докачиваем"
+        );
+    }
+
+    /// D59: offline-профилю скин не ставится — InvalidInput до любых IO
+    /// (клиент не в офлайн-режиме: единственная причина — тип аккаунта).
+    #[tokio::test]
+    async fn apply_skin_offline_account_fails_before_io() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        crate::auth::add(&paths, account(AccountKind::Offline, "Tester", "409f7b8c")).unwrap();
+        let client = HttpClient::new(None).unwrap();
+        let err = apply_skin(&paths, &client, "acc1", &test_skin(), SkinModel::Classic)
+            .await
+            .expect_err("offline-профилю скин не ставится");
+        assert!(matches!(err, LauncherError::InvalidInput(_)));
+        assert!(
+            err.to_string().contains("Ely.by"),
+            "подсказка ведёт на бесплатный ely.by: {err}"
+        );
+    }
+
+    /// D43-паттерн: офлайн-гейт стоит ДО keyring (несуществующий refresh_ref
+    /// дал бы NotFound) и до сети — OfflineMode доказывает порядок проверок.
+    #[tokio::test]
+    async fn apply_skin_msa_gate_fails_before_io() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let mut acc = account(AccountKind::Msa, "Steve", "409f7b8cf6e5441c");
+        acc.refresh_ref = Some("apply-skin-nonexistent-keyring".into());
+        crate::auth::add(&paths, acc).unwrap();
+        let client = HttpClient::new(None).unwrap();
+        client.set_offline(true);
+        let err = apply_skin(&paths, &client, "acc1", &test_skin(), SkinModel::Slim)
+            .await
+            .expect_err("офлайн — отказ до IO");
+        assert!(
+            matches!(err, LauncherError::OfflineMode(_)),
+            "получено: {err:?}"
+        );
+    }
+
+    /// ely.by: гейт офлайна до IO; онлайн — честный фолбэк (API принимает
+    /// только multipart, JSON-варианта нет, фичи reqwest multipart нет — D59).
+    #[tokio::test]
+    async fn apply_skin_ely_gate_then_honest_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        crate::auth::add(&paths, account(AccountKind::Ely, "erickskrauch", "d2a9f3c1")).unwrap();
+        let client = HttpClient::new(None).unwrap();
+
+        client.set_offline(true);
+        let err = apply_skin(&paths, &client, "acc1", &test_skin(), SkinModel::Classic)
+            .await
+            .expect_err("офлайн — отказ до IO");
+        assert!(matches!(err, LauncherError::OfflineMode(_)), "{err:?}");
+
+        client.set_offline(false);
+        let err = apply_skin(&paths, &client, "acc1", &test_skin(), SkinModel::Classic)
+            .await
+            .expect_err("multipart недоступен — честный фолбэк");
+        assert!(matches!(err, LauncherError::InvalidInput(_)));
+        assert!(
+            err.to_string().contains("ely.by"),
+            "фолбэк отправляет загружать скин на ely.by: {err}"
+        );
+    }
+
+    /// Неизвестный аккаунт — NotFound до прочих проверок (как account_skin).
+    #[tokio::test]
+    async fn apply_skin_unknown_account_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let client = HttpClient::new(None).unwrap();
+        let err = apply_skin(&paths, &client, "ghost", &test_skin(), SkinModel::Classic)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LauncherError::NotFound(_)));
     }
 }
