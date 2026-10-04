@@ -1,23 +1,25 @@
 <div align="center">
 
+<sub><b>English</b> · [Русский](README.ru.md) · [Українська](README.uk.md) · [Polski](README.pl.md)</sub>
+
 <img src="src-tauri/icons/128x128.png" width="88" alt="Cobble Launcher">
 
 # Cobble Launcher
 
-**Быстрый и честный лаунчер Minecraft для Windows**
+**A fast and honest Minecraft launcher for Windows**
 
-[![Версия](https://img.shields.io/github/v/release/loxord241/Cobble-Launcher?style=flat-square&label=версия)](https://github.com/loxord241/Cobble-Launcher/releases/latest)
-[![Лицензия](https://img.shields.io/github/license/loxord241/Cobble-Launcher?style=flat-square)](LICENSE)
-[![Платформа](https://img.shields.io/badge/Windows-10%2F11_x64-blue?style=flat-square&logo=windows)](https://github.com/loxord241/Cobble-Launcher/releases/latest)
-[![Языки](https://img.shields.io/badge/языки-ru·en·uk·pl-green?style=flat-square)](#языки)
-[![Тесты](https://img.shields.io/badge/тесты-331%2B10-success?style=flat-square)](#сборка-из-исходников)
+[![Version](https://img.shields.io/github/v/release/loxord241/Cobble-Launcher?style=flat-square&label=version)](https://github.com/loxord241/Cobble-Launcher/releases/latest)
+[![License](https://img.shields.io/github/license/loxord241/Cobble-Launcher?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/Windows-10%2F11_x64-blue?style=flat-square&logo=windows)](https://github.com/loxord241/Cobble-Launcher/releases/latest)
+[![Languages](https://img.shields.io/badge/languages-ru%C2%B7en%C2%B7uk%C2%B7pl-green?style=flat-square)](#languages)
+[![Tests](https://img.shields.io/badge/tests-331%2B10-success?style=flat-square)](#building-from-source)
 
-**[Скачать последнюю версию](https://github.com/loxord241/Cobble-Launcher/releases/latest)** ·
-[Сообщить о проблеме](https://github.com/loxord241/Cobble-Launcher/issues) ·
-[Демо-видео](docs/anim-demo.mp4)
-· [Сайт Cobble Launcher](https://loxord241.github.io/Cobble-Launcher/)
+**[Download the latest release](https://github.com/loxord241/Cobble-Launcher/releases/latest)** ·
+[Report an issue](https://github.com/loxord241/Cobble-Launcher/issues) ·
+[Demo video](docs/anim-demo.mp4)
+· [Cobble Launcher website](https://loxord241.github.io/Cobble-Launcher/)
 
-<img src="docs/screenshots/home.png" alt="Каталог Modrinth на главной странице" width="820">
+<img src="docs/screenshots/home.png" alt="Modrinth catalog on the home page" width="820">
 
 Tauri 2 · Rust · React 19 · TypeScript
 
@@ -25,136 +27,136 @@ Tauri 2 · Rust · React 19 · TypeScript
 
 ---
 
-Cobble — настольный лаунчер с нативным ядром на Rust и лёгким интерфейсом на
-React. Никаких браузерных движков в фоне, никаких «ускорителей» и инжекций в
-игру: только официальные источники, проверка каждого файла по хэшу и
-sodium-стек для оптимизации.
+Cobble is a desktop launcher with a native Rust core and a lightweight React
+interface. No background browser engines, no "boosters" and no game injections:
+official sources only, every file verified by hash, and the sodium stack for
+optimization.
 
-## 🗂 Каталог Modrinth
+## 🗂 Modrinth catalog
 
-- Каталог на главной: модпаки и моды, поиск, сортировки (загрузки / избранное /
-  обновления), фильтр загрузчика, бесконечный скролл
-- Окно проекта как в CurseForge: Обзор / Журнал изменений / Галерея / Версии
-- Установка модпаков в новый инстанс и модов — прямо из окна проекта или со
-  страницы инстанса; пакетное обновление модов в один клик
+- Catalog right on the home page: modpacks and mods, search, sorting
+  (downloads / favorites / updates), loader filter, infinite scroll
+- CurseForge-style project window: Overview / Changelog / Gallery / Versions
+- Install modpacks into a new instance and mods into an existing one straight
+  from the project window or the instance page; batch-update mods in one click
 
-## 🎮 Инстансы
+## 🎮 Instances
 
-- Изолированные инстансы: своя версия, загрузчик (Fabric / Quilt / Forge /
-  NeoForge), моды и настройки
-- Прогресс скачивания и живой статус прямо в карточке; защита от двойного
-  запуска и от порчи работающего инстанса — на уровне ядра
-- Полный контроль: RAM, версия Java (автоустановка Adoptium), пресеты JVM-флагов,
-  Quick Play, профили на инстанс, переименование, дублирование, бэкапы и
-  снапшоты модов с откатом
-- Миры, скриншоты и конфиги модов — прямо со страницы инстанса
+- Isolated instances: their own version, loader (Fabric / Quilt / Forge /
+  NeoForge), mods and settings
+- Download progress and live status right on the card; double-launch and
+  busy-instance protection enforced at the core level
+- Full control: RAM, Java version (Adoptium auto-install), JVM flag presets,
+  Quick Play, per-instance profiles, renaming, duplication, backups and mod
+  snapshots with rollback
+- Worlds, screenshots and mod configs — straight from the instance page
 
-## 👤 Профили
+## 👤 Profiles
 
-- Microsoft (браузерный OAuth), Ely.by (authlib-injector) и офлайн-профили;
-  офлайн — честно помечены как нелицензионные
-- Аватарки: голова скина для Microsoft / Ely.by, классический Стив — для
-  офлайна
-- Refresh-токены — только в системном keyring Windows
-- Discord Rich Presence: название инстанса в статусе Discord
+- Microsoft (browser OAuth), Ely.by (authlib-injector) and offline profiles;
+  offline ones are honestly marked as unlicensed
+- Avatars: skin head for Microsoft / Ely.by, classic Steve for offline
+- Refresh tokens are kept only in the Windows system keyring
+- Discord Rich Presence: the instance name shows up in your Discord status
 
 <div align="center">
   <table>
     <tr>
-      <td><img src="docs/screenshots/instances.png" alt="Инстансы: карточки с артами и версиями" width="420"></td>
-      <td><img src="docs/screenshots/accounts.png" alt="Управление профилями: настоящий Стив для офлайн-профилей" width="420"></td>
+      <td><img src="docs/screenshots/instances.png" alt="Instances: cards with artwork and versions" width="420"></td>
+      <td><img src="docs/screenshots/accounts.png" alt="Profile management: a real Steve for offline profiles" width="420"></td>
     </tr>
     <tr>
-      <td><img src="docs/screenshots/instance.png" alt="Страница инстанса: запуск, вкладки, статистика" width="420"></td>
-      <td><img src="docs/screenshots/settings.png" alt="Настройки: темы, язык, память" width="420"></td>
+      <td><img src="docs/screenshots/instance.png" alt="Instance page: launch, tabs, statistics" width="420"></td>
+      <td><img src="docs/screenshots/settings.png" alt="Settings: themes, language, memory" width="420"></td>
     </tr>
   </table>
 </div>
 
-## 🔄 Автообновления
+## 🔄 Automatic updates
 
-Лаунчер сам проверяет релизы (раз за сессию, тихо) и показывает бейдж
-«Доступно обновление». Установка — одной кнопкой: подписанный апдейт
-(minisign), прогресс скачивания, автоматический перезапуск. Ваши инстансы,
-профили и настройки остаются на месте.
+The launcher checks releases on its own (once per session, silently) and shows
+an "Update available" badge. Installing takes one click: a signed update
+(minisign), download progress, automatic relaunch. Your instances, profiles and
+settings stay in place.
 
-## 🛡 Безопасность и приватность
+## 🛡 Security and privacy
 
-- **Только официальные источники**: Mojang, Modrinth, Adoptium — каждый файл
-  сверяется по хэшу с сервера. Зеркала без проверки хэшей запрещены принципами
-  проекта.
-- **Ноль инжекций в игру**: лаунчер не модифицирует процесс Minecraft.
-  Единственное исключение — authlib-injector для Ely.by, работающий в рамках
-  этой службы.
-- **Секреты не покидают систему**: токены — в keyring Windows, в логах
-  включено автоматическое скрытие секретов.
+- **Official sources only**: Mojang, Modrinth, Adoptium — every file is
+  verified against the hash from the server. Mirrors without hash verification
+  are forbidden by the project principles.
+- **Zero game injections**: the launcher does not modify the Minecraft
+  process. The only exception is authlib-injector for Ely.by, which is part of
+  that service.
+- **Secrets never leave the machine**: tokens live in the Windows keyring, and
+  the logs automatically redact secrets.
 
-## 🌍 Языки
+## 🌍 Languages
 
-Русский · English · Українська · Polski — переключаются в онбординге и
-настройках, применяются ко всему интерфейсу, ошибкам и форматам дат.
+Русский · English · Українська · Polski — picked during onboarding or in
+settings, applied across the whole interface, error messages and date formats.
 
-## ⬇️ Скачать
+## ⬇️ Download
 
-Готовые установщики (NSIS и MSI, Windows 10/11 x64) — на странице
-[релизов](https://github.com/loxord241/Cobble-Launcher/releases/latest).
-После установки обновления приходят сами; вручную — кнопка «Проверить
-обновления» в настройках.
+Ready-made installers (NSIS and MSI, Windows 10/11 x64) are on the
+[releases](https://github.com/loxord241/Cobble-Launcher/releases/latest) page.
+After installation updates arrive on their own; you can also use the "Check
+for updates" button in settings.
 
-## 🧑‍💻 Сборка из исходников
+## 🧑‍💻 Building from source
 
-Требуется Node.js 20+, Rust (stable) и npm.
+Requires Node.js 20+, Rust (stable) and npm.
 
 ```bash
-npm install        # зависимости фронтенда
-npm run tauri dev  # запуск в режиме разработки
+npm install        # frontend dependencies
+npm run tauri dev  # run in development mode
 ```
 
-Релизная сборка (установщики NSIS и MSI в `src-tauri/target/release/bundle/`):
+Release build (NSIS and MSI installers in `src-tauri/target/release/bundle/`):
 
 ```bash
 npm run tauri build
 ```
 
-Проверки качества:
+Quality checks:
 
 ```bash
 npm run build                # TypeScript strict + Vite
-cd src-tauri && cargo test   # 331 тест ядра + 10 интеграционных
+cd src-tauri && cargo test   # 331 core tests + 10 integration
 ```
 
-## 🧱 Стек и структура
+## 🧱 Stack and structure
 
-| Слой | Технологии |
+| Layer | Technologies |
 |---|---|
-| Интерфейс | React 19, TypeScript strict, Tailwind 4 |
-| Ядро | Rust, Tauri 2, tokio |
-| Контент | Modrinth API, манифесты Mojang, Adoptium |
+| Interface | React 19, TypeScript strict, Tailwind 4 |
+| Core | Rust, Tauri 2, tokio |
+| Content | Modrinth API, Mojang manifests, Adoptium |
 
-- `src/` — интерфейс: страницы, компоненты, темы, i18n (ru, en, uk, pl)
-- `src-tauri/src/` — ядро: инстансы и запуск, загрузки по хэшам, Modrinth,
-  авторизация, автообновление
-- `docs/` — [карта документации](docs/README.md):
-  [контракт ядро↔UI](docs/UI-CONTRACT.md),
-  [реестр решений](docs/DECISIONS.md), [статус этапов](docs/PROGRESS.md)
-- `scripts/` — приёмочные тесты: сквозные проверки UI, жизненного цикла
-  процесса, интеграции Modrinth
+- `src/` — interface: pages, components, themes, i18n (ru, en, uk, pl)
+- `src-tauri/src/` — core: instances and launching, hash-verified downloads,
+  Modrinth, authentication, automatic updates
+- `docs/` — [documentation map](docs/README.md):
+  [core↔UI contract](docs/UI-CONTRACT.md),
+  [decision registry](docs/DECISIONS.md), [milestone status](docs/PROGRESS.md)
+- `scripts/` — acceptance tests: end-to-end UI checks, process lifecycle,
+  Modrinth integration
 
-## 📄 Лицензия и бренды
+## 📄 License and trademarks
 
-Код проекта — под лицензией **MIT** (см. [LICENSE](LICENSE)); прямые
-зависимости и их лицензии — в [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md),
-атрибуция и товарные знаки — в [NOTICE](NOTICE).
+The project code is licensed under **MIT** (see [LICENSE](LICENSE)); direct
+dependencies and their licenses are listed in
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md), attribution and trademarks
+in [NOTICE](NOTICE).
 
 **Не официальный продукт Minecraft. Не связан с Mojang и Microsoft.**
 
-Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.
+**Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.**
 
 **Не офіційний продукт Minecraft. Не пов'язаний з Mojang та Microsoft.**
 
 **Nieoficjalny produkt Minecraft. Niepowiązany z Mojang i Microsoft.**
 
-Minecraft — товарный знак Mojang Synergies AB. Названия Mojang, Microsoft, Xbox
-и Minecraft используются только для описания совместимости; лаунчер не
-распространяет файлы игры, а скачивает их с официальных серверов Mojang по
-сверенным хэшам.
+Minecraft is a trademark of Mojang Synergies AB. The names Mojang, Microsoft,
+Xbox and Minecraft are used solely to describe compatibility; the launcher does
+not distribute game files — it downloads them from Mojang's official servers
+with hash verification.
