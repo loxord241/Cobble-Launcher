@@ -31,7 +31,7 @@ async function main() {
       : fail("нет таба «Миры»");
     await worldsTab.click();
     await page.waitForTimeout(800);
-    const hasList = (await page.locator('[aria-label^="Бэкап мира"]').count()) > 0;
+    const hasList = (await page.getByRole("button", { name: "Бэкап мира" }).count()) > 0;
     const hasEmpty = (await page.getByText(/Миров пока нет/).count()) > 0;
     hasList || hasEmpty
       ? ok(hasList ? "список миров с бэкап-кнопками" : "честный empty для миров")

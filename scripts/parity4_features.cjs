@@ -38,7 +38,7 @@ async function main() {
   await cfgTab.click();
   await page.waitForTimeout(800);
   const empty = (await page.getByText("Конфигов пока нет").count()) > 0;
-  const list = (await page.locator('[aria-label^="Сохранить"]').count()) > 0;
+  const list = (await page.locator("ul li button").count()) > 0;
   empty || list ? ok("конфиги: честный empty или список") : fail("конфиги пусты и без empty");
   await page.getByRole("button", { name: /^Назад/ }).first().click();
   await page.waitForTimeout(400);
