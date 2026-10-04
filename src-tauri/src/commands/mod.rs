@@ -371,6 +371,131 @@ pub async fn instance_launch(
     Ok(OkMsg { ok: true })
 }
 
+/// Guard «инстанс запущен» для операций, трогающих файлы игры (B9): игра
+/// держит их открытыми — на Windows это Sharing Violation. Вынесен из команды
+/// смены версии, чтобы тестироваться без State.
+fn ensure_not_running(paths: &crate::paths::Paths, id: &str) -> Result<()> {
+    if instances::running_pid(&instances::instance_dir(paths, id)).is_some() {
+        return Err(LauncherError::InvalidInput("инстанс запущен".into()));
+    }
+    Ok(())
+}
+
+/// Валидация смены версии (чистая функция, без сети): формат новой версии —
+/// непустая и без пробелов (IPC-граница, как в instance_create), и «это уже
+/// текущая версия» — бессмысленная операция.
+fn validate_version_change(current_mc_version: &str, new_mc_version: &str) -> Result<()> {
+    if new_mc_version.is_empty() || new_mc_version.chars().any(char::is_whitespace) {
+        return Err(LauncherError::InvalidInput(format!(
+            "некорректная версия Minecraft: {new_mc_version:?}"
+        )));
+    }
+    if current_mc_version == new_mc_version {
+        return Err(LauncherError::InvalidInput("это уже текущая версия".into()));
+    }
+    Ok(())
+}
+
+/// Чистая часть смены версии (тестируется без сети): копия инстанса с
+/// обновлёнными полями. `version_id` сбрасывается: старый version JSON
+/// описывал цепочку прежней MC (inheritsFrom) — следующий prepare/установка
+/// загрузчика пересоздаст его тем же путём, что при обычном запуске.
+/// `picked_loader_version` — новая версия загрузчика, подобранная под новую
+/// MC (только при установленном загрузчике).
+fn version_change_fields(
+    inst: &Instance,
+    new_mc_version: &str,
+    picked_loader_version: Option<&str>,
+) -> Instance {
+    let mut updated = inst.clone();
+    updated.mc_version = new_mc_version.to_string();
+    updated.version_id = None;
+    if let Some(v) = picked_loader_version {
+        updated.loader_version = Some(v.to_string());
+    }
+    updated
+}
+
+/// Смена версии Minecraft у существующего инстанса («как в Prism»).
+/// Предупреждение о возможной несовместимости контента показывает UI до
+/// вызова. Порядок гарантирует: ошибка ДО записи полей оставляет инстанс
+/// нетронутым, ошибка ПОСЛЕ (сеть) — поля уже сохранены, повторный запуск
+/// докачивает файлы.
+#[tauri::command]
+pub async fn instance_version_change(
+    state: State<'_, AppState>,
+    id: String,
+    new_mc_version: String,
+) -> Result<OkMsg> {
+    // Запущенный инстанс менять нельзя (B9), затем формат и «та же версия».
+    ensure_not_running(&state.paths, &id)?;
+    let inst = instances::load(&state.paths, &id)?;
+    validate_version_change(&inst.mc_version, &new_mc_version)?;
+
+    // Новая версия должна существовать в манифесте (кэшируется) — как в
+    // instance_create: иначе поля сохранились бы, а запуск падал бы.
+    let http = state.http().await;
+    let manifest = fetch_manifest(&http, &state.paths.manifests_cache()).await?;
+    resolve_entry(&manifest, &new_mc_version)?;
+
+    // Для загрузчика — новая версия под новую MC тем же путём выбора, что при
+    // установке. Подбираем ДО записи полей: нет совместимой — инстанс не трогаем.
+    let picked_loader_version = match &inst.loader {
+        Some(loader) => Some(
+            instances::run::pick_loader_version(&http, loader, &new_mc_version)
+                .await
+                .map_err(|e| match e {
+                    LauncherError::NotFound(_) | LauncherError::VersionNotFound(_) => {
+                        LauncherError::InvalidInput(format!(
+                            "для {new_mc_version} нет версии загрузчика {loader}"
+                        ))
+                    }
+                    other => other,
+                })?,
+        ),
+        None => None,
+    };
+
+    // Поля атомарно (A28): mc_version новый, version_id сброшен — старый
+    // version JSON невалиден для новой цепочки.
+    let updated = version_change_fields(&inst, &new_mc_version, picked_loader_version.as_deref());
+    instances::save(&state.paths, &updated)?;
+
+    // Пере-подготовка игровых файлов: группа — как у запуска (instance:<id>),
+    // движок снимается с регистрации в любом исходе (см. content_install).
+    let group = format!("instance:{id}");
+    let engine = state.engine_for(&group).await;
+    let res = async {
+        // Загрузчик: version JSON для пары новая MC + загрузчик пересоздаётся
+        // тем же путём, что при обычной установке (профиль Fabric/Quilt из meta
+        // или headless-инсталлятор Forge/NeoForge); install_loader сам обновит
+        // version_id и сохранит инстанс.
+        if let (Some(loader), Some(v)) = (updated.loader.as_deref(), picked_loader_version.as_deref())
+        {
+            let settings = state.settings.read().await.clone();
+            instances::run::install_loader(
+                &state.paths,
+                &settings,
+                http.clone(),
+                &updated,
+                loader,
+                Some(v),
+            )
+            .await?;
+        }
+        // Ремонт-цепочка: перезапуск prepare-цепочки скачивания client +
+        // libraries + assets; валидные на диске хэши движок пропускает —
+        // докачивается только новое.
+        crate::instances::repair::repair_instance(&state.paths, http.clone(), engine, &id).await
+    }
+    .await;
+    state.engine_done(&group);
+    // Ошибка (в т.ч. OfflineMode без сети) уходит в UI как есть: поля инстанса
+    // уже сохранены, следующий запуск/ремонт докачает недостающее.
+    res?;
+    Ok(OkMsg { ok: true })
+}
+
 // ---------- контент (Modrinth, спека §6.6) ----------
 
 #[tauri::command]
@@ -381,10 +506,15 @@ pub async fn modrinth_search(
     mc_version: Option<String>,
     loader: Option<String>,
     project_type: Option<String>,
+    categories: Option<Vec<String>>,
     index: Option<String>,
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Result<crate::modrinth::api::SearchResult> {
+    // IPC-граница: категории из рендера не доверяем (принцип A1).
+    if let Some(cats) = &categories {
+        crate::modrinth::api::validate_search_categories(cats)?;
+    }
     let http = state.http().await;
     crate::modrinth::api::search(
         &http,
@@ -392,6 +522,7 @@ pub async fn modrinth_search(
         mc_version.as_deref(),
         loader.as_deref(),
         project_type.as_deref(),
+        categories.as_deref(),
         index.as_deref(),
         limit.unwrap_or(20),
         offset.unwrap_or(0),
@@ -2098,6 +2229,87 @@ mod tests {
             crate::auth::offline::offline_uuid("Steve"),
             "сырой ввод давал бы другой uuid — это и был баг"
         );
+    }
+
+    /// Смена версии: пустая версия, версия с пробелом и «та же версия» —
+    /// InvalidInput до любых сетевых обращений и записи полей.
+    #[test]
+    fn version_change_rejects_bad_and_same_version() {
+        for (current, new) in [
+            ("1.20.1", ""),
+            ("1.20.1", "1 21"),
+            ("1.20.1", "1.21.1\n"),
+            ("1.20.1", "\t"),
+            ("1.20.1", "1.20.1"),
+        ] {
+            let err = validate_version_change(current, new).unwrap_err();
+            assert_eq!(
+                err.code(),
+                "invalid_input",
+                "пара ({current:?}, {new:?}) отклонена"
+            );
+        }
+        assert!(validate_version_change("1.20.1", "1.21.1").is_ok());
+        assert!(validate_version_change("1.20.1", "24w14a").is_ok());
+    }
+
+    /// Guard смены версии: живой PID в `.lock` блокирует операцию (B9),
+    /// без лока — проход. Паттерн instances::tests::delete_duplicate_rename_reject_running.
+    #[test]
+    fn version_change_running_guard_blocks_live_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let inst = Instance::new("vc-guard", "1.20.1");
+        instances::save(&paths, &inst).unwrap();
+        let inst_dir = instances::instance_dir(&paths, &inst.id);
+
+        // Имитируем живую игру: .lock с PID текущего тестового процесса.
+        std::fs::write(
+            crate::util::fs::long_path(&inst_dir.join(".lock")),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        let err = ensure_not_running(&paths, &inst.id).unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+
+        // Лок снят — операция разрешена.
+        let _ = std::fs::remove_file(inst_dir.join(".lock"));
+        assert!(ensure_not_running(&paths, &inst.id).is_ok());
+    }
+
+    /// Смена версии обновляет поля инстанса: mc_version новый, version_id
+    /// сброшен (старый version JSON невалиден), пользовательские поля и
+    /// статистика не тронуты; при загрузчике — loader_version на подобранную.
+    #[test]
+    fn version_change_updates_fields_and_resets_version_id() {
+        // Ванильный инстанс (loader=None): version_id сбрасывается, остальное
+        // остаётся.
+        let mut inst = Instance::new("vanilla", "1.20.1");
+        inst.version_id = Some("1.20.1-stale".into());
+        inst.ram_mb = 4096;
+        inst.play_seconds = 77;
+        let updated = version_change_fields(&inst, "1.21.1", None);
+        assert_eq!(updated.mc_version, "1.21.1");
+        assert_eq!(updated.version_id, None, "version_id сброшен");
+        assert_eq!(updated.loader_version, None, "без загрузчика — как было");
+        assert_eq!(updated.ram_mb, 4096, "пользовательское поле не тронуто");
+        assert_eq!(updated.play_seconds, 77, "статистика не тронута");
+        assert_eq!(updated.id, inst.id, "id инстанса сохраняется");
+        // Оригинал не изменён (чистая функция).
+        assert_eq!(inst.mc_version, "1.20.1");
+        assert_eq!(inst.version_id.as_deref(), Some("1.20.1-stale"));
+
+        // Инстанс с загрузчиком: loader_version переносится на подобранную.
+        let mut loaded = Instance::new("fabric", "1.20.1");
+        loaded.loader = Some("fabric".into());
+        loaded.loader_version = Some("0.16.9".into());
+        loaded.version_id = Some("fabric-loader-0.16.9-1.20.1".into());
+        let updated = version_change_fields(&loaded, "1.21.1", Some("0.16.14"));
+        assert_eq!(updated.loader.as_deref(), Some("fabric"), "тип загрузчика сохранён");
+        assert_eq!(updated.loader_version.as_deref(), Some("0.16.14"));
+        assert_eq!(updated.version_id, None, "старый JSON загрузчика больше не валиден");
+        assert_eq!(updated.mc_version, "1.21.1");
     }
 
     /// Реальная сеть — #[ignore], гонять на приёмке (спека §9). Пока репозиторий

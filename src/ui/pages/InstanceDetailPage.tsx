@@ -19,6 +19,7 @@ import {
   MonitorSmartphone,
   MoreVertical,
   Pencil,
+  ArrowLeftRight,
   Play,
   Plus,
   RefreshCw,
@@ -39,6 +40,7 @@ import { pickImagePath } from "../components/pickFile";
 import { defaultArtwork } from "../defaultArt";
 import { formatSize } from "../format";
 import AddContentModal from "../components/AddContentModal";
+import ChangeVersionModal from "../components/ChangeVersionModal";
 import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
@@ -122,6 +124,8 @@ export default function InstanceDetailPage({
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
+  // Смена версии MC (как в Prism) — модалка выбора новой версии из манифеста.
+  const [changeVersionOpen, setChangeVersionOpen] = useState(false);
   // D54: справка «Как оптимизировать» вместо автокнопки.
   const [optimizeHelpOpen, setOptimizeHelpOpen] = useState(false);
   // Битая иконка в шапке → процедурный арт (как на карточках).
@@ -369,6 +373,18 @@ export default function InstanceDetailPage({
         </div>
       )}
 
+      {/* Арт модпака из галереи (если есть): широкий баннер над шапкой.
+          Иконка в шапке остаётся — баннер её не заменяет, а украшает сверху. */}
+      {inst.art && (
+        <img
+          src={inst.art}
+          alt=""
+          aria-hidden
+          draggable={false}
+          className="anim-fade-in h-36 w-full shrink-0 rounded-lg border border-border-app object-cover"
+        />
+      )}
+
       {/* Шапка в стиле CurseForge: иконка, имя, чипы и большая кнопка запуска. */}
       <section className="flex flex-wrap items-center gap-4 rounded-lg border border-border-app bg-card p-5">
         <img
@@ -476,6 +492,15 @@ export default function InstanceDetailPage({
                     onClick={() => {
                       closeMenu();
                       setRenameOpen(true);
+                    }}
+                  />
+                  <MenuItem
+                    icon={ArrowLeftRight}
+                    label={t("instances.changeVersion.menu")}
+                    disabled={busy}
+                    onClick={() => {
+                      closeMenu();
+                      setChangeVersionOpen(true);
                     }}
                   />
                   <MenuItem
@@ -959,6 +984,19 @@ export default function InstanceDetailPage({
       )}
 
       {renameOpen && <RenameInstanceModal instance={inst} onClose={() => setRenameOpen(false)} />}
+
+      {/* Смена версии MC: успех — notice + перечитываем инстанс из ядра. */}
+      {changeVersionOpen && (
+        <ChangeVersionModal
+          instance={inst}
+          onClose={() => setChangeVersionOpen(false)}
+          onDone={(version) => {
+            setChangeVersionOpen(false);
+            setNotice(t("changeVersion.done", { version }));
+            void load();
+          }}
+        />
+      )}
 
       {optimizeHelpOpen && <OptimizeHelpModal onClose={() => setOptimizeHelpOpen(false)} />}
 

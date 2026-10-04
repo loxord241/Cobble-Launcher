@@ -21,7 +21,7 @@ type Selection =
   | { kind: "library"; item: SkinLibraryItem }
   | { kind: "user"; item: SkinUserItem };
 
-type AccountNote = "none" | "offline" | "msa" | "ely";
+type AccountNote = "none" | "offline" | "msa" | "ely" | "authlib";
 
 /** Локализованные подписи библиотеки (id задаёт ядро, D59). */
 const LIBRARY_LABEL_KEYS: Record<string, string> = {
@@ -124,11 +124,13 @@ export default function SkinsPage() {
   };
 
   const effectiveModel: SkinModel = selected?.item.model ?? modelChoice;
-  // Применение через лаунчер реально работает только для MSA (API Mojang —
-  // оживает после одобрения заявки, D44). Ely.by: честно отправляем на сайт
-  // (их account-API требует отдельного OAuth-токена с multipart, D59);
-  // выбранный там скин лаунчер и так показывает через account_skin (D34).
-  const canApply = active?.kind === "msa" && selected !== null;
+  // Применение через лаунчер: msa → API Mojang (оживает после одобрения
+  // заявки, D44). У Ely.by публичного API загрузки скинов НЕТ (проверено
+  // 2026-10-04: docs.ely.by только read, /api/skins → 404, у elyby/accounts
+  // skin-маршрутов нет) — ядро умеет multipart PUT на случай появления API,
+  // но кнопка для ely не включается, чтобы не звать заведомо падающий
+  // эндпоинт; честная подсказка — сайт ely.by. offline — то же самое.
+  const canApply = active != null && active.kind === "msa" && selected !== null;
 
   const applySkin = async () => {
     if (!active || !selected || !selected.item.id) return;
@@ -165,7 +167,9 @@ export default function SkinsPage() {
       ? "offline"
       : active.kind === "msa"
         ? "msa"
-        : "ely"; // ely и authlib (D59: оба применяются через API Ely.by)
+        : active.kind === "ely"
+          ? "ely"
+          : "authlib"; // свой authlib-сервер (F13): скин — через сайт ely.by
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-5">
@@ -285,7 +289,9 @@ export default function SkinsPage() {
                 className="btn-primary flex h-10 items-center gap-2 px-5 text-sm"
               >
                 {applyBusy && <LoaderCircle size={15} aria-hidden className="animate-spin" />}
-                {applyBusy ? t("skins.applying") : t("skins.apply")}
+                {applyBusy
+                  ? t(active?.kind === "ely" ? "skins.uploadingService" : "skins.applying")
+                  : t("skins.apply")}
               </button>
             </div>
 
@@ -318,7 +324,7 @@ export default function SkinsPage() {
             {note === "msa" && (
               <p className="mt-3 text-xs leading-relaxed text-text-muted">{t("skins.msa.note")}</p>
             )}
-            {note === "ely" && (
+            {(note === "ely" || note === "authlib") && (
               <p className="mt-3 text-xs leading-relaxed text-text-muted">{t("skins.ely.note")}</p>
             )}
             {applied && (

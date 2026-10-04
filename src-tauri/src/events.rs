@@ -28,6 +28,11 @@ pub struct DlProgress {
     /// D18: группа задач (`instance:{id}` / `mrpack:{...}`) — UI привязывает
     /// прогресс к конкретному инстансу, а не к первому попавшемуся.
     pub group: String,
+    /// D18: инстанс-владелец, извлечённый из группы (`instance:{id}` /
+    /// `mrpack:{id}`); None в JSON не попадает — фронты, не читающие поле,
+    /// не ломаются.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
     pub done_files: u64,
     pub total_files: u64,
     pub done_bytes: u64,
@@ -119,6 +124,7 @@ mod tests {
 
         let dl = LauncherEvent::DlProgress(DlProgress {
             group: "instance:inst-1".into(),
+            instance_id: Some("inst-1".into()),
             done_files: 5,
             total_files: 10,
             done_bytes: 1024,
@@ -135,5 +141,25 @@ mod tests {
         assert!(dl_json.contains("\"totalBytes\":2048"));
         assert!(dl_json.contains("\"bytesPerSec\":500.0"));
         assert!(dl_json.contains("\"etaSecs\":2"));
+        assert!(dl_json.contains("\"instanceId\":\"inst-1\""));
+    }
+
+    /// D18: без владельца (чужая группа) поле `instanceId` в JSON не пишется —
+    /// старые фронты, не знающие о нём, не ломаются.
+    #[test]
+    fn dl_progress_without_instance_id_omits_field() {
+        let dl = LauncherEvent::DlProgress(DlProgress {
+            group: "jre:1".into(),
+            instance_id: None,
+            done_files: 1,
+            total_files: 2,
+            done_bytes: 3,
+            total_bytes: 4,
+            bytes_per_sec: 0.0,
+            eta_secs: None,
+        });
+        let json = serde_json::to_string(&dl).unwrap();
+        assert!(json.contains("\"event\":\"dl_progress\""));
+        assert!(!json.contains("instanceId"));
     }
 }

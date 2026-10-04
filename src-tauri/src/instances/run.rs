@@ -634,6 +634,36 @@ fn supervise_to_menu(
     Ok(found_at.is_some())
 }
 
+/// Подобрать версию загрузчика для версии MC (путь создания инстанса):
+/// Fabric/Quilt — первый стабильный из meta, Forge/NeoForge — свежая
+/// доступная для этой MC. Никакой совместимой → NotFound/VersionNotFound
+/// (вызывающий переводит в понятный InvalidInput).
+pub async fn pick_loader_version(
+    client: &HttpClient,
+    loader: &str,
+    mc_version: &str,
+) -> Result<String> {
+    match loader {
+        "fabric" => crate::loaders::fabric::loader_versions(client)
+            .await?
+            .into_iter()
+            .find(|l| l.stable)
+            .map(|l| l.version)
+            .ok_or_else(|| LauncherError::NotFound("стабильный Fabric Loader".into())),
+        "quilt" => crate::loaders::quilt::loader_versions(client)
+            .await?
+            .into_iter()
+            .find(|l| l.stable)
+            .map(|l| l.version)
+            .ok_or_else(|| LauncherError::NotFound("стабильный Quilt Loader".into())),
+        "forge" => crate::loaders::forge::latest_for_mc(client, mc_version).await,
+        "neoforge" => crate::loaders::neoforge::latest_for_mc(client, mc_version).await,
+        other => Err(LauncherError::InvalidInput(format!(
+            "неизвестный загрузчик {other} (fabric|quilt|neoforge)"
+        ))),
+    }
+}
+
 /// Установить загрузчик в инстанс (спека §6.3). Fabric/Quilt — профиль JSON
 /// из meta; NeoForge — headless-инсталлятор. Инстанс обновляется и сохраняется.
 pub async fn install_loader(
@@ -662,12 +692,7 @@ pub async fn install_loader(
         "fabric" => {
             let v = match loader_version {
                 Some(v) => v.to_string(),
-                None => crate::loaders::fabric::loader_versions(&client)
-                    .await?
-                    .into_iter()
-                    .find(|l| l.stable)
-                    .ok_or_else(|| LauncherError::NotFound("стабильный Fabric Loader".into()))?
-                    .version,
+                None => pick_loader_version(&client, "fabric", &inst.mc_version).await?,
             };
             let id = crate::loaders::fabric::install(&client, &instance_versions, &inst.mc_version, &v).await?;
             updated.loader = Some("fabric".into());
@@ -677,12 +702,7 @@ pub async fn install_loader(
         "quilt" => {
             let v = match loader_version {
                 Some(v) => v.to_string(),
-                None => crate::loaders::quilt::loader_versions(&client)
-                    .await?
-                    .into_iter()
-                    .find(|l| l.stable)
-                    .ok_or_else(|| LauncherError::NotFound("стабильный Quilt Loader".into()))?
-                    .version,
+                None => pick_loader_version(&client, "quilt", &inst.mc_version).await?,
             };
             let id = crate::loaders::quilt::install(&client, &instance_versions, &inst.mc_version, &v).await?;
             updated.loader = Some("quilt".into());
@@ -692,7 +712,7 @@ pub async fn install_loader(
         "forge" => {
             let v = match loader_version {
                 Some(v) => v.to_string(),
-                None => crate::loaders::forge::latest_for_mc(&client, &inst.mc_version).await?,
+                None => pick_loader_version(&client, "forge", &inst.mc_version).await?,
             };
             let java = resolve_java(paths, settings, client.clone(), need_major, &None).await?;
             let game_dir = minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
@@ -714,7 +734,7 @@ pub async fn install_loader(
         "neoforge" => {
             let v = match loader_version {
                 Some(v) => v.to_string(),
-                None => crate::loaders::neoforge::latest_for_mc(&client, &inst.mc_version).await?,
+                None => pick_loader_version(&client, "neoforge", &inst.mc_version).await?,
             };
             let java = resolve_java(paths, settings, client.clone(), need_major, &None).await?;
             let game_dir = minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));

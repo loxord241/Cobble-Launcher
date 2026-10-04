@@ -58,6 +58,9 @@ export const api = {
     invoke<Instance>("instance_create", { mcVersion, name }),
   instanceRename: (id: string, name: string) =>
     invoke<Instance>("instance_rename", { id, name }),
+  /** Смена версии MC инстанса (как в Prism): ядро докачивает файлы новой версии. */
+  instanceVersionChange: (id: string, newMcVersion: string) =>
+    invoke<{ ok: boolean }>("instance_version_change", { id, newMcVersion }),
   instanceDuplicate: (id: string) => invoke<Instance>("instance_duplicate", { id }),
   instanceDelete: (id: string, wipe: boolean) =>
     invoke<{ ok: boolean }>("instance_delete", { id, wipe }),
@@ -87,6 +90,7 @@ export const api = {
     index?: string,
     limit?: number,
     offset?: number,
+    categories?: string[],
   ) =>
     invoke<SearchResult>("modrinth_search", {
       query,
@@ -96,6 +100,7 @@ export const api = {
       index,
       limit,
       offset,
+      categories,
     }),
   // Метаданные проектов батчем (иконка/название для списка установленного).
   modrinthProjects: (ids: string[]) => invoke<ProjectMeta[]>("modrinth_projects", { ids }),

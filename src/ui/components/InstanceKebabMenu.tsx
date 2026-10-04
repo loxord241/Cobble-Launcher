@@ -10,6 +10,7 @@ import {
   MoreVertical,
   Settings,
   Pencil,
+  ArrowLeftRight,
   FileText,
   Archive,
   Share,
@@ -29,6 +30,8 @@ export type KebabCallbacks = {
   onDelete: () => void;
   onSettings?: () => void;
   onRename?: () => void;
+  /** Смена версии Minecraft (как в Prism): модалку монтирует вызывающая страница. */
+  onChangeVersion?: () => void;
   onLogs?: () => void;
   onBackup?: () => void;
   onExport?: () => void;
@@ -130,6 +133,7 @@ export default function InstanceKebabMenu({
   const {
     onSettings,
     onRename,
+    onChangeVersion,
     onLogs,
     onBackup,
     onExport,
@@ -202,6 +206,17 @@ export default function InstanceKebabMenu({
                 onClick={() => {
                   closeMenu();
                   onRename();
+                }}
+              />
+            )}
+            {onChangeVersion && (
+              <MenuItem
+                icon={ArrowLeftRight}
+                label={t("instances.changeVersion.menu")}
+                disabled={busy}
+                onClick={() => {
+                  closeMenu();
+                  onChangeVersion();
                 }}
               />
             )}

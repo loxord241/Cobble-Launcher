@@ -323,6 +323,24 @@ pub fn set_icon(paths: &Paths, id: &str, path: &str) -> Result<Instance> {
 /// снифф формата по сигнатуре (не по расширению), результат — data-URL в
 /// instance.json. Байты приходят из сети, а не из произвольного пути, поэтому
 /// ensure_icon_source_allowed здесь не применяется.
+/// Общая часть set_icon_from_bytes/set_art_from_bytes: снифф формата, data-URL
+/// и сохранение инстанса. Куда положить URL — решает `apply` (поле icon/art).
+fn set_image_data_url(
+    paths: &Paths,
+    id: &str,
+    data: &[u8],
+    apply: impl FnOnce(&mut Instance, String),
+) -> Result<Instance> {
+    let mime = sniff_image(data)
+        .ok_or_else(|| LauncherError::InvalidInput("поддерживаются PNG, JPEG и WebP".into()))?;
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+    let mut inst = crate::instances::load(paths, id)?;
+    apply(&mut inst, format!("data:{mime};base64,{b64}"));
+    crate::instances::save(paths, &inst)?;
+    Ok(inst)
+}
+
 pub fn set_icon_from_bytes(paths: &Paths, id: &str, data: &[u8]) -> Result<Instance> {
     const MAX_ICON_BYTES: usize = 300 * 1024;
     if data.len() > MAX_ICON_BYTES {
@@ -330,14 +348,22 @@ pub fn set_icon_from_bytes(paths: &Paths, id: &str, data: &[u8]) -> Result<Insta
             "иконка больше 300 КБ".into(),
         ));
     }
-    let mime = sniff_image(data)
-        .ok_or_else(|| LauncherError::InvalidInput("поддерживаются PNG, JPEG и WebP".into()))?;
-    use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
-    let mut inst = crate::instances::load(paths, id)?;
-    inst.icon = Some(format!("data:{mime};base64,{b64}"));
-    crate::instances::save(paths, &inst)?;
-    Ok(inst)
+    set_image_data_url(paths, id, data, |inst, url| inst.icon = Some(url))
+}
+
+/// Лимит арта карточки: галерейные кадры тяжелее иконок-миниатюр, но
+/// instance.json раздувать всё равно нельзя.
+pub const MAX_ART_BYTES: usize = 400_000;
+
+/// Большой арт карточки (первый кадр галереи проекта Modrinth → `art`):
+/// тот же контракт, что у set_icon_from_bytes, но лимит выше.
+pub fn set_art_from_bytes(paths: &Paths, id: &str, data: &[u8]) -> Result<Instance> {
+    if data.len() > MAX_ART_BYTES {
+        return Err(LauncherError::InvalidInput(
+            "арт больше 400 000 байт".into(),
+        ));
+    }
+    set_image_data_url(paths, id, data, |inst, url| inst.art = Some(url))
 }
 
 /// Убрать иконку инстанса.
@@ -589,6 +615,36 @@ mod tests {
         big.resize(300 * 1024 + 1, 0);
         let err = set_icon_from_bytes(&paths, &inst.id, &big).unwrap_err();
         assert_eq!(err.code(), "invalid_input", "{err}");
+    }
+
+    /// Большой арт карточки (галерея проекта Modrinth): data-URL в поле art,
+    /// иконка и арт независимы; больше лимита — отказ даже с валидной
+    /// сигнатурой, ровно в лимит — проходит.
+    #[test]
+    fn art_from_bytes_sets_and_validates() {
+        let (_d, paths, inst) = setup();
+        let png = [0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let updated = set_art_from_bytes(&paths, &inst.id, &png).unwrap();
+        assert!(
+            updated.art.expect("арт установлен").starts_with("data:image/png;base64,"),
+            "png → data-URL"
+        );
+        // Иконка и арт — разные поля, установка одного не трогает другое.
+        let with_icon = set_icon_from_bytes(&paths, &inst.id, &png).unwrap();
+        assert!(with_icon.icon.is_some(), "иконка установлена");
+        assert!(with_icon.art.is_some(), "арт не задет");
+        // Не-изображение.
+        let err = set_art_from_bytes(&paths, &inst.id, b"not an image at all").unwrap_err();
+        assert_eq!(err.code(), "invalid_input");
+        // Больше лимита — отказ.
+        let mut big = png.to_vec();
+        big.resize(MAX_ART_BYTES + 1, 0);
+        let err = set_art_from_bytes(&paths, &inst.id, &big).unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+        // Ровно в лимит — можно.
+        let mut fits = png.to_vec();
+        fits.resize(MAX_ART_BYTES, 0);
+        assert!(set_art_from_bytes(&paths, &inst.id, &fits).is_ok());
     }
 
     /// A16: относительный путь и путь вне домашнего каталога отклоняются до

@@ -1,0 +1,74 @@
+# Сборка релиза по тегу (CI-релизы, 2026-10-04). Пуш тега v* собирает
+# подписанный NSIS-бандл + latest.json и кладёт всё в ЧЕРНОВИК релиза;
+# публикация остаётся явным действием владельца (кнопка Publish).
+#
+# Требуемые секреты репозитория (Settings → Secrets → Actions; содержимое
+# ключей живёт вне репо у владельца в %LOCALAPPDATA%\cobble-updater-keys):
+#   TAURI_SIGNING_PRIVATE_KEY          — содержимое cobble.key (одной строкой)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — содержимое cobble.key.pass
+# Без них бандл соберётся неподписанным и шаг latest.json честно упадёт
+# (нет .sig) — это защита от релиза, который автоапдейтер не примет.
+name: Release build
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Проверка: тег совпадает с версией package.json
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v',''
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($tag -ne $pkg) {
+            Write-Error "тег v$tag != версия package.json $pkg — бампни версию перед тегом"
+            exit 1
+          }
+
+      - name: Проверка: секреты подписи на месте
+        shell: pwsh
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if (-not $env:KEY) {
+            Write-Error "нет секрета TAURI_SIGNING_PRIVATE_KEY — добавь ключи апдейтера в Settings → Secrets → Actions"
+            exit 1
+          }
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: rust-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
+
+      - run: npm ci
+      - name: Подписанный бандл (NSIS + .sig)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build
+
+      - name: latest.json из подписанного установщика
+        shell: pwsh
+        run: node scripts/make_latest_json.cjs "${{ github.ref_name }}"
+
+      - name: Черновик релиза с ассетами
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $v = $tag -replace '^v',''
+          $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          gh release create $tag --draft --title "$tag" --notes "Изменения — заполнить перед публикацией (автосборка CI)." $setup.FullName "$($setup.FullName).sig" dist-latest/latest.json

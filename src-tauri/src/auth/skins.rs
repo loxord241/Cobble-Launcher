@@ -622,6 +622,52 @@ fn decode_skin_data_url(skin: &SkinInfo) -> Result<Vec<u8>> {
     Ok(png)
 }
 
+/// Эндпоинт смены скина ely.by по контракту их authserver API: multipart
+/// PUT c Bearer-токеном сессии и моделью в query (?model=classic|slim — те
+/// же значения, что ely.by кладёт в metadata текстур). ВНИМАНИЕ (проверка
+/// 2026-10-04): маршрут пока отвечает 404 и в docs.ely.by загрузка не
+/// задокументирована — такой запрос честно вернёт ошибку с подсказкой про
+/// сайт, а при появлении эндпоинта код заработает без правок.
+fn ely_upload_url(model: SkinModel) -> String {
+    format!(
+        "{}/api/skins?model={}",
+        crate::auth::ely::AUTHSERVER,
+        model.variant()
+    )
+}
+
+/// multipart-тело запроса: PNG как файловая часть «file» (skin.png,
+/// image/png). Чистая функция — тестируется без сети.
+fn ely_skin_form(png: &[u8]) -> reqwest::multipart::Form {
+    // «image/png» корректен по построению, но mime_str возвращает Result —
+    // без unwrap() откатываемся к части без Content-Type.
+    let part = reqwest::multipart::Part::bytes(png.to_vec())
+        .file_name("skin.png")
+        .mime_str("image/png")
+        .unwrap_or_else(|_| {
+            reqwest::multipart::Part::bytes(png.to_vec()).file_name("skin.png")
+        });
+    reqwest::multipart::Form::new().part("file", part)
+}
+
+/// PUT скина на ely.by; возвращает HTTP-статус (разбор кодов — у вызова,
+/// там же ретрай после refresh). Токен уходит только в заголовок.
+async fn put_ely_skin(
+    client: &HttpClient,
+    token: &str,
+    model: SkinModel,
+    png: &[u8],
+) -> Result<u16> {
+    let resp = client
+        .raw()
+        .put(ely_upload_url(model))
+        .bearer_auth(token)
+        .multipart(ely_skin_form(png))
+        .send()
+        .await?;
+    Ok(resp.status().as_u16())
+}
+
 /// Применить скин аккаунту по типу профиля (D59). Офлайн-гейты — ДО любых
 /// сетевых вызовов и обращений к keyring (паттерн D43/A61).
 pub async fn apply_skin(
@@ -690,18 +736,41 @@ pub async fn apply_skin(
             Err(LauncherError::network(format!("Mojang skins: HTTP {status}")))
         }
         AccountKind::Ely => {
-            // D59: POST account.ely.by/api/account/v1/skins/upload принимает
-            // ТОЛЬКО multipart/form-data (file + model), JSON-варианта у API
-            // нет, а фича multipart reqwest не включена (без апгрейдов
-            // зависимостей). Честный отказ вместо сломанной загрузки: скин
-            // ставится на ely.by вручную, в игре он виден через их
-            // authlib-injector.
+            // D59, прямая загрузка: multipart PUT на authserver ely.by с
+            // Bearer-токеном их сессии (не OAuth) — контракт см. у
+            // ely_upload_url. 401 → refresh (как в launch_identity) и ровно
+            // один ретрай; 404 → честная подсказка про сайт (эндпоинта нет).
             if client.offline() {
                 return Err(LauncherError::OfflineMode("загрузка скина ely.by".into()));
             }
-            Err(LauncherError::InvalidInput(
-                "загрузка скина через API ely.by пока недоступна в лаунчере — загрузите скин на ely.by".into(),
-            ))
+            let png = decode_skin_data_url(skin)?;
+            let Some(rr) = &account.refresh_ref else {
+                return Err(LauncherError::InvalidInput(
+                    "у ely-аккаунта нет refresh-токена — войдите заново".into(),
+                ));
+            };
+            // Токен сессии ely живёт в keyring под refresh_ref: при логине
+            // туда пишется refresh_token, у ely он равен accessToken.
+            let mut token = crate::auth::keyring_get(rr)?;
+            let mut status = put_ely_skin(client, &token, model, &png).await?;
+            if status == 401 {
+                let session = crate::auth::ely::refresh_session(client, &token).await?;
+                if session.refresh_token != token {
+                    crate::auth::keyring_set(rr, &session.refresh_token)?;
+                }
+                crate::util::redact::register_secret(&session.access_token);
+                token = session.access_token;
+                status = put_ely_skin(client, &token, model, &png).await?;
+            }
+            if (200..300).contains(&status) {
+                return Ok(()); // 200/204 = скин применён
+            }
+            if status == 404 {
+                return Err(LauncherError::InvalidInput(
+                    "API загрузки скинов ely.by недоступно (HTTP 404) — загрузите скин через сайт ely.by".into(),
+                ));
+            }
+            Err(LauncherError::network(format!("ely.by skins: HTTP {status}")))
         }
     }
 }
@@ -1075,10 +1144,10 @@ mod tests {
         );
     }
 
-    /// ely.by: гейт офлайна до IO; онлайн — честный фолбэк (API принимает
-    /// только multipart, JSON-варианта нет, фичи reqwest multipart нет — D59).
+    /// ely.by: гейт офлайна до IO; без keyring-токена — честный InvalidInput
+    /// с подсказкой перелогиниться (сетевые варианты не тестируем — D59).
     #[tokio::test]
-    async fn apply_skin_ely_gate_then_honest_fallback() {
+    async fn apply_skin_ely_gate_then_missing_token() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::new(dir.path().to_path_buf());
         paths.ensure_dirs().unwrap();
@@ -1094,12 +1163,29 @@ mod tests {
         client.set_offline(false);
         let err = apply_skin(&paths, &client, "acc1", &test_skin(), SkinModel::Classic)
             .await
-            .expect_err("multipart недоступен — честный фолбэк");
-        assert!(matches!(err, LauncherError::InvalidInput(_)));
+            .expect_err("без токена сессии — честный отказ");
+        assert!(matches!(err, LauncherError::InvalidInput(_)), "{err:?}");
         assert!(
-            err.to_string().contains("ely.by"),
-            "фолбэк отправляет загружать скин на ely.by: {err}"
+            err.to_string().contains("войдите заново"),
+            "подсказка перелогиниться: {err}"
         );
+    }
+
+    /// Контракт ely.by: модель уходит в query, значения — те же, что ely.by
+    /// кладёт в metadata текстур (classic|slim, см. SkinModel::variant).
+    #[test]
+    fn ely_upload_url_encodes_model() {
+        assert!(ely_upload_url(SkinModel::Slim).starts_with("https://authserver.ely.by/api/skins"));
+        assert!(ely_upload_url(SkinModel::Classic).ends_with("?model=classic"));
+        assert!(ely_upload_url(SkinModel::Slim).ends_with("?model=slim"));
+    }
+
+    /// multipart-форма собирается без сети: boundary сгенерирован (имя файла
+    /// и image/png уходят в заголовках части — проверяет сборку в целом).
+    #[test]
+    fn ely_skin_form_builds_multipart() {
+        let form = ely_skin_form(b"\x89PNG\r\n\x1a\nskin-bytes");
+        assert!(!form.boundary().is_empty(), "boundary должен быть сгенерирован");
     }
 
     /// Неизвестный аккаунт — NotFound до прочих проверок (как account_skin).

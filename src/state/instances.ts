@@ -3,7 +3,13 @@ import { create } from "zustand";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api, onCoreEvent } from "../api/client";
 import { apiErrorText } from "../i18n";
-import type { Diagnosis, Instance, LaunchPhase, QueueState } from "../api/types";
+import type {
+  Diagnosis,
+  DlProgressEvent,
+  Instance,
+  LaunchPhase,
+  QueueState,
+} from "../api/types";
 
 export interface LaunchStatus {
   phase: LaunchPhase;
@@ -165,9 +171,11 @@ function ensureRunningPoll() {
   runningPollTimer = setInterval(() => void pollRunningProcesses(), RUNNING_POLL_MS);
 }
 
-// D18: прогресс загрузки принадлежит инстансу, чей launch_state перешёл в
-// downloading. В DlProgress (src/api/types.ts) нет instance_id, поэтому
-// опираемся на фазу запуска, а не на «первый попавшийся» статус.
+// D18: владелец прогресса теперь приезжает в самом событии — ядро извлекает
+// instanceId из группы задач (`instance:{id}` / `mrpack:{id}`). Общий
+// DlProgressEvent в types.ts поля пока не знает, расширяем локально; для
+// событий без instanceId (старое ядро) остаётся прежняя эвристика по группе.
+type DlProgressWithInstance = DlProgressEvent & { instanceId?: string };
 
 export const useInstances = create<InstancesState>((set, get) => ({
   list: [],
@@ -272,11 +280,18 @@ export const useInstances = create<InstancesState>((set, get) => ({
         // UI-панели под него пока нет — данные честно храним в сторе.
         set({ queueState: event });
       } else if (event.event === "dl_progress") {
-        // D18: владелец прогресса — группа задач из события (`instance:{id}`),
-        // а не первый попавшийся запуск: при двух параллельных установках
-        // прогресс раньше писался в чужой инстанс. mrpack:* пока без UI-панели.
-        if (!event.group.startsWith("instance:")) return;
-        const id = event.group.slice("instance:".length);
+        // D18: если ядро прислало instanceId — привязываем прогресс строго
+        // к этому инстансу. Иначе (старое ядро) прежняя эвристика-фолбэк:
+        // владелец по группе `instance:{id}`. Группы `mrpack:*` дают id
+        // проекта модпака, а не инстанса — статус не найдётся и апдейт
+        // отсечётся ниже, как и раньше.
+        const dl = event as DlProgressWithInstance;
+        const id =
+          dl.instanceId ??
+          (dl.group.startsWith("instance:")
+            ? dl.group.slice("instance:".length)
+            : undefined);
+        if (!id) return;
         const current = get().status[id];
         if (!current) return;
         if (current.phase !== "downloading" && current.phase !== "preparing") return;
@@ -286,8 +301,8 @@ export const useInstances = create<InstancesState>((set, get) => ({
             [id]: {
               ...s.status[id],
               phase: "downloading",
-              doneFiles: event.doneFiles,
-              totalFiles: event.totalFiles,
+              doneFiles: dl.doneFiles,
+              totalFiles: dl.totalFiles,
             },
           },
         }));

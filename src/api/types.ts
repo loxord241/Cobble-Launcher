@@ -46,6 +46,8 @@ export interface Instance {
   id: string;
   name: string;
   icon?: string;
+  /** Большой арт из галереи модпака (data-URL); нет — UI рисует иконку. */
+  art?: string;
   mcVersion: string;
   loader?: string;
   loaderVersion?: string;

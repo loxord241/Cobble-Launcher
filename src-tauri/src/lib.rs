@@ -262,6 +262,7 @@ pub fn run() -> tauri::Result<()> {
             commands::world_backup,
             commands::world_delete_data,
             commands::instance_repair,
+            commands::instance_version_change,
             commands::java_test_path,
             commands::log_share_mclogs,
             commands::instance_logs_list,

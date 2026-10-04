@@ -13,6 +13,7 @@ import CreateInstanceDialog from "../components/CreateInstanceDialog";
 import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
+import ChangeVersionModal from "../components/ChangeVersionModal";
 import LogViewerModal from "../components/LogViewerModal";
 import { rowClickOpens } from "./InstanceDetailPage";
 import type { Instance } from "../../api/types";
@@ -27,6 +28,7 @@ type RowCallbacks = {
   onDelete: () => void;
   onSettings: () => void;
   onRename: () => void;
+  onChangeVersion: () => void;
   onLogs: () => void;
   onBackup: () => void;
   onExport: () => void;
@@ -65,6 +67,7 @@ export default function InstancesPage({
   const [creating, setCreating] = useState(false);
   const [settingsInst, setSettingsInst] = useState<Instance | null>(null);
   const [renameInst, setRenameInst] = useState<Instance | null>(null);
+  const [changeVersionInst, setChangeVersionInst] = useState<Instance | null>(null);
   const [logsInst, setLogsInst] = useState<Instance | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // D7: честный диалог удаления — «в корзину» или «навсегда».
@@ -138,6 +141,7 @@ export default function InstancesPage({
         onDuplicate: () => void duplicate(inst.id).catch((e) => setError(apiErrorText(e))),
         onSettings: () => setSettingsInst(inst),
         onRename: () => setRenameInst(inst),
+        onChangeVersion: () => setChangeVersionInst(inst),
         onLogs: () => setLogsInst(inst),
         onBackup: () =>
           void api
@@ -323,6 +327,18 @@ export default function InstancesPage({
         <RenameInstanceModal
           instance={renameInst}
           onClose={() => setRenameInst(null)}
+        />
+      )}
+
+      {changeVersionInst && (
+        <ChangeVersionModal
+          instance={changeVersionInst}
+          onClose={() => setChangeVersionInst(null)}
+          onDone={(version) => {
+            setChangeVersionInst(null);
+            setNotice(t("changeVersion.done", { version }));
+            void load();
+          }}
         />
       )}
 

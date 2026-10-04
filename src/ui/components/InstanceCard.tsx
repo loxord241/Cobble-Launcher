@@ -49,19 +49,48 @@ function InstanceCard({
   // Битая иконка (файл-протух, крошечная 1×1 и т.п.) → процедурный арт,
   // чтобы карточка не превращалась в пустой прямоугольник (D54).
   const [iconBroken, setIconBroken] = useState(false);
-  const art = iconBroken || !inst.icon ? defaultArtwork(inst.name) : inst.icon;
 
   return (
     <div className="group flex h-full flex-col overflow-hidden rounded-lg border border-border-app bg-card transition-all duration-200 hover:border-accent/70 hover:shadow-lg hover:shadow-black/25">
-      {/* Арт: своя иконка инстанса или процедурная «карта» от имени */}
+      {/* Арт: большой арт модпака из галереи, своя иконка (размытая подложка +
+          чёткая копия в натуральном размере) или процедурная «карта» от имени */}
       <div className="relative aspect-[4/3] w-full shrink-0 overflow-hidden bg-surface-2">
-        <img
-          src={art}
-          onError={() => setIconBroken(true)}
-          alt=""
-          draggable={false}
-          className="size-full object-cover"
-        />
+        {inst.art ? (
+          // Арт из галереи пака: полноценное изображение на всю область.
+          <img
+            src={inst.art}
+            alt=""
+            draggable={false}
+            className="size-full object-cover"
+          />
+        ) : inst.icon && !iconBroken ? (
+          <>
+            {/* Иконка Modrinth — 96×96: тянуть её на всю область нельзя (каша).
+                «Ambient»-стиль: размытая подложка — div с background, НЕ <img>
+                (у трансформированной картинки transformed-rect вылезает за
+                карточку, и клики по координатам попадают в зазор сетки —
+                грабли приёмок), сверху чёткая копия 96px по центру. */}
+            <div
+              aria-hidden
+              className="absolute inset-0 scale-125 bg-cover bg-center blur-lg brightness-[.35]"
+              style={{ backgroundImage: `url(${inst.icon})` }}
+            />
+            <img
+              src={inst.icon}
+              onError={() => setIconBroken(true)}
+              alt=""
+              draggable={false}
+              className="absolute inset-0 m-auto size-24 object-contain"
+            />
+          </>
+        ) : (
+          <img
+            src={defaultArtwork(inst.name)}
+            alt=""
+            draggable={false}
+            className="size-full object-cover"
+          />
+        )}
         {/* Бейдж версии поверх арта (как в CurseForge) */}
         <span className="chip-mono absolute right-1.5 top-1.5 bg-bg/85">{inst.mcVersion}</span>
 

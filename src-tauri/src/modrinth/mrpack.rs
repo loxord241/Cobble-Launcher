@@ -86,6 +86,51 @@ fn open_mrpack(path: &Path) -> Result<MrpackIndex> {
     Ok(index)
 }
 
+/// Запись конфига MissingModsChecker (Better MC и похожие паки): мод, которого
+/// НЕТ в files[] .mrpack — при первом запуске игры такой мод сам качает их
+/// с CurseForge через Swing-окно. Поле `url` (ссылка на CurseForge) сознательно
+/// НЕ разбирается: качаем только с Modrinth по хэшам (правило «хэш на каждый
+/// байт»), прочие лишние поля serde игнорирует сам.
+#[derive(Debug, Clone, Deserialize)]
+struct MissingModsEntry {
+    /// Как искать проект на Modrinth.
+    #[serde(rename = "displayName", alias = "display_name")]
+    display_name: String,
+    /// Имя файла, которое мод ждёт в каталоге (например
+    /// `balm-fabric-1.20.1-7.3.38.jar`) — по нему ищем файл версии.
+    pattern: String,
+    /// `mods` | `resourcepacks` | `shaderpacks`; прочее — пропускаем.
+    destination: String,
+}
+
+/// Конфиг MissingModsChecker читаем прямо из zip .mrpack
+/// (`overrides/config/missing_mods_checker.json`). Нет файла — это нормально
+/// (большинство паков его не имеет): тихо пусто. Битый JSON — warn и пусто:
+/// конфиг не стоит сорванной установки.
+fn read_missing_mods_checker(path: &Path) -> Vec<MissingModsEntry> {
+    const ENTRY: &str = "overrides/config/missing_mods_checker.json";
+    let Ok(file) = std::fs::File::open(crate::util::fs::long_path(path)) else {
+        return Vec::new();
+    };
+    let mut zip = match zip::ZipArchive::new(file) {
+        Ok(z) => z,
+        Err(e) => {
+            tracing::warn!("не удалось открыть .mrpack для missing_mods_checker: {e}");
+            return Vec::new();
+        }
+    };
+    let Ok(entry) = zip.by_name(ENTRY) else {
+        return Vec::new(); // конфига нет — обычный пак
+    };
+    match serde_json::from_reader(entry) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("битый конфиг {ENTRY}: {e} — предустановка пропущена");
+            Vec::new()
+        }
+    }
+}
+
 /// Загрузчик из dependencies .mrpack (спека §6.2): у Forge/NeoForge ключ —
 /// `forge`/`neoforge` БЕЗ суффикса `-loader` (пример BMC4:
 /// {"minecraft":"1.20.1","forge":"47.3.0"}), у Fabric/Quilt —
@@ -154,6 +199,170 @@ pub fn ensure_allowed_mrpack_url(url: &str) -> Result<()> {
     )))
 }
 
+/// Базовый URL Modrinth API: в прод-сборке — константа, в тестах — локальный
+/// mock-сервер (внешней сети в тестах нет). Как в updates.rs.
+fn api_base() -> String {
+    #[cfg(test)]
+    if let Some(base) = TEST_API_BASE.get() {
+        return base.clone();
+    }
+    crate::modrinth::api::API_BASE.to_string()
+}
+
+#[cfg(test)]
+static TEST_API_BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Поиск модов для MissingModsChecker: query + facets project_type:mod, те же
+/// параметры, что api::search, но через api_base() — иначе тестовый mock этот
+/// путь не перехватывает и тесты уходят во внешнюю сеть.
+async fn search_mods(
+    client: &HttpClient,
+    query: &str,
+    limit: u32,
+) -> Result<crate::modrinth::api::SearchResult> {
+    // F16: офлайн — мгновенный отказ до похода в сеть.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("поиск Modrinth".into()));
+    }
+    let facets = serde_json::to_string(&[["project_type:mod"]])?;
+    let url = format!("{}/search", api_base());
+    let result: crate::modrinth::api::SearchResult = client
+        .raw()
+        .get(&url)
+        .query(&[
+            ("query", query.to_string()),
+            ("facets", facets),
+            ("index", "relevance".to_string()),
+            ("limit", limit.to_string()),
+            ("offset", "0".to_string()),
+        ])
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(result)
+}
+
+/// Версии проекта: тот же эндпоинт и `get_json_retry`, что
+/// api::project_versions, но через api_base() — как у search_mods (см.
+/// updates.rs: иначе тестовый mock этот путь не перехватывает).
+async fn project_versions(
+    client: &HttpClient,
+    project_id: &str,
+) -> Result<Vec<crate::modrinth::api::Version>> {
+    let url = format!("{}/project/{project_id}/version", api_base());
+    client.get_json_retry(&url).await
+}
+
+/// Имя файла из чужого конфига: ровно одна безопасная компонента пути
+/// (санитизация недоверенных данных, как safe_relative_path у overrides) —
+/// иначе чужой конфиг мог бы записать файл мимо каталога назначения.
+fn is_safe_single_filename(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\', ':', '\0'])
+        && !name.chars().any(char::is_control)
+}
+
+/// Предустановка модов MissingModsChecker: каждый пункт конфига ищем на
+/// Modrinth по displayName и предустанавливаем файл с ТОЧНО именем pattern
+/// по хэшам с cdn.modrinth.com — в общий прогон загрузок. Не найден, нет
+/// хэшей, подозрительное имя или неподдерживаемый каталог — warn и пропуск:
+/// установка не роняется никогда, игру мод докачает сам, как раньше.
+async fn satisfy_missing_mods_checker(
+    client: &HttpClient,
+    entries: &[MissingModsEntry],
+    mc_dir: &Path,
+    group: &str,
+) -> Vec<DownloadTask> {
+    let mut tasks = Vec::new();
+    if entries.is_empty() {
+        return tasks;
+    }
+    // F16: офлайн — всё равно ничего не скачается; игра докачает сама.
+    if client.offline() {
+        tracing::warn!("missing-mods-checker: офлайн-режим — предустановка пропущена");
+        return tasks;
+    }
+    for entry in entries {
+        // Каталог — только фиксированный список: чужой конфиг не выберет путь.
+        if !matches!(
+            entry.destination.as_str(),
+            "mods" | "resourcepacks" | "shaderpacks"
+        ) {
+            tracing::warn!(
+                "missing-mods-checker: destination {:?} не поддерживается — пропускаю {}",
+                entry.destination,
+                entry.pattern
+            );
+            continue;
+        }
+        if !is_safe_single_filename(&entry.pattern) {
+            tracing::warn!(
+                "missing-mods-checker: небезопасное имя файла {:?} — пропускаю",
+                entry.pattern
+            );
+            continue;
+        }
+        let dest = mc_dir.join(&entry.destination).join(&entry.pattern);
+        if crate::util::fs::long_path(&dest).exists() {
+            continue; // уже на диске (повторная установка) — сеть не трогаем
+        }
+        let hits = match search_mods(client, &entry.display_name, 5).await {
+            Ok(r) => r.hits,
+            Err(e) => {
+                tracing::warn!(
+                    "missing-mods-checker: поиск {:?} не удался ({e}) — пропускаю {}",
+                    entry.display_name,
+                    entry.pattern
+                );
+                continue;
+            }
+        };
+        // Первые 3 хита: файл должен совпасть точным именем; имена файлов на
+        // Modrinth общепринятые, поэтому обычно хватает первого же проекта.
+        let mut found: Option<DownloadTask> = None;
+        for hit in hits.iter().take(3) {
+            let versions = match project_versions(client, &hit.project_id).await {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let Some(file) = versions.iter().find_map(|v| {
+                v.files.iter().find(|f| f.filename == entry.pattern)
+            }) else {
+                continue;
+            };
+            // Железное правило: без хэша из доверенного API не качаем.
+            let sha1 = file.hashes.get("sha1").cloned();
+            let sha512 = file.hashes.get("sha512").cloned();
+            if sha1.is_none() && sha512.is_none() {
+                continue;
+            }
+            found = Some(DownloadTask {
+                id: format!("mrpack-mm:{}", entry.pattern),
+                url: file.url.clone(),
+                dest,
+                sha1,
+                sha512,
+                size: Some(file.size),
+                group: group.to_string(),
+                priority: 15,
+            });
+            break;
+        }
+        match found {
+            Some(t) => tasks.push(t),
+            None => tracing::warn!(
+                "missing-mods-checker: {} нет на Modrinth — оставляем игре",
+                entry.pattern
+            ),
+        }
+    }
+    tasks
+}
+
 /// Полная установка .mrpack: инстанс по dependencies → overrides поверх →
 /// файлы с хэшами → content-manifest. Возвращает созданный инстанс.
 ///
@@ -187,6 +396,7 @@ pub async fn install_mrpack(
 
     // 3. Файлы модпака в очередь (до создания инстанса на диске — каталоги
     //    создаст движок).
+    let mc_dir = crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
     let mut tasks = Vec::new();
     for f in index.client_files() {
         if f.downloads.is_empty() {
@@ -216,8 +426,7 @@ pub async fn install_mrpack(
         tasks.push(DownloadTask {
             id: format!("mrpack:{}", f.path),
             url: f.downloads[0].clone(),
-            dest: crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id))
-                .join(rel),
+            dest: mc_dir.join(rel),
             sha1,
             sha512,
             size: Some(f.file_size),
@@ -225,6 +434,12 @@ pub async fn install_mrpack(
             priority: 15,
         });
     }
+    // 3b. MissingModsChecker (Better MC и похожие): моды, которых нет в
+    //    files[], но которые игра качает сама с CurseForge при первом запуске.
+    //    Честная предустановка: те же имена файлов ищем на Modrinth и качаем
+    //    по хэшам в ТОТ ЖЕ прогон — лишнего окна и повторной установки нет.
+    let mm = read_missing_mods_checker(mrpack_path);
+    tasks.extend(satisfy_missing_mods_checker(&client, &mm, &mc_dir, group).await);
 
     // 4. Загрузка файлов. На диске инстанса ещё нет: сохраняем его только после
     //    успеха (D12), иначе сбой оставил бы «пустой рабочий» инстанс.
@@ -452,37 +667,106 @@ pub async fn install_modpack_project(
     let _ = std::fs::remove_file(&tmp_path);
     let inst = installed?;
 
-    // Иконка проекта — некритичный шаг: любой сбой (нет icon_url, HTTP,
+    // Иконка и арт проекта — некритичный шаг: любой сбой (нет icon_url, HTTP,
     // размер/формат) оставляет инстанс со стандартной заглушкой и НЕ роняет
-    // установку (спека §15). В самом .mrpack иконки нет по спеке, поэтому
+    // установку (спека §15). В самом .mrpack их нет по спеке, поэтому
     // install_mrpack (drag&drop) этот шаг не делает.
-    apply_project_icon(paths, &client, project_id, &inst.id).await;
+    apply_project_artwork(paths, &client, project_id, &inst.id).await;
     Ok(inst)
 }
 
-/// Иконка проекта Modrinth → data-URL в instance.json. Любая ошибка — warn и
-/// продолжение без иконки: иконка не стоит сорванной установки.
-async fn apply_project_icon(paths: &Paths, client: &HttpClient, project_id: &str, instance_id: &str) {
-    if let Err(e) = download_project_icon(paths, client, project_id, instance_id).await {
-        tracing::warn!("иконка модпака {project_id} не установлена: {e}");
-    }
-}
-
-async fn download_project_icon(
+/// Иконка + большой арт проекта Modrinth → data-URL в instance.json. Ровно
+/// ОДИН запрос /project/{id} на обе картинки: icon_url — миниатюра 96×96 (на
+/// карточке ~350px мылится), большой арт берём из первой картинки галереи
+/// (raw_url). Любая ошибка — warn и продолжение: картинки не стоят сорванной
+/// установки (спека §15).
+async fn apply_project_artwork(
     paths: &Paths,
     client: &HttpClient,
     project_id: &str,
     instance_id: &str,
+) {
+    let project = match crate::modrinth::api::project(client, project_id).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("иконка/арт модпака {project_id} не установлены: {e}");
+            return;
+        }
+    };
+    if let Err(e) = apply_icon_from_project(paths, client, &project, instance_id).await {
+        tracing::warn!("иконка модпака {project_id} не установлена: {e}");
+    }
+    if let Err(e) = apply_art_from_project(paths, client, &project, instance_id).await {
+        tracing::warn!("арт модпака {project_id} не установлен: {e}");
+    }
+}
+
+async fn apply_icon_from_project(
+    paths: &Paths,
+    client: &HttpClient,
+    project: &serde_json::Value,
+    instance_id: &str,
 ) -> Result<()> {
-    let project = crate::modrinth::api::project(client, project_id).await?;
     let icon_url = project
         .get("icon_url")
         .and_then(|v| v.as_str())
         .filter(|u| !u.is_empty())
-        .ok_or_else(|| LauncherError::NotFound(format!("у модпака {project_id} нет icon_url")))?;
-    let resp = client.raw().get(icon_url).send().await?.error_for_status()?;
-    let bytes = resp.bytes().await?;
+        .ok_or_else(|| LauncherError::NotFound("у проекта нет icon_url".into()))?;
+    let bytes = client
+        .raw()
+        .get(icon_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
     crate::instances::content::set_icon_from_bytes(paths, instance_id, &bytes)?;
+    Ok(())
+}
+
+/// Арт: первая картинка галереи (raw_url — полный размер, запасная url —
+/// превью, как в api::gallery_image). Тяжелее лимита — warn и пропустить
+/// (галерейные кадры бывают на несколько МБ), это не ошибка.
+async fn apply_art_from_project(
+    paths: &Paths,
+    client: &HttpClient,
+    project: &serde_json::Value,
+    instance_id: &str,
+) -> Result<()> {
+    use crate::instances::content::MAX_ART_BYTES;
+    let art_url = project
+        .get("gallery")
+        .and_then(|g| g.as_array())
+        .and_then(|g| g.first())
+        .and_then(|img| {
+            img.get("raw_url")
+                .and_then(|v| v.as_str())
+                .or_else(|| img.get("url").and_then(|v| v.as_str()))
+        })
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| LauncherError::NotFound("у проекта нет галереи".into()))?;
+    let resp = client
+        .raw()
+        .get(art_url)
+        .send()
+        .await?
+        .error_for_status()?;
+    // Content-Length известен заранее: не тянем много-мегабайтный кадр целиком.
+    if let Some(len) = resp.content_length() {
+        if len > MAX_ART_BYTES as u64 {
+            tracing::warn!("арт {art_url} больше лимита ({len} > {MAX_ART_BYTES} байт) — пропускаю");
+            return Ok(());
+        }
+    }
+    let bytes = resp.bytes().await?;
+    if bytes.len() > MAX_ART_BYTES {
+        tracing::warn!(
+            "арт {art_url} больше лимита ({} > {MAX_ART_BYTES} байт) — пропускаю",
+            bytes.len()
+        );
+        return Ok(());
+    }
+    crate::instances::content::set_art_from_bytes(paths, instance_id, &bytes)?;
     Ok(())
 }
 
@@ -492,9 +776,15 @@ mod tests {
     use crate::events::{EventBus, LauncherEvent};
     use crate::settings::Settings;
     use std::io::Write as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Тело «мода» тестового модпака (sha1 считается по этим байтам).
     const MOD_BYTES: &[u8] = b"mrpack test payload";
+
+    /// Тело предустанавливаемого «мода» MissingModsChecker и его точное имя
+    /// файла (как у Better MC: `balm-fabric-1.20.1-7.3.38.jar`).
+    const MM_BYTES: &[u8] = b"missing-mods-checker payload";
+    const MM_PATTERN: &str = "balm-fabric-1.20.1-7.3.38.jar";
 
     /// Поднять mock-сервер, вернуть базовый URL (как в tests/download_engine.rs):
     /// сети нет — только localhost.
@@ -866,6 +1156,225 @@ mod tests {
         assert!(
             instance_dirs(&paths).is_empty(),
             "инстанс не должен остаться после сбоя overrides"
+        );
+    }
+
+    /// Разбор конфига MissingModsChecker: camelCase displayName (alias —
+    /// snake_case), посторонние поля (включая curseforge-url) игнорируются.
+    #[test]
+    fn missing_mods_config_parses_ignoring_url() {
+        let entries: Vec<MissingModsEntry> = serde_json::from_str(
+            r#"[{"displayName":"Balm","pattern":"balm.jar",
+                 "url":"https://www.curseforge.com/minecraft/mc-mods/balm",
+                 "destination":"mods","someExtra":42}]"#,
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].display_name, "Balm");
+        assert_eq!(entries[0].pattern, "balm.jar");
+        assert_eq!(entries[0].destination, "mods");
+    }
+
+    /// MissingModsChecker, весь сценарий на ОДНОМ mock-сервере (TEST_API_BASE —
+    /// глобальный на процесс, параллельные серверы мешали бы друг другу —
+    /// как в updates.rs). Найденный на Modrinth мод предустанавливается в
+    /// общий прогон по хэшам из API; curseforge-URL из конфига не используется;
+    /// не найденный, чужой destination и небезопасное имя пропущены без падения;
+    /// повторный вызов по уже установленному файлу сети не трогает.
+    #[tokio::test]
+    async fn missing_mods_checker_preinstalls_found_and_skips_rest() {
+        let search_calls = Arc::new(AtomicUsize::new(0));
+        let version_calls = Arc::new(AtomicUsize::new(0));
+        let mm_sha1 = crate::util::fs::sha1_bytes(MM_BYTES);
+        // Свой bind: URL файла в ответе versions должен указывать на этот же
+        // mock, а адрес известен только после привязки слушателя.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (search_srv, version_srv) = (search_calls.clone(), version_calls.clone());
+        let (file_base, file_sha1) = (base.clone(), mm_sha1.clone());
+        let app = axum::Router::new()
+            .route(
+                "/v2/search",
+                axum::routing::get(
+                    move |q: axum::extract::Query<HashMap<String, String>>| {
+                        let calls = search_srv.clone();
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            if q.get("query").map(String::as_str) == Some("Balm") {
+                                axum::Json(serde_json::json!({
+                                    "hits": [{
+                                        "project_id": "proj-balm", "project_type": "mod",
+                                        "slug": "balm", "author": "a", "title": "Balm",
+                                        "description": "", "downloads": 1,
+                                    }],
+                                    "total_hits": 1,
+                                }))
+                            } else {
+                                // «Ghost Mod» — на Modrinth его нет.
+                                axum::Json(serde_json::json!({"hits": [], "total_hits": 0}))
+                            }
+                        }
+                    },
+                ),
+            )
+            .route(
+                "/v2/project/{id}/version",
+                axum::routing::get(move |path: axum::extract::Path<String>| {
+                    let (calls, base, sha1) =
+                        (version_srv.clone(), file_base.clone(), file_sha1.clone());
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        if path.as_str() != "proj-balm" {
+                            return axum::Json(serde_json::json!([]));
+                        }
+                        axum::Json(serde_json::json!([{
+                            "id": "ver-1", "project_id": "proj-balm",
+                            "version_number": "7.3.38",
+                            "files": [{
+                                "hashes": {"sha1": sha1, "sha512": "mock-sha512"},
+                                "url": format!("{base}/files/{MM_PATTERN}"),
+                                "filename": MM_PATTERN,
+                                "primary": true,
+                                "size": MM_BYTES.len(),
+                            }],
+                        }]))
+                    }
+                }),
+            )
+            .route(
+                "/files/{name}",
+                axum::routing::get(|| async { axum::body::Body::from(MM_BYTES.to_vec()) }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        // Единственная точка подмены базового URL (форма prod-константы).
+        TEST_API_BASE.set(format!("{base}/v2")).ok();
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(&dir);
+        // Конфиг как у Better MC: найденный, не найденный, чужой destination,
+        // попытка обхода каталога; curseforge-URL во всех пунктах.
+        let config = format!(
+            r#"[
+                {{"displayName":"Balm","pattern":"{MM_PATTERN}",
+                  "url":"https://www.curseforge.com/minecraft/mc-mods/balm","destination":"mods"}},
+                {{"displayName":"Ghost Mod","pattern":"ghost-1.0.jar",
+                  "url":"https://www.curseforge.com/x","destination":"mods"}},
+                {{"displayName":"Weird","pattern":"weird.jar",
+                  "url":"https://www.curseforge.com/w","destination":"config"}},
+                {{"displayName":"Evil","pattern":"../evil.jar",
+                  "url":"https://www.curseforge.com/e","destination":"mods"}}
+            ]"#
+        );
+        let pack = dir.path().join("better-test.mrpack");
+        write_mrpack_entries(
+            &pack,
+            &index_without_files("Better Тест"),
+            &[(
+                "overrides/config/missing_mods_checker.json",
+                config.as_bytes(),
+            )],
+        );
+
+        let client = Arc::new(HttpClient::new(None).unwrap());
+        let engine = DownloadEngine::new(client.clone(), 2, EventBus::default());
+        let inst = install_mrpack(
+            &paths,
+            &Settings::default(),
+            engine,
+            client.clone(),
+            "mrpack:mm-test",
+            &pack,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Найденный мод предустановлен тем же прогоном и по хэшу сошёлся.
+        let game =
+            crate::instances::minecraft_dir(&crate::instances::instance_dir(&paths, &inst.id));
+        assert_eq!(
+            std::fs::read(game.join("mods").join(MM_PATTERN)).unwrap(),
+            MM_BYTES,
+            "мод из missing_mods_checker предустановлен"
+        );
+        // Сеть: Balm — 1 search + 1 versions, Ghost — 1 search (пусто);
+        // Weird/Evil отсечены до сети.
+        assert_eq!(search_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(version_calls.load(Ordering::SeqCst), 1);
+
+        // Повтор по уже установленному файлу (пункт Balm): skip до сети
+        // (идемпотентность). Ghost ищется заново — его файл не появился.
+        let mm = read_missing_mods_checker(&pack);
+        assert_eq!(mm.len(), 4, "конфиг из .mrpack разобран целиком");
+        let again =
+            satisfy_missing_mods_checker(&client, std::slice::from_ref(&mm[0]), &game, "g2").await;
+        assert!(again.is_empty(), "{again:?}");
+        assert_eq!(
+            search_calls.load(Ordering::SeqCst),
+            2,
+            "файл уже на диске — сети нет"
+        );
+        assert_eq!(version_calls.load(Ordering::SeqCst), 1);
+
+        // Пункт-одиночка на пустом каталоге: задача собрана из данных Modrinth,
+        // curse-URL не участвует.
+        let fresh = tempfile::tempdir().unwrap();
+        let tasks = satisfy_missing_mods_checker(&client, &mm, fresh.path(), "g2").await;
+        assert_eq!(tasks.len(), 1, "{tasks:?}");
+        let t = &tasks[0];
+        assert_eq!(t.id, format!("mrpack-mm:{MM_PATTERN}"));
+        assert_eq!(t.sha1.as_deref(), Some(mm_sha1.as_str()));
+        assert_eq!(t.sha512.as_deref(), Some("mock-sha512"));
+        assert!(t.url.starts_with(&base), "url из ответа API: {}", t.url);
+        assert!(
+            !t.url.contains("curseforge"),
+            "curseforge-URL из конфига не используется: {}",
+            t.url
+        );
+        assert_eq!(t.dest, fresh.path().join("mods").join(MM_PATTERN));
+        assert_eq!(t.size, Some(MM_BYTES.len() as u64));
+        assert_eq!(t.group, "g2");
+        assert_eq!(t.priority, 15);
+    }
+
+    /// Пак без missing_mods_checker.json (большинство паков): тихо пусто,
+    /// сети нет — пустой список конфига до поисков не доходит.
+    #[tokio::test]
+    async fn missing_mods_checker_absent_config_is_quiet_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("plain.mrpack");
+        write_mrpack(&pack, &index_without_files("Без конфига"));
+        assert!(
+            read_missing_mods_checker(&pack).is_empty(),
+            "нет конфига в архиве — пусто"
+        );
+        let client = HttpClient::new(None).unwrap();
+        let nowhere = dir.path().join("mc");
+        assert!(
+            satisfy_missing_mods_checker(&client, &[], &nowhere, "g")
+                .await
+                .is_empty(),
+            "пустой список — пустой результат"
+        );
+    }
+
+    /// F16: офлайн — предустановка пропускается целиком, до сети не доходит
+    /// (игра докачает моды сама, как раньше).
+    #[tokio::test]
+    async fn missing_mods_checker_offline_is_noop() {
+        let client = HttpClient::new(None).unwrap();
+        client.set_offline(true);
+        let entries: Vec<MissingModsEntry> = serde_json::from_str(
+            r#"[{"displayName":"Balm","pattern":"balm.jar","destination":"mods"}]"#,
+        )
+        .unwrap();
+        let mc = tempfile::tempdir().unwrap();
+        assert!(
+            satisfy_missing_mods_checker(&client, &entries, mc.path(), "g")
+                .await
+                .is_empty()
         );
     }
 }

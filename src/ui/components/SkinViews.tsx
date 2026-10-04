@@ -347,12 +347,16 @@ export function FullSkinPreview({
       const hPx = Math.round(p.h * S);
       // Легаси: левую конечность зералим целиком (регионы правой).
       const mirror = p.mirror === true;
+      // Экранная x-координата центра бокса после поворота (центр в z=0,
+      // поэтому от центра зависит только x·cos). Без него все боксы
+      // проецировались на ось персонажа — руки рисуются внутри тела.
+      const centerPx = cx + p.x * cos * S;
       for (const f of faces) {
         // Видимость: повернутая нормаль смотрит на зрителя.
         const facing = f.nz * cos - f.nx * sin;
         if (facing <= 0.01) continue;
-        const px1 = cx + (f.seg[0] * cos + f.seg[1] * sin) * S;
-        const px2 = cx + (f.seg[2] * cos + f.seg[3] * sin) * S;
+        const px1 = centerPx + (f.seg[0] * cos + f.seg[1] * sin) * S;
+        const px2 = centerPx + (f.seg[2] * cos + f.seg[3] * sin) * S;
         const left = Math.round(Math.min(px1, px2));
         const width = Math.round(Math.max(px1, px2)) - left;
         if (width <= 0) continue;

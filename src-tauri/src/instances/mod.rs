@@ -29,6 +29,12 @@ pub struct Instance {
     pub id: String,
     pub name: String,
     pub icon: Option<String>,
+    /// Большой арт карточки (дата-URL, ≤400 КБ): первое изображение
+    /// галереи проекта. Иконки Modrinth — 96×96 webp, на всю карточку
+    /// они мылятся (диагноз 2026-10-04); арт закрывает это. None →
+    /// UI рендерит иконку на размытом фоне.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub art: Option<String>,
     #[serde(alias = "mc_version")]
     pub mc_version: String,
     pub loader: Option<String>,
@@ -86,6 +92,7 @@ impl Instance {
             id: uuid::Uuid::new_v4().to_string(),
             name: crate::util::names::sanitize_user_name(name, "Инстанс"),
             icon: None,
+            art: None,
             mc_version: mc_version.into(),
             loader: None,
             loader_version: None,

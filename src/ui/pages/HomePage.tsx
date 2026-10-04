@@ -2,7 +2,7 @@
 // (модпаки/моды), поиск, сортировка, фильтр загрузчика, бесконечный скролл
 // строк. Клик по строке/кнопке «Установить» открывает окно проекта —
 // установка происходит внутри окна. Инстансы живут на странице «Инстансы».
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Dices, Download, Search, SearchX } from "lucide-react"
 import { api } from "../../api/client"
 import { apiErrorText, currentLanguage, plural, t } from "../../i18n"
@@ -141,6 +141,7 @@ export default function HomePage({ query }: { query: string }) {
   const [tab, setTab] = useState<CatalogType>("modpack")
   const [sort, setSort] = useState<SortIndex>("downloads")
   const [loader, setLoader] = useState("")
+  const [category, setCategory] = useState("")
   const [localQuery, setLocalQuery] = useState("")
   const [hits, setHits] = useState<SearchHit[]>([])
   const [total, setTotal] = useState(0)
@@ -168,6 +169,8 @@ export default function HomePage({ query }: { query: string }) {
         sort,
         PAGE_SIZE,
         0,
+        // Категория уходит в ядро фасетом (одна — из селекта).
+        category ? [category] : undefined,
       )
       setHits(r.hits)
       setTotal(r.total_hits)
@@ -180,11 +183,11 @@ export default function HomePage({ query }: { query: string }) {
   }
 
   // Автопоиск при монтировании + повторный поиск с нуля (offset 0) при смене
-  // типа/сортировки/загрузчика.
+  // типа/сортировки/загрузчика/категории.
   useEffect(() => {
     void doSearch()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, sort, loader])
+  }, [tab, sort, loader, category])
 
   // «Мне повезёт»: случайный проект активного типа (модпак/мод) без учёта
   // текста запроса и фильтров. Два запроса: total_hits → случайная страница
@@ -219,6 +222,7 @@ export default function HomePage({ query }: { query: string }) {
         sort,
         PAGE_SIZE,
         hits.length,
+        category ? [category] : undefined,
       )
       const known = new Set(hits.map((h) => h.project_id))
       setHits((prev) => [...prev, ...r.hits.filter((h) => !known.has(h.project_id))])
@@ -229,7 +233,7 @@ export default function HomePage({ query }: { query: string }) {
       setLoadingMore(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadingMore, busy, searched, hits, total, localQuery, tab, sort, loader])
+  }, [loadingMore, busy, searched, hits, total, localQuery, tab, sort, loader, category])
 
   // Бесконечный скролл: sentinel догружает страницы, кнопка — для клавиатуры.
   useEffect(() => {
@@ -266,6 +270,14 @@ export default function HomePage({ query }: { query: string }) {
     (h) => !q || h.title.toLowerCase().includes(q) || h.author.toLowerCase().includes(q),
   )
 
+  // Динамический union категорий текущей выдачи (для селекта фильтра):
+  // загрузчики исключаем — у них отдельный селект выше.
+  const categories = useMemo(() => {
+    const set = new Set<string>()
+    for (const h of hits) for (const c of h.categories) set.add(c)
+    return [...set].filter((c) => !LOADERS.includes(c)).sort()
+  }, [hits])
+
   return (
     <div className="mx-auto flex max-w-[1100px] flex-col gap-4">
       {/* Маркер залипания sticky-панели: 0-высоты, невидим; когда панель
@@ -292,7 +304,12 @@ export default function HomePage({ query }: { query: string }) {
             key={x}
             role="tab"
             aria-selected={tab === x}
-            onClick={() => setTab(x)}
+            // Категорию сбрасываем вместе с табом: union категорий у модпаков
+            // и модов разный — выбранное в другом табе могло там отсутствовать.
+            onClick={() => {
+              setTab(x)
+              setCategory("")
+            }}
             className={`h-9 rounded-lg px-3 text-sm font-medium transition-colors ${
               tab === x
                 ? "bg-accent text-on-accent"
@@ -340,6 +357,21 @@ export default function HomePage({ query }: { query: string }) {
           {LOADERS.map((l) => (
             <option key={l} value={l}>
               {l}
+            </option>
+          ))}
+        </select>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          disabled={busy}
+          aria-label={t("home.filter.category")}
+          className="h-11 min-w-36 rounded-lg border border-border-strong bg-card px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <option value="">{t("home.filter.categoryAny")}</option>
+          {categories.map((c) => (
+            <option key={c} value={c}>
+              {/* Slug → читаемый лейбл: «adventure-rpg» → «Adventure rpg». */}
+              {c.charAt(0).toUpperCase() + c.slice(1).replace(/-/g, " ")}
             </option>
           ))}
         </select>

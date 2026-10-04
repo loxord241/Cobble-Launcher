@@ -1,14 +1,12 @@
 //! Движок загрузок (спека §4.4): очередь с приоритетами, параллелизм,
 //! retry/backoff, хэши, атомарные записи, отмена по группе/глобально,
-//! персистентность очереди, троттлинг прогресса ≤ 10 соб./с,
-//! общий лимит скорости (F17).
+//! троттлинг прогресса ≤ 10 соб./с, общий лимит скорости (F17).
 
 use crate::errors::{LauncherError, Result};
 use crate::events::{DlProgress, DlQueueState, EventBus, LauncherEvent};
 use crate::net::http::{backoff_delay, retryable_wait, HttpClient};
 use crate::util::fs::{long_path, part_path_unique, sha1_file, sha512_file};
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -18,26 +16,22 @@ use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 /// Задача загрузки. Приоритет: больше = раньше; ассеты — с наименьшим (спека §4.4).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// D26: персистентность очереди не существует — serde-деривы задачам не нужны.
+#[derive(Debug, Clone)]
 pub struct DownloadTask {
     pub id: String,
     pub url: String,
     pub dest: PathBuf,
-    #[serde(default)]
     pub sha1: Option<String>,
     /// SHA512 из доверенного манифеста: сверяется, когда sha1 не задан
     /// (в index.json модпаков бывает только sha512).
-    #[serde(default)]
     pub sha512: Option<String>,
-    #[serde(default)]
     pub size: Option<u64>,
     pub group: String,
-    #[serde(default)]
     pub priority: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
     Pending,
     Downloading,
@@ -46,12 +40,11 @@ pub enum TaskState {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct TaskEntry {
     pub task: DownloadTask,
     pub state: TaskState,
     pub attempts: u32,
-    #[serde(default)]
     pub error: Option<String>,
 }
 
@@ -90,6 +83,18 @@ fn throttle_delay(bytes_this_second: u64, limit_kbps: u32, chunk: usize) -> Dura
 /// PERF#6: ключ дедупликации (dest + хэши) — эквивалент прежнего any().
 fn file_key(t: &DownloadTask) -> String {
     format!("{:?}|{:?}|{:?}", t.dest, t.sha1, t.sha512)
+}
+
+/// D18: инстанс-владелец из группы задач: `instance:{id}` и `mrpack:{id}`
+/// дают Some(id), прочие группы (`jre:1`, …) — None. У инстанс-групп бывают
+/// суффиксы (`instance:{id}:content`/:update/:repair) — в id берётся только
+/// сегмент до следующего ':'.
+fn instance_id_from_group(group: &str) -> Option<String> {
+    let rest = group
+        .strip_prefix("instance:")
+        .or_else(|| group.strip_prefix("mrpack:"))?;
+    let id = rest.split(':').next().unwrap_or_default();
+    (!id.is_empty()).then(|| id.to_string())
 }
 
 /// Результат потоковой записи: дайджесты, посчитанные на лету.
@@ -487,12 +492,12 @@ impl DownloadEngine {
             last = Instant::now();
             last_bytes = now_bytes;
 
-            // D18: событие прогресса несёт группу задач — UI привязывает его
-            // к конкретному инстансу (`instance:{id}`), раньше при двух
-            // параллельных установках прогресс прилипал к первому попавшемуся.
-            // Движок в приложении создаётся по группе (engine_for), так что
-            // группа здесь одна; для гипотетической смеси шлём по событию на
-            // каждую группу с агрегатами движка.
+            // D18: событие прогресса несёт группу задач и извлечённый из неё
+            // instance_id — UI привязывает прогресс к конкретному инстансу,
+            // раньше при двух параллельных установках прогресс прилипал к
+            // первому попавшемуся. Движок в приложении создаётся по группе
+            // (engine_for), так что группа здесь одна; для гипотетической
+            // смеси шлём по событию на каждую группу с агрегатами движка.
             // PERF#6: из множества, без клона строк всех задач под локом.
             let groups: Vec<String> = {
                 let groups = self.rt.groups.lock().unwrap();
@@ -525,6 +530,7 @@ impl DownloadEngine {
             for group in groups {
                 self.bus.emit(LauncherEvent::DlProgress(DlProgress {
                     group: group.clone(),
+                    instance_id: instance_id_from_group(&group),
                     done_files: self.rt.done_files.load(Ordering::Relaxed),
                     total_files: pending + downloading + done + failed + cancelled,
                     done_bytes,
@@ -607,6 +613,21 @@ impl DownloadEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D18: извлечение инстанса-владельца из группы задач.
+    #[test]
+    fn instance_id_from_group_extracts_owner() {
+        assert_eq!(instance_id_from_group("instance:abc"), Some("abc".into()));
+        assert_eq!(instance_id_from_group("mrpack:x"), Some("x".into()));
+        // Суффиксы подгрупп (`:content`/:update/:repair) не портят id.
+        assert_eq!(
+            instance_id_from_group("instance:abc:content"),
+            Some("abc".into())
+        );
+        // Чужие группы и пустой id — владельца нет.
+        assert_eq!(instance_id_from_group("jre:1"), None);
+        assert_eq!(instance_id_from_group("instance:"), None);
+    }
 
     /// F16: офлайн-задача падает мгновенно, фатально — ни сети, ни ретраев.
     /// С ретраями было бы MAX_ATTEMPTS × backoff ≈ 7+ с; здесь — миллисекунды.

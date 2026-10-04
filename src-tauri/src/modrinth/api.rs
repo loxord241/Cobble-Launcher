@@ -214,25 +214,32 @@ fn resolve_index(index: Option<&str>, query: &str) -> Result<String> {
         .to_string())
 }
 
-/// Поиск: facets строим вручную ([[«versions:x»], [«categories:y»], …], §6.6).
-/// `index` — сортировка (None: пустой запрос → downloads «популярное»,
-/// с запросом → relevance как у Modrinth по умолчанию).
-#[allow(clippy::too_many_arguments)]
-pub async fn search(
-    client: &HttpClient,
-    query: &str,
+/// Потолок длины одной категории поиска (IPC-граница; слаги Modrinth короче).
+pub const CATEGORY_MAX_LEN: usize = 64;
+
+/// Валидация категорий поиска из IPC-границы: непустые, без пробелов,
+/// ограниченной длины (чистая функция — тестируется без сети).
+pub fn validate_search_categories(categories: &[String]) -> Result<()> {
+    for c in categories {
+        if c.is_empty() || c.chars().any(char::is_whitespace) || c.len() > CATEGORY_MAX_LEN {
+            return Err(LauncherError::InvalidInput(format!(
+                "некорректная категория поиска: {c:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Facets поиска (чистая функция — тестируется без сети): каждый фильтр —
+/// отдельный блок; между блоками AND, внутри блока OR (семантика Modrinth).
+/// Каждая категория кладётся в СВОЙ блок — проект обязан иметь все выбранные
+/// категории (фильтр «по нескольким категориям» в каталоге).
+pub(crate) fn build_search_facets(
     mc_version: Option<&str>,
     loader: Option<&str>,
     project_type: Option<&str>,
-    index: Option<&str>,
-    limit: u32,
-    offset: u32,
-) -> Result<SearchResult> {
-    // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
-    if client.offline() {
-        return Err(LauncherError::OfflineMode("поиск Modrinth".into()));
-    }
-    let index = resolve_index(index, query)?;
+    categories: Option<&[String]>,
+) -> Vec<Vec<String>> {
     let mut facets: Vec<Vec<String>> = Vec::new();
     if let Some(mc) = mc_version {
         facets.push(vec![format!("versions:{mc}")]);
@@ -243,6 +250,36 @@ pub async fn search(
     if let Some(pt) = project_type {
         facets.push(vec![format!("project_type:{pt}")]);
     }
+    if let Some(cats) = categories {
+        for c in cats {
+            facets.push(vec![format!("categories:{c}")]);
+        }
+    }
+    facets
+}
+
+/// Поиск: facets строим вручную ([[«versions:x»], [«categories:y»], …], §6.6).
+/// `index` — сортировка (None: пустой запрос → downloads «популярное»,
+/// с запросом → relevance как у Modrinth по умолчанию). `categories` —
+/// фильтр по категориям каталога (каждая в своём блоке — AND-семантика).
+#[allow(clippy::too_many_arguments)]
+pub async fn search(
+    client: &HttpClient,
+    query: &str,
+    mc_version: Option<&str>,
+    loader: Option<&str>,
+    project_type: Option<&str>,
+    categories: Option<&[String]>,
+    index: Option<&str>,
+    limit: u32,
+    offset: u32,
+) -> Result<SearchResult> {
+    // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
+    if client.offline() {
+        return Err(LauncherError::OfflineMode("поиск Modrinth".into()));
+    }
+    let index = resolve_index(index, query)?;
+    let facets = build_search_facets(mc_version, loader, project_type, categories);
     let facets_json = serde_json::to_string(&facets)?;
     let url = format!("{API_BASE}/search");
     let params = [
@@ -557,19 +594,22 @@ mod tests {
             Some("fabric"),
             Some("mod"),
             None,
+            None,
             5,
             0,
         )
         .await
         .unwrap();
         assert!(r.total_hits > 0);
-        // Явная сортировка тоже принимается.
+        // Фильтр по категориям принимается сервером (каждая — свой блок facets),
+        // явная сортировка тоже.
         let r = search(
             &client,
             "",
             Some("1.21.1"),
             Some("fabric"),
             Some("mod"),
+            Some(&["optimization".to_string()]),
             Some("follows"),
             5,
             0,
@@ -588,6 +628,58 @@ mod tests {
         assert_eq!(resolve_index(Some("follows"), "").unwrap(), "follows");
         let err = resolve_index(Some("hype"), "").unwrap_err();
         assert_eq!(err.code(), "invalid_input");
+    }
+
+    /// Facets: каждый фильтр — свой блок; категории — каждая в своём блоке
+    /// (AND-семантика: проект обязан иметь все выбранные категории).
+    #[test]
+    fn builds_search_facets_with_categories() {
+        let cats = vec!["adventure".to_string(), "optimization".to_string()];
+        let facets = build_search_facets(Some("1.21.1"), Some("fabric"), Some("mod"), Some(&cats));
+        assert_eq!(
+            facets,
+            vec![
+                vec!["versions:1.21.1".to_string()],
+                vec!["categories:fabric".to_string()],
+                vec!["project_type:mod".to_string()],
+                vec!["categories:adventure".to_string()],
+                vec!["categories:optimization".to_string()],
+            ]
+        );
+        // Без фильтров — пустой facets (серверу уходит []).
+        assert!(build_search_facets(None, None, None, None).is_empty());
+        // Сериализация в wire-форму Modrinth: массив массивов.
+        let json = serde_json::to_string(&facets).unwrap();
+        assert_eq!(
+            json,
+            r#"[["versions:1.21.1"],["categories:fabric"],["project_type:mod"],["categories:adventure"],["categories:optimization"]]"#
+        );
+    }
+
+    /// Валидация категорий из IPC-границы: пустые/с пробелами/слишком длинные —
+    /// отказ; нормальные слаги проходят.
+    #[test]
+    fn validates_search_categories() {
+        assert!(validate_search_categories(&["adventure".into(), "technology".into()]).is_ok());
+        assert!(
+            validate_search_categories(&[String::new()]).is_err(),
+            "пустая категория"
+        );
+        assert!(
+            validate_search_categories(&["a b".to_string()]).is_err(),
+            "пробел внутри"
+        );
+        assert!(
+            validate_search_categories(&["\t".to_string()]).is_err(),
+            "whitespace"
+        );
+        let too_long = "x".repeat(CATEGORY_MAX_LEN + 1);
+        assert!(
+            validate_search_categories(&[too_long]).is_err(),
+            "длиннее CATEGORY_MAX_LEN"
+        );
+        let exact = "x".repeat(CATEGORY_MAX_LEN);
+        assert!(validate_search_categories(&[exact]).is_ok(), "ровно лимит — можно");
     }
 
     /// Разбор wire-формы /project/{id} (snake_case) в camelCase-контракт.
