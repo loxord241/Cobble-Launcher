@@ -23,7 +23,7 @@ jobs:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Проверка: тег совпадает с версией package.json
+      - name: "Проверка: тег совпадает с версией package.json"
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}" -replace '^v',''
@@ -33,7 +33,7 @@ jobs:
             exit 1
           }
 
-      - name: Проверка: секреты подписи на месте
+      - name: "Проверка: секреты подписи на месте"
         shell: pwsh
         env:
           KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -53,17 +53,17 @@ jobs:
           restore-keys: rust-${{ runner.os }}-
 
       - run: npm ci
-      - name: Подписанный бандл (NSIS + .sig)
+      - name: "Подписанный бандл (NSIS + .sig)"
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build
 
-      - name: latest.json из подписанного установщика
+      - name: "latest.json из подписанного установщика"
         shell: pwsh
         run: node scripts/make_latest_json.cjs "${{ github.ref_name }}"
 
-      - name: Черновик релиза с ассетами
+      - name: "Черновик релиза с ассетами"
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
