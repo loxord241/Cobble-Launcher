@@ -33,10 +33,15 @@ async function main() {
   await page.getByRole("navigation").getByRole("button", { name: /^Инстансы/ }).click();
   await page.waitForTimeout(600);
   const row = page.locator('[role="button"][aria-label^="Открыть "]').first();
-  const instId = await page.evaluate(async () => {
+  // D61: сортировка UI может не совпадать с порядком instance_list — берём
+  // id инстанса ИМЕННО из первой строки UI (по aria-label «Открыть {name}»).
+  const rowName = await row.getAttribute("aria-label").then(
+    (a) => (a || "").replace(/^Открыть\s+/, ""),
+  );
+  const instId = await page.evaluate(async (name) => {
     const ids = await window.__TAURI__.core.invoke("instance_list");
-    return ids[0].id;
-  }).catch(() => null);
+    return (ids.find((i) => i.name === name) || ids[0]).id;
+  }, rowName).catch(() => null);
   if (!instId) {
     fail("window.__TAURI__ недоступен — нужен withGlobalTauri в tauri.conf (временный флаг приёмки)");
     console.log("ALL WAVE2 CHECKS PASSED".replace("PASSED", "SKIPPED-ICON"));
