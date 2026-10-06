@@ -186,6 +186,12 @@ export interface ErrorPayload {
 export interface DlProgressEvent {
   event: "dl_progress";
   group: string;
+  /**
+   * D60: инстанс-владелец прогресса, который ядро извлекает из группы
+   * (`instance:{id}` / `mrpack:{id}`); нужен для прогресса установки модпака
+   * и смены версии. У старого ядра поля нет — фронт держит эвристику по group.
+   */
+  instanceId?: string;
   doneFiles: number;
   totalFiles: number;
   doneBytes: number;

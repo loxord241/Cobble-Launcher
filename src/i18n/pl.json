@@ -321,6 +321,7 @@
   "updates.installNow": "Zainstaluj i uruchom ponownie",
   "updates.installing": "Instalowanie aktualizacji…",
   "updates.installerUnavailable": "Instalator aktualizacji nie jest jeszcze gotowy (brak podpisanego wydania z manifestem) — zaktualizuj ręcznie:",
+  "updates.moreInSettings": "Więcej w ustawieniach",
   "updates.availableBadge": "Dostępna aktualizacja",
   "instances.tab.worlds": "Światy",
   "worlds.empty": "Nie ma jeszcze światów — uruchom grę i stwórz pierwszy",

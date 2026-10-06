@@ -18,6 +18,22 @@ pub struct Session {
     pub uuid: String,
 }
 
+/// Классификация не-2xx от authserver при логине (аудит 2026-10-06): 4xx —
+/// неверные креды (InvalidInput, как раньше), 5xx — проблема на стороне
+/// сервера (Network). Чистая функция — маппинг тестируется без сети; общая
+/// для ely.by и своих authlib-серверов (auth/custom.rs).
+pub(crate) fn classify_login_status(server_label: &str, status: u16) -> LauncherError {
+    if status >= 500 {
+        LauncherError::network(format!(
+            "сервер {server_label} недоступен (HTTP {status})"
+        ))
+    } else {
+        LauncherError::InvalidInput(format!(
+            "{server_label}: неверный логин/пароль (HTTP {status})"
+        ))
+    }
+}
+
 /// Логин по логину/паролю ely.by (POST /api/auth/authenticate).
 pub async fn authenticate(client: &HttpClient, username: &str, password: &str) -> Result<Session> {
     #[derive(Deserialize)]
@@ -36,7 +52,7 @@ pub async fn authenticate(client: &HttpClient, username: &str, password: &str) -
     if client.offline() {
         return Err(LauncherError::OfflineMode("вход ely.by".into()));
     }
-    let resp: AuthResp = client
+    let resp = client
         .raw()
         .post(format!("{AUTHSERVER}/api/auth/authenticate"))
         .json(&serde_json::json!({
@@ -47,11 +63,11 @@ pub async fn authenticate(client: &HttpClient, username: &str, password: &str) -
             "requestUser": false
         }))
         .send()
-        .await?
-        .error_for_status()
-        .map_err(|e| LauncherError::InvalidInput(format!("ely.by: неверный логин/пароль ({e})")))?
-        .json()
         .await?;
+    if !resp.status().is_success() {
+        return Err(classify_login_status("ely.by", resp.status().as_u16()));
+    }
+    let resp: AuthResp = resp.json().await?;
     crate::util::redact::register_secret(&resp.access_token);
     // ely authserver не выдаёт refresh — refreshToken == accessToken при refresh.
     Ok(Session {
@@ -181,4 +197,43 @@ pub async fn authlib_injector_jar(
 /// (ЕДИНСТВЕННОЕ исключение из ноль-инжекций, спека §6.8).
 pub fn javaagent_arg(jar: &std::path::Path) -> String {
     format!("-javaagent:{}={INJECTOR_SERVER}", jar.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Аудит 2026-10-06: не-2xx при логине классифицируется — 4xx считаем
+    /// плохими кредами (InvalidInput), 5xx — недоступностью сервера (Network).
+    #[test]
+    fn login_status_classification() {
+        // 4xx — InvalidInput с прежней подсказкой про креды.
+        for status in [400u16, 401, 403, 429] {
+            let err = classify_login_status("ely.by", status);
+            assert!(
+                matches!(err, LauncherError::InvalidInput(_)),
+                "HTTP {status} должен быть InvalidInput, получено: {err:?}"
+            );
+            assert!(
+                err.to_string().contains("неверный логин/пароль"),
+                "HTTP {status}: подсказка про креды потерялась: {err}"
+            );
+        }
+        // 5xx — Network «сервер недоступен».
+        for status in [500u16, 502, 503, 521] {
+            let err = classify_login_status("ely.by", status);
+            assert!(
+                matches!(err, LauncherError::Network(_)),
+                "HTTP {status} должен быть Network, получено: {err:?}"
+            );
+            assert!(
+                err.to_string()
+                    .contains("сервер ely.by недоступен (HTTP "),
+                "HTTP {status}: текст про недоступность потерялся: {err}"
+            );
+        }
+        // Метка сервера подставляется (общая fn для custom-серверов).
+        let err = classify_login_status("https://auth.example.org", 503);
+        assert!(err.to_string().contains("https://auth.example.org"));
+    }
 }

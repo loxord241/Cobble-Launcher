@@ -161,12 +161,52 @@ pub fn copy_entry(paths: &Paths, from_id: &str, to_id: &str, file: &str) -> Resu
     Ok(entry)
 }
 
+/// Открыть НОВЫЙ файл архива без усечения существующего: два бэкапа в одну
+/// секунду коллидируют по имени, а `File::create` усёк бы ГОТОВЫЙ архив.
+/// Коллизия (AlreadyExists) разрешается суффиксами `-1`…`-9` перед расширением.
+fn create_archive_file(dest: &std::path::Path) -> Result<(PathBuf, std::fs::File)> {
+    let stem = dest
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = dest
+        .extension()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    for i in 0..=9u32 {
+        let name = if i == 0 {
+            format!("{stem}.{ext}")
+        } else {
+            format!("{stem}-{i}.{ext}")
+        };
+        let candidate = dest.with_file_name(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(crate::util::fs::long_path(&candidate))
+        {
+            Ok(f) => return Ok((candidate, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(LauncherError::InvalidInput(format!(
+        "не удалось выбрать имя архива: {} и суффиксы -1…-9 заняты",
+        dest.display()
+    )))
+}
+
 /// Бэкап инстанса целиком (zip): instance.json, манифест контента, versions/,
 /// minecraft/ (моды, сейвы, конфиги) — без логов/крашей/кэша и .lock.
 pub fn backup(paths: &Paths, inst: &Instance) -> Result<ArchiveResult> {
     let src = instance_dir(paths, &inst.id);
     if !crate::util::fs::long_path(&src).exists() {
         return Err(LauncherError::NotFound(src.to_string_lossy().into()));
+    }
+    // B9: у работающей игры заняты файлы инстанса — бэкап только после выхода
+    // (как backup_world в worlds.rs).
+    if crate::instances::running_pid(&src).is_some() {
+        return Err(LauncherError::InstanceRunning(inst.id.to_string()));
     }
     std::fs::create_dir_all(crate::util::fs::long_path(&paths.backups_dir()))?;
     let stamp = std::time::SystemTime::now()
@@ -179,8 +219,8 @@ pub fn backup(paths: &Paths, inst: &Instance) -> Result<ArchiveResult> {
         stamp
     );
     let dest = paths.backups_dir().join(name);
+    let (dest, file) = create_archive_file(&dest)?;
 
-    let file = std::fs::File::create(crate::util::fs::long_path(&dest))?;
     let mut zip = zip::ZipWriter::new(file);
     let count = crate::util::zip::write_zip_dir(&src, &mut zip, "instance/", &|rel| {
         rel == ".lock" || is_skipped_dir(rel, &NOISE_DIRS)
@@ -209,6 +249,10 @@ fn is_skipped_dir(rel: &str, dirs: &[&str]) -> bool {
 /// Сейвы и шум не включаются. Файлы из files[] в overrides не дублируются.
 pub fn export_mrpack(paths: &Paths, inst: &Instance) -> Result<ArchiveResult> {
     let src = instance_dir(paths, &inst.id);
+    // B9: экспорт читает файлы игры — у работающего инстанса запрещён (как backup).
+    if crate::instances::running_pid(&src).is_some() {
+        return Err(LauncherError::InstanceRunning(inst.id.to_string()));
+    }
     std::fs::create_dir_all(crate::util::fs::long_path(&paths.exports_dir()))?;
     let name = format!(
         "{}.mrpack",
@@ -256,7 +300,7 @@ pub fn export_mrpack(paths: &Paths, inst: &Instance) -> Result<ArchiveResult> {
     });
 
     let mc = minecraft_dir(&src);
-    let file = std::fs::File::create(crate::util::fs::long_path(&dest))?;
+    let (dest, file) = create_archive_file(&dest)?;
     let mut zip = zip::ZipWriter::new(file);
     let opts: zip::write::SimpleFileOptions = Default::default();
     let index_bytes = serde_json::to_vec_pretty(&index)?;
@@ -325,6 +369,9 @@ pub fn set_icon(paths: &Paths, id: &str, path: &str) -> Result<Instance> {
 /// ensure_icon_source_allowed здесь не применяется.
 /// Общая часть set_icon_from_bytes/set_art_from_bytes: снифф формата, data-URL
 /// и сохранение инстанса. Куда положить URL — решает `apply` (поле icon/art).
+/// Пишем через instances::update (A28: load→modify→save под SAVE_LOCK) —
+/// голый load+save перетирал статистику супервизора (launch_count и пр.),
+/// сохранённую параллельно во время игры.
 fn set_image_data_url(
     paths: &Paths,
     id: &str,
@@ -335,10 +382,9 @@ fn set_image_data_url(
         .ok_or_else(|| LauncherError::InvalidInput("поддерживаются PNG, JPEG и WebP".into()))?;
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD.encode(data);
-    let mut inst = crate::instances::load(paths, id)?;
-    apply(&mut inst, format!("data:{mime};base64,{b64}"));
-    crate::instances::save(paths, &inst)?;
-    Ok(inst)
+    let url = format!("data:{mime};base64,{b64}");
+    crate::instances::update(paths, id, |inst| apply(inst, url))?;
+    crate::instances::load(paths, id)
 }
 
 pub fn set_icon_from_bytes(paths: &Paths, id: &str, data: &[u8]) -> Result<Instance> {
@@ -366,12 +412,10 @@ pub fn set_art_from_bytes(paths: &Paths, id: &str, data: &[u8]) -> Result<Instan
     set_image_data_url(paths, id, data, |inst, url| inst.art = Some(url))
 }
 
-/// Убрать иконку инстанса.
+/// Убрать иконку инстанса (A28: через instances::update, как set_image_data_url).
 pub fn clear_icon(paths: &Paths, id: &str) -> Result<Instance> {
-    let mut inst = crate::instances::load(paths, id)?;
-    inst.icon = None;
-    crate::instances::save(paths, &inst)?;
-    Ok(inst)
+    crate::instances::update(paths, id, |inst| inst.icon = None)?;
+    crate::instances::load(paths, id)
 }
 
 fn sniff_image(data: &[u8]) -> Option<&'static str> {
@@ -524,6 +568,59 @@ mod tests {
         assert!(!names.iter().any(|n| n.contains("logs/")));
     }
 
+    /// Два бэкапа подряд: имена не коллидируют и ОБА файла на диске (раньше
+    /// совпадение штампа секунды усекало первый архив через File::create).
+    #[test]
+    fn backup_twice_creates_two_archives() {
+        let (_d, paths, inst) = setup();
+        let a = backup(&paths, &inst).unwrap();
+        let b = backup(&paths, &inst).unwrap();
+        assert_ne!(a.path, b.path, "имена различаются");
+        assert!(std::path::Path::new(&a.path).exists(), "первый архив цел");
+        assert!(std::path::Path::new(&b.path).exists(), "второй архив цел");
+    }
+
+    /// Коллизия имени архива: существующий файл НЕ усекается — следующий
+    /// кандидат получает суффикс -1 (… до -9), затем честная ошибка.
+    #[test]
+    fn create_archive_file_suffixes_on_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("inst-123.zip");
+        let (p1, f1) = create_archive_file(&dest).unwrap();
+        assert_eq!(p1, dest, "свободное имя берётся как есть");
+        drop(f1);
+        std::fs::write(&p1, b"DO-NOT-TRUNCATE").unwrap();
+        let (p2, f2) = create_archive_file(&dest).unwrap();
+        assert_eq!(p2, dir.path().join("inst-123-1.zip"), "коллизия → суффикс -1");
+        drop(f2);
+        assert_eq!(
+            std::fs::read(&p1).unwrap(),
+            b"DO-NOT-TRUNCATE",
+            "существующий архив не усечён"
+        );
+        // .mrpack сохраняет своё расширение после суффикса.
+        let mrpack = dir.path().join("pack.mrpack");
+        std::fs::write(&mrpack, b"x").unwrap();
+        let (p3, _f3) = create_archive_file(&mrpack).unwrap();
+        assert_eq!(p3, dir.path().join("pack-1.mrpack"));
+    }
+
+    /// B9: бэкап и экспорт работающего инстанса запрещены (файлы игры заняты).
+    #[test]
+    fn backup_and_export_reject_running_instance() {
+        let (_d, paths, inst) = setup();
+        // Имитируем живой процесс: .lock с PID текущего теста.
+        std::fs::write(
+            long(&instance_dir(&paths, &inst.id).join(".lock")),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        let err = backup(&paths, &inst).unwrap_err();
+        assert_eq!(err.code(), "instance_running", "{err}");
+        let err = export_mrpack(&paths, &inst).unwrap_err();
+        assert_eq!(err.code(), "instance_running", "{err}");
+    }
+
     #[test]
     fn export_mrpack_index_and_overrides() {
         let (_d, paths, mut inst) = setup();
@@ -666,6 +763,30 @@ mod tests {
         let home = dirs::home_dir().expect("домашний каталог");
         let escape = home.join("../outside.png");
         assert!(set_icon(&paths, &inst.id, escape.to_str().unwrap()).is_err());
+    }
+
+    /// A28: иконки пишутся через instances::update (под SAVE_LOCK) — статистика
+    /// супервизора (launch_count/play_seconds), записанная параллельно во время
+    /// игры, не перетирается установкой/сбросом иконки.
+    #[test]
+    fn icon_updates_preserve_instance_stats() {
+        let (_d, paths, inst) = setup();
+        crate::instances::update(&paths, &inst.id, |i| {
+            i.launch_count = 7;
+            i.play_seconds = 123;
+        })
+        .unwrap();
+        let png = [0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        set_icon_from_bytes(&paths, &inst.id, &png).unwrap();
+        let after_set = crate::instances::load(&paths, &inst.id).unwrap();
+        assert_eq!(after_set.launch_count, 7, "set_icon не перетёр launch_count");
+        assert_eq!(after_set.play_seconds, 123, "set_icon не перетёр play_seconds");
+        assert!(after_set.icon.is_some());
+        clear_icon(&paths, &inst.id).unwrap();
+        let after_clear = crate::instances::load(&paths, &inst.id).unwrap();
+        assert!(after_clear.icon.is_none());
+        assert_eq!(after_clear.launch_count, 7, "clear_icon не перетёр launch_count");
+        assert_eq!(after_clear.play_seconds, 123, "clear_icon не перетёр play_seconds");
     }
 
     /// F10: копия мода между инстансами — файл на диске приёмника и запись

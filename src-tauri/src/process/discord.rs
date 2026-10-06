@@ -61,8 +61,7 @@ impl RpcConnection {
         let mut header = [0u8; 8];
         conn.pipe.read_exact(&mut header)?;
         let len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
-        let mut body = vec![0u8; len.min(4096)];
-        conn.pipe.read_exact(&mut body)?;
+        let body = read_frame_body(&mut conn.pipe, len)?;
         tracing::info!(
             "discord rpc: {}",
             String::from_utf8_lossy(&body).split("\"evt\"").nth(1).unwrap_or("READY").trim_start_matches(':').trim_end_matches('}')
@@ -88,8 +87,7 @@ impl RpcConnection {
         let mut header = [0u8; 8];
         self.pipe.read_exact(&mut header)?;
         let reply_len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
-        let mut body = vec![0u8; reply_len.min(4096)];
-        self.pipe.read_exact(&mut body)?;
+        let body = read_frame_body(&mut self.pipe, reply_len)?;
         tracing::info!(
             "discord rpc: ответ (opcode {}, {} байт): {}",
             u32::from_le_bytes([header[0], header[1], header[2], header[3]]),
@@ -111,6 +109,27 @@ impl RpcConnection {
         let mut pipe = &self.pipe;
         pipe.write_all(&frame)
     }
+}
+
+/// Потолок тела кадра: настоящие кадры Discord — единицы КБ, а транспорт —
+/// блокирующий pipe (аудит 2026-10-06). Раньше `len.min(4096)` обрезал
+/// длинный кадр, и остаток тела попадал в следующий заголовок — рассинхрон
+/// потока; теперь длина сверх потолка → честная ошибка, соединение рвётся.
+const MAX_FRAME_BODY: usize = 64 * 1024;
+
+/// Прочитать тело кадра РОВНО `len` байт после заголовка. `len` сверх
+/// [`MAX_FRAME_BODY`] — ошибка (читать такой кадр и дренажем, и частями
+/// нельзя: pipe без таймаутов, огромный len — вечное чтение).
+fn read_frame_body<R: std::io::Read>(pipe: &mut R, len: usize) -> std::io::Result<Vec<u8>> {
+    if len > MAX_FRAME_BODY {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("кадр Discord слишком большой: {len} байт (лимит {MAX_FRAME_BODY})"),
+        ));
+    }
+    let mut body = vec![0u8; len];
+    pipe.read_exact(&mut body)?;
+    Ok(body)
 }
 
 /// Открыть pipe Discord; нет ни одного → `Ok(None)`.
@@ -250,5 +269,45 @@ mod tests {
             1_700_000_000_000u64
         );
         assert_eq!(v["nonce"], "4242-0");
+    }
+
+    /// Аудит 2026-10-06: тело кадра читается ЦЕЛИКОМ (не обрезается на 4096,
+    /// как раньше) — следующий заголовок не попадает на чужой остаток тела.
+    #[test]
+    fn read_frame_body_reads_full_length() {
+        let payload = vec![b'a'; 10_000]; // больше прежних 4096
+        let mut src = std::io::Cursor::new(payload.clone());
+        let body = read_frame_body(&mut src, payload.len()).unwrap();
+        assert_eq!(body, payload, "полная длина, без обрезки");
+    }
+
+    /// Длина сверх потолка — ошибка InvalidData до всякого чтения: кап
+    /// защищает и от рассинхрона, и от вечного чтения блокирующего pipe.
+    #[test]
+    fn read_frame_body_rejects_oversized_length() {
+        let mut src = std::io::Cursor::new(vec![0u8; 16]);
+        let err = read_frame_body(&mut src, MAX_FRAME_BODY + 1)
+            .expect_err("len > 64КБ должен рвать соединение");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    }
+
+    /// Граничный случай: ровно потолок читается, нулевая длина — пустое тело.
+    #[test]
+    fn read_frame_body_boundary_and_empty() {
+        let payload = vec![b'x'; MAX_FRAME_BODY];
+        let mut src = std::io::Cursor::new(payload.clone());
+        assert_eq!(read_frame_body(&mut src, MAX_FRAME_BODY).unwrap(), payload);
+
+        let mut empty = std::io::Cursor::new(Vec::new());
+        assert!(read_frame_body(&mut empty, 0).unwrap().is_empty());
+    }
+
+    /// Недобор данных (pipe оборвался посреди тела) — UnexpectedEof, как и
+    /// раньше read_exact: вызывающий трактует это как смерть соединения.
+    #[test]
+    fn read_frame_body_truncated_is_unexpected_eof() {
+        let mut src = std::io::Cursor::new(vec![0u8; 8]);
+        let err = read_frame_body(&mut src, 64).expect_err("тело короче заявленного");
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof, "{err}");
     }
 }

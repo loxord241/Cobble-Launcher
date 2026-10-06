@@ -98,7 +98,15 @@ pub async fn device_code_poll(
         let refresh = token
             .refresh_token
             .ok_or_else(|| LauncherError::Internal("MSA не вернул refresh_token".into()))?;
-        let session = xbox_chain(client, &token.access_token, refresh).await?;
+        // Предохранитель: xbox-цепочка — три подряд JSON-запроса; молчащий
+        // сервер без общего таймаута (аудит 2026-10-06) подвесил бы вход
+        // навечно. 120 с на всю цепочку — с запасом.
+        let session = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            xbox_chain(client, &token.access_token, refresh),
+        )
+        .await
+        .map_err(|_| LauncherError::network("Xbox Live не отвечает"))??;
         crate::util::redact::register_secret(&session.access_token);
         crate::util::redact::register_secret(&session.refresh_token);
         return Ok(Some(session));
@@ -247,13 +255,15 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
         .await?;
     if !resp.status().is_success() {
         let status = resp.status();
+        // 403 = провайдер отклонил САМО приложение (аудит 2026-10-06):
+        // без обещаний про формы/одобрения — от пользователя это не зависит.
+        if status.as_u16() == 403 {
+            return Err(LauncherError::network(
+                "Xbox Live отклонил приложение (HTTP 403). Повтори вход позже; если повторится — сообщи разработчику",
+            ));
+        }
         let body = resp.text().await.unwrap_or_default();
-        // 403 = Azure-приложению не выдано разрешение на Minecraft API
-        // (официальная процедура — форма aka.ms/mce-reviewappid, статья
-        // help.minecraft.net/hc/en-us/articles/16254801392141).
-        let hint = if status.as_u16() == 403 {
-            " (Azure-приложению не выдан доступ к Minecraft API — подайте заявку по форме aka.ms/mce-reviewappid, одобрение занимает время)"
-        } else if status.as_u16() == 401 {
+        let hint = if status.as_u16() == 401 {
             " (частая причина — у аккаунта нет Minecraft: Java Edition)"
         } else {
             ""
@@ -321,21 +331,26 @@ Connection: close
 <html><body style='font-family:sans-serif'><h2>Invalid OAuth state</h2><p>close this tab</p></body></html>";
 
 /// Извлечь параметр `?key=` из первой строки запроса redirect'а
-/// (percent-decode; пустое значение — то же, что отсутствие).
+/// (percent-decode; пустое значение — то же, что отсутствие). Имя сверяется
+/// ЦЕЛИКОМ по '&'-сегментам query (аудит 2026-10-06): подстрочный поиск
+/// «code=» ловил бы «xcode=» и отдавал чужое значение.
 fn extract_query_param(req: &str, key: &str) -> Option<String> {
     let line = req.lines().next().unwrap_or("");
-    let needle = format!("{key}=");
-    let raw = line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|path| path.split(needle.as_str()).nth(1))
-        .map(|rest| rest.split('&').next().unwrap_or(rest))?;
-    let decoded = pct_decode(raw);
-    if decoded.is_empty() {
-        None
-    } else {
-        Some(decoded)
+    let path = line.split_whitespace().nth(1)?;
+    let query = path.split_once('?')?.1;
+    for seg in query.split('&') {
+        let Some((name, value)) = seg.split_once('=') else {
+            continue;
+        };
+        if name == key {
+            let decoded = pct_decode(value);
+            if decoded.is_empty() {
+                return None;
+            }
+            return Some(decoded);
+        }
     }
+    None
 }
 
 /// Принять redirect браузера на локальном порту и извлечь ?code=.
@@ -590,6 +605,26 @@ mod tests {
         assert_eq!(extract_query_param("GET /?state=&code=x HTTP/1.1", "state"), None);
         assert_eq!(
             extract_query_param("GET /?code=x&state=abc HTTP/1.1", "state"),
+            Some("abc".into())
+        );
+    }
+
+    /// Аудит 2026-10-06: имя параметра сверяется ЦЕЛИКОМ по '&'-сегментам —
+    /// «xcode=» не выдаётся за «code=», берётся правильный сегмент.
+    #[test]
+    fn extract_code_ignores_lookalike_param_names() {
+        assert_eq!(
+            extract_query_param("GET /?xcode=1&code=real&state=s HTTP/1.1", "code"),
+            Some("real".into()),
+            "точное имя параметра, а не подстрока"
+        );
+        assert_eq!(
+            extract_query_param("GET /?decode=1&code=real HTTP/1.1", "code"),
+            Some("real".into())
+        );
+        // То же для state: «xstate=» не путается с «state=».
+        assert_eq!(
+            extract_query_param("GET /?xstate=1&code=c&state=abc HTTP/1.1", "state"),
             Some("abc".into())
         );
     }

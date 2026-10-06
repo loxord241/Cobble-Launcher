@@ -39,6 +39,16 @@ fn emit(bus: &EventBus, instance_id: &str, phase: LaunchPhase) {
     });
 }
 
+/// `-Xmx` с клампом ram_mb к валидному диапазону (зеркало validate_instance_settings
+/// в instances/mod.rs): instance.json можно отредактировать руками мимо
+/// IPC-валидатора, а гигантский `-Xmx` кладёт машину вместо честного отказа.
+fn xmx_flag(ram_mb: u32) -> String {
+    format!(
+        "-Xmx{}M",
+        ram_mb.clamp(crate::instances::MIN_RAM_MB, crate::instances::MAX_RAM_MB)
+    )
+}
+
 /// Строка игры одновременно уходит в `latest.log` и в событие UI — ОБА вывода
 /// обязаны проходить redaction (A15): логи модов/чата печатают токен доступа,
 /// а реестр секретов наполняется при авторизации (спека §11, «секреты не
@@ -204,6 +214,7 @@ pub async fn prepare(
     crate::instances::store::link_or_copy(
         &client_jar_in_store(&paths.clients_store(), &client_sha),
         &mc_version_dir.join(format!("{}.jar", rv.id)),
+        Some(&client_sha), // сверка усечённого dst с задачей prepare
     )
     .map_err(|e| LauncherError::Internal(format!("hardlink клиента {}: {e}", rv.id)))?;
     for l in &libs {
@@ -211,6 +222,7 @@ pub async fn prepare(
             crate::instances::store::link_or_copy(
                 &paths.libraries_store().join(&a.rel_path),
                 &game_dir.join("libraries").join(&a.rel_path),
+                a.sha1.as_deref(),
             )
             .map_err(|e| {
                 LauncherError::Internal(format!("hardlink библиотеки {}: {e}", a.rel_path))
@@ -220,6 +232,7 @@ pub async fn prepare(
             crate::instances::store::link_or_copy(
                 &paths.libraries_store().join(&n.rel_path),
                 &game_dir.join("libraries").join(&n.rel_path),
+                n.sha1.as_deref(),
             )
             .map_err(|e| {
                 LauncherError::Internal(format!("hardlink натива {}: {e}", n.rel_path))
@@ -294,7 +307,7 @@ pub async fn prepare(
         // между собой не критичен, но agent — системный).
         jvm_extra_flags.push(agent.clone());
     }
-    jvm_extra_flags.push(format!("-Xmx{}M", inst.ram_mb));
+    jvm_extra_flags.push(xmx_flag(inst.ram_mb));
     jvm_extra_flags.extend(inst.jvm_flags.iter().cloned());
     // ВАЖНО: не добавлять -DlegacyClassPath с полным classpath — командная
     // строка Windows ограничена 32K и дублирование -cp даёт os error 206
@@ -789,10 +802,12 @@ pub fn launch_detached(
         .spawn()
         .map_err(|e| LauncherError::JavaNotFound(format!("не удалось запустить игру: {e}")))?;
     lock.set_child_pid(child.id());
-    // PID в .lock: instance_kill / process_status читают отсюда.
-    let _ = std::fs::write(
-        crate::util::fs::long_path(&inst_dir.join(".lock")),
-        child.id().to_string(),
+    // PID в .lock: instance_kill / process_status читают отсюда. Пишем атомарно
+    // (atomic_write: .part → rename): усечение-потом-запись при сбое между ними
+    // оставляло бы пустой .lock навсегда.
+    let _ = crate::util::fs::atomic_write(
+        &inst_dir.join(".lock"),
+        child.id().to_string().as_bytes(),
     );
     tracing::info!("инстанс {instance_id}: игра запущена (PID {})", child.id());
     bus.emit(LauncherEvent::LaunchState {
@@ -1152,6 +1167,24 @@ mod tests {
             c.disarm();
         }
         assert!(natives.join("keep.so").exists(), "успех → уборки нет");
+    }
+
+    /// P3: ram_mb из instance.json (возможно, отредактирован руками мимо
+    /// IPC-валидатора) клампится к диапазону validate_instance_settings —
+    /// в аргументах команды оказывается разумный -Xmx.
+    #[test]
+    fn xmx_flag_clamps_ram_to_valid_range() {
+        assert_eq!(
+            xmx_flag(99_999_999),
+            format!("-Xmx{}M", crate::instances::MAX_RAM_MB),
+            "гигантский -Xmx клампится к максимуму"
+        );
+        assert_eq!(
+            xmx_flag(0),
+            format!("-Xmx{}M", crate::instances::MIN_RAM_MB),
+            "нулевой -Xmx поднимается до минимума"
+        );
+        assert_eq!(xmx_flag(4096), "-Xmx4096M", "валидное значение не трогается");
     }
 
     /// F1: quick play доступен с MC 1.20 (major.minor); снапшоты/беты/старые — нет.

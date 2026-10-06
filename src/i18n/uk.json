@@ -321,6 +321,7 @@
   "updates.installNow": "Встановити й перезапустити",
   "updates.installing": "Встановлюю оновлення…",
   "updates.installerUnavailable": "Оновлювач ще не готовий (немає підписаного релізу з маніфестом) — оновіть вручну:",
+  "updates.moreInSettings": "Детальніше в налаштуваннях",
   "updates.availableBadge": "Доступне оновлення",
   "instances.tab.worlds": "Світи",
   "worlds.empty": "Світів ще немає — запусти гру та створи перший",

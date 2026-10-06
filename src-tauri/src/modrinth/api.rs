@@ -430,7 +430,10 @@ fn gallery_image(v: &serde_json::Value) -> Option<GalleryImage> {
 
 /// Валидация id/slug из IPC-границы: Modrinth допускает [A-Za-z0-9-_],
 /// всё остальное (пробелы, `..`, пустота) — InvalidInput до запроса.
-fn validate_id_or_slug(id_or_slug: &str) -> Result<()> {
+/// pub(crate): тот же guard на путях install/updates/mrpack, где id/slug
+/// уходит в URL `{API_BASE}/project/{id}` — чужая строка не должна
+/// подменять путь запроса (инъекция `../`).
+pub(crate) fn validate_id_or_slug(id_or_slug: &str) -> Result<()> {
     let ok = !id_or_slug.is_empty()
         && id_or_slug
             .chars()

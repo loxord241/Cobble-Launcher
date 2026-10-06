@@ -72,6 +72,10 @@ pub fn create(paths: &Paths, instance_id: &str) -> Result<String> {
         .unwrap_or(0);
     let name = format!("mods-{ts}.zip");
     let dest = dir.join(&name);
+    // P3: сбой посреди записи (io::copy/start_file) оставлял бы частичный zip,
+    // который проходит is_snapshot_name и выглядит «восстановимым» мусором —
+    // guard удаляет его при любом Err (паттерн PrepareCleanup в run.rs).
+    let mut cleanup = PartialSnapshotCleanup::new(dest.clone());
     let file = std::fs::File::create(crate::util::fs::long_path(&dest))?;
     let mut zip = zip::ZipWriter::new(file);
     let opts: zip::write::SimpleFileOptions = Default::default();
@@ -96,9 +100,35 @@ pub fn create(paths: &Paths, instance_id: &str) -> Result<String> {
     }
     zip.finish()
         .map_err(|e| LauncherError::Zip(format!("finish: {e}")))?;
+    cleanup.disarm();
     rotate(&dir)?;
     tracing::info!("снапшот mods/: {name} ({count} файлов)");
     Ok(name)
+}
+
+/// Частичный zip снапшота при ошибке посреди create — удалить (best-effort).
+struct PartialSnapshotCleanup {
+    dest: PathBuf,
+    armed: bool,
+}
+
+impl PartialSnapshotCleanup {
+    fn new(dest: PathBuf) -> Self {
+        Self { dest, armed: true }
+    }
+
+    /// create прошёл успешно — убирать нечего.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PartialSnapshotCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            crate::util::fs::remove_file_ignore(&self.dest);
+        }
+    }
 }
 
 /// Ротация: оставить `KEEP_SNAPSHOTS` новейших снапшотов, остальные удалить.
@@ -132,9 +162,44 @@ pub fn list(paths: &Paths, instance_id: &str) -> Result<Vec<SnapshotInfo>> {
     Ok(out)
 }
 
-/// Откатить mods/ к снапшоту: удалить файлы, УКАЗАННЫЕ в манифесте контента
-/// (в активном и `.disabled` виде), затем распаковать zip в mods/. Манифест
-/// не трогаем: файлы из снапшота, которых в манифесте нет, остаются как есть.
+/// Временный каталог распаковки restore: удаляется при ЛЮБОМ выходе — и при
+/// ошибке (частичная распаковка/перенос), и при успехе (к тому моменту пуст).
+struct RestoreTempDir {
+    path: PathBuf,
+}
+
+impl Drop for RestoreTempDir {
+    fn drop(&mut self) {
+        if self.path.exists() {
+            let _ = std::fs::remove_dir_all(crate::util::fs::long_path(&self.path));
+        }
+    }
+}
+
+/// Перенести содержимое `src` в `dst` (тот же том — переименование дешёвое,
+/// существующий файл замещается). Относительная структура сохраняется.
+fn move_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(crate::util::fs::long_path(dst))?;
+    for e in std::fs::read_dir(crate::util::fs::long_path(src))? {
+        let e = e?;
+        let p = e.path();
+        let target = dst.join(e.file_name());
+        if e.file_type()?.is_dir() {
+            move_tree(&p, &target)?;
+        } else {
+            // A26: повтор при придержании файла антивирусом.
+            crate::util::fs::rename_with_retry(&p, &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Откатить mods/ к снапшоту. Транзакционно (P2): сначала распаковываем архив
+/// во временный каталог РЯДОМ с mods/ (тот же том), и только при полном успехе
+/// удаляем манифестные записи и переносим файлы из временного на место. Раньше
+/// манифестные моды удалялись ДО распаковки — сбой extract_zip на середине
+/// означал потерю модов. Манифест не трогаем: файлы из снапшота, которых в
+/// манифесте нет, остаются как есть.
 pub fn restore(paths: &Paths, instance_id: &str, name: &str) -> Result<()> {
     crate::instances::load(paths, instance_id)?; // valid_id + NotFound
     if !is_snapshot_name(name) {
@@ -152,7 +217,23 @@ pub fn restore(paths: &Paths, instance_id: &str, name: &str) -> Result<()> {
         return Err(LauncherError::NotFound(zip_path.to_string_lossy().into()));
     }
     let base = minecraft_dir(&instance_dir(paths, instance_id));
-    // 1) Манифестные записи mods/ — удалить в обоих состояниях имени.
+    let mods = base.join("mods");
+
+    // 1) Распаковать снапшот во временный каталог (записи — имена файлов в
+    //    корне). Свой архив — доверенный вход, но zip-slip-защита внутри
+    //    extract_zip; сбой здесь mods/ ещё не тронут.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let tmp = RestoreTempDir {
+        path: base.join(format!("mods-restore-{ts}-{}", std::process::id())),
+    };
+    let f = std::fs::File::open(crate::util::fs::long_path(&zip_path))?;
+    crate::util::zip::extract_zip(f, &tmp.path, |_p| {})?;
+
+    // 2) Распаковка удалась целиком — теперь можно удалять старые записи:
+    //    манифестные mods/-файлы в обоих состояниях имени.
     for e in load_content_manifest(paths, instance_id)
         .iter()
         .filter(|e| e.file.starts_with("mods/"))
@@ -168,10 +249,9 @@ pub fn restore(paths: &Paths, instance_id: &str, name: &str) -> Result<()> {
             }
         }
     }
-    // 2) Распаковать снапшот (записи — имена файлов в корне) внутрь mods/.
-    //    Свой архив — доверенный вход, но zip-slip-защита внутри extract_zip.
-    let f = std::fs::File::open(crate::util::fs::long_path(&zip_path))?;
-    crate::util::zip::extract_zip(f, &base.join("mods"), |_p| {})?;
+
+    // 3) Перенести распакованное в mods/ (локальный rename, поверх коллизий).
+    move_tree(&tmp.path, &mods)?;
     tracing::info!("снапшот {name} восстановлен в mods/ инстанса {instance_id}");
     Ok(())
 }
@@ -334,5 +414,83 @@ mod tests {
         let err = create(&paths, "ghost").unwrap_err();
         assert_eq!(err.code(), "not_found");
         assert!(create(&paths, "../evil").is_err());
+    }
+
+    /// P2-регресс: битая 2-я запись архива — restore падает с ошибкой, но
+    /// старые моды НЕ тронуты (раньше манифестные файлы удалялись ДО
+    /// распаковки, и сбой extract_zip означал потерю модов), временный
+    /// каталог распаковки убран.
+    #[test]
+    fn restore_with_broken_second_entry_leaves_mods_untouched() {
+        let (_d, paths, inst) = setup();
+        save_content_manifest(&paths, &inst.id, &[entry("mods/a.jar")]).unwrap();
+        // Свой zip с Stored-записями: содержимое лежит в сырых байтах архива,
+        // второй записи портим байт → CRC-ошибка при распаковке (1-я запись
+        // при этом распаковывается успешно — как раз сбой «на середине»).
+        use std::io::Write as _;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            w.start_file("a.jar", opts).unwrap();
+            w.write_all(b"AAA").unwrap();
+            w.start_file("b.jar", opts).unwrap();
+            w.write_all(b"BBBB-UNIQUE-MARKER").unwrap();
+            w.finish().unwrap();
+        }
+        let mut raw = buf.into_inner();
+        let marker = b"BBBB-UNIQUE-MARKER";
+        let pos = raw
+            .windows(marker.len())
+            .position(|w| w == marker)
+            .expect("маркер второй записи найден в сыром zip");
+        raw[pos] ^= 0xFF;
+        let dir = snapshots_dir(&paths, &inst.id);
+        std::fs::create_dir_all(long(&dir)).unwrap();
+        std::fs::write(long(&dir.join("mods-1000000000.zip")), &raw).unwrap();
+
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        let err = restore(&paths, &inst.id, "mods-1000000000.zip").unwrap_err();
+        assert!(
+            err.code() == "io" || err.code() == "zip",
+            "ожидалась ошибка распаковки: {err}"
+        );
+        assert_eq!(
+            std::fs::read(long(&mc.join("mods/a.jar"))).unwrap(),
+            b"AAA",
+            "старый манифестный мод не тронут при сбое распаковки"
+        );
+        assert_eq!(
+            std::fs::read(long(&mc.join("mods/b.jar.disabled"))).unwrap(),
+            b"BBB",
+            "выключенный мод тоже не тронут"
+        );
+        let no_temp = std::fs::read_dir(long(&mc))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .all(|e| !e.file_name().to_string_lossy().starts_with("mods-restore-"));
+        assert!(no_temp, "временный каталог распаковки убран");
+    }
+
+    /// P3: guard частичного снапшота — Err посреди create удаляет недописанный
+    /// zip (имя прошло бы is_snapshot_name и выглядело «восстановимым»),
+    /// disarm (успех) — оставляет файл.
+    #[test]
+    fn partial_snapshot_cleanup_removes_file_on_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("mods-1000000000.zip");
+        std::fs::write(&dest, b"partial").unwrap();
+        // Успешный путь: disarm — файл остаётся.
+        {
+            let mut g = PartialSnapshotCleanup::new(dest.clone());
+            g.disarm();
+        }
+        assert!(dest.exists(), "после disarm файл не удаляется");
+        // Ошибка посреди записи: guard уходит из scope armed.
+        {
+            drop(PartialSnapshotCleanup::new(dest.clone()));
+        }
+        assert!(!dest.exists(), "частичный zip удалён");
     }
 }

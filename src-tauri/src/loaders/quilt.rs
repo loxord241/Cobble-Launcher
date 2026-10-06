@@ -40,6 +40,12 @@ pub async fn install(
         )));
     }
     let id = profile.id.clone();
+    // Аудит 2026-10-06: id из удалённого meta — имя файла до записи.
+    if !crate::loaders::is_safe_version_id(&id) {
+        return Err(LauncherError::InvalidInput(format!(
+            "некорректный id версии из профиля Quilt: {id}"
+        )));
+    }
     crate::util::fs::atomic_write(
         &versions_dir.join(format!("{id}.json")),
         &serde_json::to_vec_pretty(&profile)?,

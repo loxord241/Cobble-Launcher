@@ -105,7 +105,16 @@ pub async fn install(
     version: &str,
 ) -> Result<String> {
     let installer = download_installer(client, cache_dir, mc, version).await?;
-    let id = crate::loaders::run_headless_installer(java_exe, &installer, game_dir)?;
+    // Аудит 2026-10-06: инсталлятор — синхронный процесс на минуты; в
+    // spawn_blocking (как в neoforge::install), иначе блокируется tokio-воркер.
+    let id = tokio::task::spawn_blocking({
+        let installer = installer.clone();
+        let java_exe = java_exe.to_path_buf();
+        let game_dir = game_dir.to_path_buf();
+        move || crate::loaders::run_headless_installer(&java_exe, &installer, &game_dir)
+    })
+    .await
+    .map_err(|e| LauncherError::Internal(format!("join инсталлятора: {e}")))??;
 
     let json = game_dir.join("versions").join(&id).join(format!("{id}.json"));
     if json.exists() {

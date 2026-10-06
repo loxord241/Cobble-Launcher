@@ -9,6 +9,10 @@ import { useSettings } from "../../state/settings";
 // Всего шагов мастера (индикатор прогресса и условие «Далее/Готово»).
 const TOTAL_STEPS = 3;
 
+// F12: ник офлайн-профиля — латиница/цифры/подчёркивание, 3–16 символов
+// (тот же регекс, что в Shell для быстрого добавления профиля).
+const NICK_RE = /^[A-Za-z0-9_]{3,16}$/;
+
 export default function Onboarding({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(1);
   // Направление перехода шага: сравниваем новый номер с предыдущим (D41).
@@ -25,6 +29,9 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   const { create } = useInstances();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Ник: пустой — «без профиля» (мастер пропустит создание), непустой и не по
+  // маске — инлайн-ошибка, «Далее» заблокирован (раньше мастер молчал).
+  const nickInvalid = nick.trim() !== "" && !NICK_RE.test(nick.trim());
 
   useEffect(() => {
     api.dataDir().then(setDataDir).catch(() => setDataDir("?"));
@@ -136,8 +143,20 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
               id="ob-nick"
               value={nick}
               onChange={(e) => setNick(e.target.value)}
-              className="mt-1 w-full rounded-md border border-border-app bg-bg px-3 py-2"
+              maxLength={16}
+              aria-invalid={nickInvalid || undefined}
+              aria-describedby={nickInvalid ? "ob-nick-err" : undefined}
+              className={`mt-1 w-full rounded-md border bg-bg px-3 py-2 ${
+                nickInvalid ? "border-error/60" : "border-border-app"
+              }`}
             />
+            {/* Инлайн-ошибка без словарных ключей: маска сама по себе интернациональна. */}
+            {nickInvalid && (
+              <p id="ob-nick-err" role="alert" className="mt-1 flex items-center gap-2 text-[13px] text-error">
+                <code className="rounded bg-bg px-1 font-mono">A-Z a-z 0-9 _</code>
+                <span className="font-mono">3–16</span>
+              </p>
+            )}
           </div>
         )}
 
@@ -187,6 +206,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             {step < TOTAL_STEPS ? (
               <button
                 onClick={() => setStep(step + 1)}
+                disabled={step === 2 && nickInvalid}
                 className="btn-primary"
               >
                 {t("onboarding.next")}

@@ -154,8 +154,12 @@ export default function HomePage({ query }: { query: string }) {
   const sentinelRef = useRef<HTMLDivElement>(null)
   const stuckRef = useRef<HTMLDivElement>(null)
   const [stuck, setStuck] = useState(false)
+  // Гонка поисковых ответов: устаревший запрос, пришедший позже свежего,
+  // не должен затирать выдачу (счётчик поколений запроса).
+  const searchSeqRef = useRef(0)
 
   const doSearch = async () => {
+    const mySeq = ++searchSeqRef.current
     setBusy(true)
     setError(null)
     try {
@@ -172,13 +176,16 @@ export default function HomePage({ query }: { query: string }) {
         // Категория уходит в ядро фасетом (одна — из селекта).
         category ? [category] : undefined,
       )
+      if (searchSeqRef.current !== mySeq) return // ответ устарел — отбрасываем
       setHits(r.hits)
       setTotal(r.total_hits)
       setSearched(true)
     } catch (e) {
+      if (searchSeqRef.current !== mySeq) return
       setError(apiErrorText(e))
     } finally {
-      setBusy(false)
+      // busy снимает только самое свежее поколение запроса.
+      if (searchSeqRef.current === mySeq) setBusy(false)
     }
   }
 
@@ -278,6 +285,12 @@ export default function HomePage({ query }: { query: string }) {
     return [...set].filter((c) => !LOADERS.includes(c)).sort()
   }, [hits])
 
+  // Выбранной категории нет в union текущей выдачи (пришёл пустой ответ,
+  // фильтры поменялись в обход селекта) — сбрасываем, иначе селект висит «мимо».
+  useEffect(() => {
+    if (category !== "" && searched && !categories.includes(category)) setCategory("")
+  }, [category, categories, searched])
+
   return (
     <div className="mx-auto flex max-w-[1100px] flex-col gap-4">
       {/* Маркер залипания sticky-панели: 0-высоты, невидим; когда панель
@@ -327,7 +340,7 @@ export default function HomePage({ query }: { query: string }) {
           <input
             value={localQuery}
             onChange={(e) => setLocalQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && void doSearch()}
+            onKeyDown={(e) => e.key === "Enter" && !busy && void doSearch()}
             placeholder={t(tab === "modpack" ? "home.searchPacks" : "home.searchMods")}
             className="w-full bg-transparent font-mono text-sm text-text outline-none placeholder:text-text-muted placeholder:font-ui"
             aria-label={t(tab === "modpack" ? "home.searchPacks" : "home.searchMods")}
@@ -348,7 +361,12 @@ export default function HomePage({ query }: { query: string }) {
         </select>
         <select
           value={loader}
-          onChange={(e) => setLoader(e.target.value)}
+          onChange={(e) => {
+            // Категорию сбрасываем вместе с загрузчиком: union категорий
+            // зависит и от него — выбранное могло там отсутствовать.
+            setLoader(e.target.value)
+            setCategory("")
+          }}
           disabled={busy}
           aria-label={t("home.filter.loader")}
           className="h-11 min-w-36 rounded-lg border border-border-strong bg-card px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40"

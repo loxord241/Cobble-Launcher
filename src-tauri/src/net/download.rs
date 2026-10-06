@@ -44,7 +44,6 @@ pub enum TaskState {
 pub struct TaskEntry {
     pub task: DownloadTask,
     pub state: TaskState,
-    pub attempts: u32,
     pub error: Option<String>,
 }
 
@@ -61,6 +60,11 @@ const THROTTLE_SAMPLE: usize = 64 * 1024;
 /// пауза/отмена подхватываются в пределах десятков миллисекунд.
 const THROTTLE_SLEEP_MIN: Duration = Duration::from_millis(10);
 const THROTTLE_SLEEP_MAX: Duration = Duration::from_millis(50);
+/// P2-таймаут: тишина при чтении (TTFB или пауза между чанками) дольше двух
+/// минут = «сервер не отвечает», ошибка ретраится штатно. Заменяет убранный
+/// общий 600-с таймаут клиента: reqwest без него ждёт вечно, а паузы
+/// троттлинга (F17) в этот таймаут не попадают — оборачивается только чтение.
+const READ_IDLE: Duration = Duration::from_secs(120);
 
 /// F17: сколько ждать перед записью чанка (семпла) при лимите `limit_kbps`.
 /// ZERO — лимит выключен или окно позволяет; >0 — бюджет переполнен, оценка —
@@ -97,10 +101,58 @@ fn instance_id_from_group(group: &str) -> Option<String> {
     (!id.is_empty()).then(|| id.to_string())
 }
 
+/// A51: маркер part-файла движка между именем цели и хэшем группы — формат
+/// задаёт `util::fs::part_path_unique` (`<имя>.part.<12 hex>`), менять его
+/// нельзя (ENV-2 завязан на уникальность по группе).
+pub const PART_FILE_MARK: &str = ".part.";
+
+/// A51: суффикс-маркер для уборщиков part-файлов (см. `part_files_in`).
+pub fn part_file_suffix() -> &'static str {
+    PART_FILE_MARK
+}
+
+/// A51: это имя — part-файл движка? После маркера ровно 12 hex-символов.
+/// Обычный `.part` одиночных атомарных записей (`atomic_write`) не матчится —
+/// уборщик его не трогает.
+pub fn is_engine_part_name(file_name: &str) -> bool {
+    match file_name.rsplit_once(PART_FILE_MARK) {
+        Some((_, tail)) => tail.len() == 12 && tail.bytes().all(|b| b.is_ascii_hexdigit()),
+        None => false,
+    }
+}
+
+/// A51: все part-файлы движка в каталоге — хвосты после краха процесса
+/// (нормальный путь: `.part` переименовывается или сносится в download_one).
+pub fn part_files_in(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        if let Some(name) = entry.file_name().to_str() {
+            if is_engine_part_name(name) {
+                out.push(entry.path());
+            }
+        }
+    }
+    out
+}
+
 /// Результат потоковой записи: дайджесты, посчитанные на лету.
 struct StreamedFile {
     sha1: String,
     sha512: String,
+}
+
+/// P3: классификация сбоя потоковой записи — локальный IO (диск полон, права,
+/// файл держит Defender) не ретраится полной перекачкой, транспорт — ретраится.
+#[derive(Debug)]
+enum StreamFail {
+    Cancelled,
+    /// Чтение стрима / тишина сервера — транспортная, ретраится до MAX_ATTEMPTS.
+    Network(LauncherError),
+    /// Создание/запись локального файла — фатально, одна попытка.
+    Local(LauncherError),
 }
 
 struct Runtime {
@@ -148,30 +200,34 @@ impl DownloadEngine {
         })
     }
 
-    /// Добавить задачи. Дедуп: тот же dest+sha или тот же URL — пропуск
-    /// (спека §4.4: одинаковые URL не качаются дважды).
+    /// Добавить задачи. Дедуп: тот же dest+sha или тот же URL+dest — пропуск
+    /// (спека §4.4: одинаковые URL не качаются дважды). P3: в ключ URL-дедупа
+    /// входит dest — тот же URL в другой dest это ДРУГАЯ задача и молча
+    /// не пропадает.
     pub fn add_tasks(&self, tasks: Vec<DownloadTask>) -> usize {
         let mut guard = self.rt.tasks.lock().unwrap();
         // PERF#6: дедуп за O(1) на задачу — раньше any() по всему вектору
         // давал O(N^2) на сборках с тысячами ассетов.
         let mut seen_file: std::collections::HashSet<String> =
             guard.iter().map(|e| file_key(&e.task)).collect();
-        let mut seen_url: std::collections::HashSet<String> =
-            guard.iter().map(|e| e.task.url.clone()).collect();
+        let mut seen_url: std::collections::HashSet<(String, PathBuf)> = guard
+            .iter()
+            .map(|e| (e.task.url.clone(), e.task.dest.clone()))
+            .collect();
         let mut added = 0;
         for t in tasks {
-            let dup = seen_file.contains(&file_key(&t)) || seen_url.contains(&t.url);
+            let dup = seen_file.contains(&file_key(&t))
+                || seen_url.contains(&(t.url.clone(), t.dest.clone()));
             if dup {
                 tracing::debug!("дедуп задачи: {}", t.url);
                 continue;
             }
             seen_file.insert(file_key(&t));
-            seen_url.insert(t.url.clone());
+            seen_url.insert((t.url.clone(), t.dest.clone()));
             self.rt.groups.lock().unwrap().insert(t.group.clone());
             guard.push(TaskEntry {
                 task: t,
                 state: TaskState::Pending,
-                attempts: 0,
                 error: None,
             });
             added += 1;
@@ -179,11 +235,22 @@ impl DownloadEngine {
         added
     }
 
+    /// P3: полный сброс флагов прерывания в начале `run()` — новый прогон
+    /// стартует с чистыми global_cancel/paused и всеми group-флагами (после
+    /// отмены движок не «кирпич»).
+    fn reset_run_flags(&self) {
+        self.rt.global_cancel.store(false, Ordering::SeqCst);
+        self.rt.paused.store(false, Ordering::SeqCst);
+        let map = self.rt.group_cancels.lock().unwrap();
+        for flag in map.values() {
+            flag.store(false, Ordering::SeqCst);
+        }
+    }
+
     /// Выполнить очередь до завершения (или паузы/отмены).
     /// Упавшие задачи остаются Failed — см. `queue_state` / `retry_failed`.
     pub async fn run(self: &Arc<Self>) -> Result<()> {
-        self.rt.global_cancel.store(false, Ordering::SeqCst);
-        self.rt.paused.store(false, Ordering::SeqCst);
+        self.reset_run_flags();
 
         let ticker = {
             let this = Arc::clone(self);
@@ -198,7 +265,10 @@ impl DownloadEngine {
             workers.push(tokio::spawn(async move { this.worker(sem).await }));
         }
         for w in workers {
-            let _ = w.await;
+            // Паника worker'а — не штатный выход, оставляем след в логе.
+            if let Err(e) = w.await {
+                tracing::warn!("worker очереди загрузок упал: {e}");
+            }
         }
         ticker.abort();
 
@@ -245,7 +315,6 @@ impl DownloadEngine {
                     }
                     Err(err) => {
                         e.state = TaskState::Failed;
-                        e.attempts = MAX_ATTEMPTS;
                         e.error = Some(err.to_string());
                         self.rt.failed_files.fetch_add(1, Ordering::SeqCst);
                     }
@@ -280,10 +349,13 @@ impl DownloadEngine {
         if task.dest.exists() {
             // Валидный кэш: совпал sha1, при его отсутствии — sha512; оба не
             // заданы — старое поведение, файл считается готовым.
+            // P3: ошибка ЧТЕНИЯ кэша (Defender/OneDrive придержали файл) — это
+            // НЕ «хэш не совпал»: dest не трогаем, наружу уходит обычная
+            // ретраибельная IO-ошибка (retry_failed/следующий прогон повторят).
             let existing_ok = if let Some(sha) = &task.sha1 {
-                sha1_file(&task.dest).ok().is_some_and(|a| a == *sha)
+                sha1_file(&task.dest)? == *sha
             } else if let Some(sha) = &task.sha512 {
-                sha512_file(&task.dest).ok().is_some_and(|a| a == *sha)
+                sha512_file(&task.dest)? == *sha
             } else {
                 return Ok(());
             };
@@ -319,7 +391,28 @@ impl DownloadEngine {
             if self.client.offline() {
                 return Err(LauncherError::OfflineMode(task.url.clone()));
             }
-            let resp = self.client.raw().get(&task.url).send().await;
+            // P2-таймаут: TTFB-тишина тоже ограничена READ_IDLE — иначе без
+            // общего таймаута клиента worker навечно зависнет с пермитом.
+            let resp = match tokio::time::timeout(
+                READ_IDLE,
+                self.client.raw().get(&task.url).send(),
+            )
+            .await
+            {
+                Ok(inner) => inner,
+                Err(_) => {
+                    // «Сервер не отвечает» — транспортная ошибка, ретрай штатно.
+                    if attempt == MAX_ATTEMPTS {
+                        return Err(LauncherError::network(format!(
+                            "сервер не отвечает более {} с: {}",
+                            READ_IDLE.as_secs(),
+                            task.url
+                        )));
+                    }
+                    tokio::time::sleep(backoff_delay(attempt)).await;
+                    continue;
+                }
+            };
             match resp {
                 Ok(r) if r.status().is_success() => {
                     match self.stream_to_file(r, &part, cancel).await {
@@ -353,11 +446,17 @@ impl DownloadEngine {
                             crate::util::fs::rename_with_retry(&part, &task.dest)?;
                             return Ok(());
                         }
-                        Err(LauncherError::Cancelled) => {
+                        Err(StreamFail::Cancelled) => {
                             let _ = crate::util::fs::remove_file_with_retry(&part);
                             return Err(LauncherError::Cancelled);
                         }
-                        Err(e) => {
+                        Err(StreamFail::Local(e)) => {
+                            // P3: локальный IO (диск полон, права) — полная
+                            // перекачка не поможет, фатально с первой попытки.
+                            let _ = crate::util::fs::remove_file_with_retry(&part);
+                            return Err(e);
+                        }
+                        Err(StreamFail::Network(e)) => {
                             let _ = crate::util::fs::remove_file_with_retry(&part);
                             if attempt == MAX_ATTEMPTS {
                                 return Err(e);
@@ -405,9 +504,10 @@ impl DownloadEngine {
         resp: reqwest::Response,
         part: &Path,
         cancel: &AtomicBool,
-    ) -> Result<StreamedFile> {
+    ) -> std::result::Result<StreamedFile, StreamFail> {
         use sha1::Digest as _;
-        let mut file = std::fs::File::create(part)?;
+        // P3: создание файла — локальный IO, фатально (без ретраев).
+        let mut file = std::fs::File::create(part).map_err(|e| StreamFail::Local(e.into()))?;
         let mut stream = resp.bytes_stream();
         let mut written: u64 = 0;
         let mut hasher1 = sha1::Sha1::new();
@@ -415,11 +515,27 @@ impl DownloadEngine {
         // F17: накопитель семпла — лимит общий на движок, поэтому перед записью
         // ждём разрешения в общем окне (см. throttle_wait).
         let mut sample: usize = 0;
-        while let Some(chunk) = stream.next().await {
+        loop {
             if cancel.load(Ordering::SeqCst) {
-                return Err(LauncherError::Cancelled);
+                return Err(StreamFail::Cancelled);
             }
-            let chunk = chunk?;
+            // P2-таймаут: каждый шаг чтения ограничен READ_IDLE — тишина
+            // дольше двух минут = «сервер не отвечает» (ретраится штатно).
+            // Паузы троттлинга ниже в этот таймаут не попадают.
+            let next = match tokio::time::timeout(READ_IDLE, stream.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    return Err(StreamFail::Network(LauncherError::network(format!(
+                        "сервер не отвечает более {} с ({})",
+                        READ_IDLE.as_secs(),
+                        part.display()
+                    ))));
+                }
+            };
+            let Some(chunk) = next else {
+                break;
+            };
+            let chunk = chunk.map_err(|e| StreamFail::Network(e.into()))?;
             sample = sample.saturating_add(chunk.len());
             if sample >= THROTTLE_SAMPLE {
                 self.throttle_wait(sample).await;
@@ -427,7 +543,9 @@ impl DownloadEngine {
             }
             hasher1.update(&chunk);
             hasher512.update(&chunk);
-            file.write_all(&chunk)?;
+            // P3: запись в локальный файл (диск полон, права) — фатально,
+            // полной перекачкой не ретраится.
+            file.write_all(&chunk).map_err(|e| StreamFail::Local(e.into()))?;
             written += chunk.len() as u64;
         }
         // Хвост меньше семпла тоже учитываем, иначе недосчёт ускорит следующий файл.
@@ -572,6 +690,8 @@ impl DownloadEngine {
     }
 
     /// Пауза: остановить скачивание, недокачанное остаётся Pending.
+    /// (Ленивых group-флагов пауза не имеет: `paused` глобальный и проверяется
+    /// worker'ом до взятия задачи — «no-op до первой задачи» здесь невозможен.)
     pub fn pause(&self) {
         self.rt.paused.store(true, Ordering::SeqCst);
         for flag in self.rt.group_cancels.lock().unwrap().values() {
@@ -580,10 +700,14 @@ impl DownloadEngine {
     }
 
     /// Отмена группы: мгновенно, `.part` чистятся (в download_one), задачи → Cancelled.
+    /// P2-отмена: флаг создаётся немедленно и с `true` — раньше отмена до
+    /// первой задачи группы была no-op (ленивый group_flag рождал свежий
+    /// флаг с false и отмена терялась).
     pub fn cancel_group(&self, group: &str) {
-        if let Some(flag) = self.rt.group_cancels.lock().unwrap().get(group) {
-            flag.store(true, Ordering::SeqCst);
-        }
+        let mut map = self.rt.group_cancels.lock().unwrap();
+        map.entry(group.to_string())
+            .or_insert_with(|| Arc::new(AtomicBool::new(true)))
+            .store(true, Ordering::SeqCst);
     }
 
     pub fn cancel_all(&self) {
@@ -600,7 +724,6 @@ impl DownloadEngine {
         for e in guard.iter_mut() {
             if e.state == TaskState::Failed {
                 e.state = TaskState::Pending;
-                e.attempts = 0;
                 e.error = None;
                 n += 1;
             }
@@ -718,5 +841,93 @@ mod tests {
         let guard = engine.rt.throttle_window.lock().unwrap();
         let (_, bytes) = guard.expect("окно должно существовать после первого резерва");
         assert_eq!(bytes, 512 * 1024);
+    }
+
+    /// P2-отмена: cancel_group создаёт флаг немедленно (с `true`) — раньше
+    /// отмена до первой задачи группы была no-op.
+    #[test]
+    fn cancel_group_precreates_true_flag() {
+        let engine = DownloadEngine::new(Arc::new(HttpClient::new(None).unwrap()), 1, EventBus::default());
+        engine.cancel_group("ghost");
+        let map = engine.rt.group_cancels.lock().unwrap();
+        let flag = map.get("ghost").expect("флаг существует до первой задачи группы");
+        assert!(flag.load(Ordering::SeqCst), "предсозданный флаг обязан быть true");
+    }
+
+    /// P3: reset_run_flags (начало run()) сбрасывает paused, global_cancel
+    /// и ВСЕ group-флаги — после отмены движок не «кирпич».
+    #[test]
+    fn reset_run_flags_clears_pause_and_group_flags() {
+        let engine = DownloadEngine::new(Arc::new(HttpClient::new(None).unwrap()), 1, EventBus::default());
+        engine.cancel_group("g");
+        engine.cancel_all();
+        engine.pause();
+        assert!(engine.rt.paused.load(Ordering::SeqCst));
+
+        engine.reset_run_flags();
+
+        assert!(!engine.rt.paused.load(Ordering::SeqCst));
+        assert!(!engine.rt.global_cancel.load(Ordering::SeqCst));
+        let map = engine.rt.group_cancels.lock().unwrap();
+        let flag = map.get("g").expect("флаг группы жив после сброса");
+        assert!(!flag.load(Ordering::SeqCst), "group-флаг сброшен новым прогоном");
+    }
+
+    /// P3: дедуп по (URL, dest): тот же URL в другой dest — РАЗНАЯ задача и
+    /// не пропадает; тот же URL+dest по-прежнему дедупится.
+    #[test]
+    fn dedup_key_includes_dest() {
+        let engine = DownloadEngine::new(Arc::new(HttpClient::new(None).unwrap()), 1, EventBus::default());
+        let mk = |id: &str, dest: PathBuf| DownloadTask {
+            id: id.into(),
+            url: "http://127.0.0.1:1/x".into(),
+            dest,
+            sha1: None,
+            sha512: None,
+            size: None,
+            group: "g".into(),
+            priority: 0,
+        };
+        let d1 = PathBuf::from("C:/tmp/one.jar");
+        let d2 = PathBuf::from("C:/tmp/two.jar");
+        assert_eq!(engine.add_tasks(vec![mk("a", d1.clone())]), 1);
+        // Тот же URL+dest — дедуп.
+        assert_eq!(engine.add_tasks(vec![mk("b", d1)]), 0);
+        // Тот же URL, другой dest — новая задача, не должна молча пропасть.
+        assert_eq!(engine.add_tasks(vec![mk("c", d2)]), 1);
+    }
+
+    /// A51: предикат part-имён движка — ровно 12 hex после маркера; общий
+    /// `.part` атомарных записей и мусор не матчатся.
+    #[test]
+    fn engine_part_name_predicate() {
+        assert!(is_engine_part_name("out.bin.part.0123456789ab"));
+        assert!(is_engine_part_name("a.jar.part.ABCDEF012345"));
+        assert!(!is_engine_part_name("out.bin.part"), "общий .part — не движковый");
+        assert!(!is_engine_part_name("out.bin"));
+        assert!(!is_engine_part_name("out.bin.part.0123456789a"), "11 hex");
+        assert!(!is_engine_part_name("out.bin.part.0123456789abc"), "13 hex");
+        assert!(!is_engine_part_name("out.bin.part.zzzzzzzzzzzz"), "не hex");
+    }
+
+    /// A51: part_path_unique даёт имя, которое распознаёт предикат, а
+    /// part_files_in находит именно движковые хвосты.
+    #[test]
+    fn part_files_in_finds_engine_parts_only() {
+        let dir = std::env::temp_dir().join("mcl-a51-part-helpers");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("x.jar");
+        let p = part_path_unique(&dest, "instance:abc");
+        assert!(is_engine_part_name(p.file_name().unwrap().to_str().unwrap()));
+
+        std::fs::write(&p, b"tail").unwrap();
+        std::fs::write(dir.join("x.jar.part"), b"atomic_write").unwrap();
+        std::fs::write(dir.join("x.jar"), b"done").unwrap();
+
+        let found = part_files_in(&dir);
+        assert_eq!(found.len(), 1, "только движковый .part.<hex>: {found:?}");
+        assert_eq!(found[0], p);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

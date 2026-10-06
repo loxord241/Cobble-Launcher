@@ -311,7 +311,10 @@ export default function InstancesPage({
           showSnapshots={settings?.showSnapshots ?? false}
           showOld={settings?.showOldVersions ?? false}
           onClose={() => setCreating(false)}
-          onCreated={() => setCreating(false)}
+          onCreated={() => {
+            setCreating(false);
+            void load(); // после создания инстанс должен сразу появиться в списке
+          }}
         />
       )}
 

@@ -63,6 +63,8 @@ pub async fn install_project(
     version_id: Option<&str>,
 ) -> Result<Vec<ContentEntry>> {
     // Тип проекта → каталог; для модов фильтр по загрузчику инстанса.
+    // id/slug уходит в URL запроса — мусор из IPC-границы отсекаем до сети.
+    api::validate_id_or_slug(project_id)?;
     let project = api::project(&client, project_id).await?;
     let project_type = project
         .get("project_type")
@@ -124,6 +126,8 @@ async fn install_recursive(
     if !ctx.visited.insert(project_id.to_string()) {
         return Ok(()); // уже устанавливали
     }
+    // Зависимости приходят из ответа API, но id уходит в URL — guard и здесь.
+    api::validate_id_or_slug(project_id)?;
 
     let versions = api::project_versions(&client, project_id).await?;
     let version = if let Some(vid) = version_id {
@@ -267,6 +271,25 @@ mod tests {
         let paths = Paths::new(dir.path().to_path_buf());
         paths.ensure_dirs().unwrap();
         paths
+    }
+
+    /// id с `../` или пробелом — InvalidInput ДО сети: клиент в офлайн-режиме,
+    /// любая попытка похода в сеть вернула бы OfflineMode (F16), а не
+    /// invalid_input. Подмена пути запроса (`../`) отсекается на границе.
+    #[tokio::test]
+    async fn bad_project_id_fails_before_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(&dir);
+        let inst = Instance::new("Тест", "1.21.1");
+        let client = Arc::new(HttpClient::new(None).unwrap());
+        client.set_offline(true);
+        let engine = DownloadEngine::new(client.clone(), 2, EventBus::default());
+        for bad in ["../evil", "a b", ""] {
+            let err = install_project(&paths, client.clone(), engine.clone(), &inst, bad, None)
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "{bad:?}: {err}");
+        }
     }
 
     async fn spawn_axum(app: axum::Router) -> String {

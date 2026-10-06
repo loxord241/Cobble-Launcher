@@ -176,6 +176,15 @@ pub fn content_manifest_path(paths: &crate::paths::Paths, id: &str) -> PathBuf {
 
 /// Загрузить манифест контента (нет файла → пустой).
 pub fn load_content_manifest(paths: &crate::paths::Paths, id: &str) -> Vec<ContentEntry> {
+    // P0-барьер: traversal-id (`../x`) собрал бы путь манифеста снаружи
+    // каталога инстансов. Сигнатура возвращает Vec (десятки вызователей в
+    // других модулях), поэтому InvalidInput наружу не отдать — чужой путь
+    // просто не читается, деградация до «манифеста нет»; запись извне
+    // блокирует valid_id в save_content_manifest.
+    if valid_id(id).is_err() {
+        tracing::warn!("load_content_manifest: некорректный id инстанса {id:?}");
+        return Vec::new();
+    }
     let path = content_manifest_path(paths, id);
     let long = long_path(&path);
     if !long.exists() {
@@ -199,6 +208,9 @@ pub fn save_content_manifest(
     id: &str,
     entries: &[ContentEntry],
 ) -> Result<()> {
+    // P0-барьер: traversal-id собрал бы путь манифеста снаружи каталога
+    // инстансов (запись чужого/произвольного content-manifest.json).
+    valid_id(id)?;
     let data = serde_json::to_vec_pretty(entries)?;
     atomic_write(&content_manifest_path(paths, id), &data)
 }
@@ -283,6 +295,14 @@ const FORBIDDEN_JVM_SUBSTRINGS: &[&str] = &[
     "-agentlib",
     "-agentpath",
     "-xrun",
+    // JMX-удалённое управление: -Dcom.sun.management.jmxremote.port/
+    // authenticate/ssl поднимает сетевого агента — чтение файлов и
+    // исполнение кода на машине ещё до окна игры.
+    "com.sun.management.jmxremote",
+    // Подмена bootclasspath и патч системных модулей — подгрузка
+    // произвольного кода в JVM при старте.
+    "-xbootclasspath",
+    "--patch-module",
     // Колбэк-формы запрещаем только с "=" — безобидный
     // -XX:+HeapDumpOnOutOfMemoryError без "=" остаётся разрешённым.
     "onerror=",
@@ -428,9 +448,45 @@ pub const UNIQUE_SUBDIRS: &[&str] = &[
 
 pub const UNIQUE_FILES: &[&str] = &["options.txt", "servers.dat", "usercache.json"];
 
+/// Уборка недоделанного дубликата (P3): сбой копирования/записи после
+/// создания каталога-копии оставлял полупустой инстанс — он попадал в список
+/// и выглядел обычным. Убираем best-effort по образцу PrepareCleanup (run.rs).
+struct DuplicateCleanup {
+    dst_dir: PathBuf,
+    armed: bool,
+}
+
+impl DuplicateCleanup {
+    fn new(dst_dir: PathBuf) -> Self {
+        Self { dst_dir, armed: true }
+    }
+
+    /// Всё скопировано и сохранено — убирать нечего.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DuplicateCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        tracing::warn!(
+            "дублирование прервано: чищу недоделанную копию {}",
+            self.dst_dir.display()
+        );
+        if let Err(e) = std::fs::remove_dir_all(long_path(&self.dst_dir)) {
+            tracing::warn!("копия {} не удалена: {e}", self.dst_dir.display());
+        }
+    }
+}
+
 /// Дублирование: общее (клиент, библиотеки, нативы) — hardlink из исходника,
 /// уникальное (saves/mods/config…) — копия (спека §6.12). Запись в hardlink
 /// через одну из копий меняла бы обе — поэтому уникальное копируется байтами.
+/// Вместе с minecraft/ переносятся versions/ (JSON загрузчиков) и
+/// content-manifest.json, иначе копия теряла загрузчик и базу обновлений.
 pub fn duplicate(paths: &crate::paths::Paths, id: &str) -> Result<Instance> {
     let src_dir = instance_dir(paths, id);
     if running_pid(&src_dir).is_some() {
@@ -442,14 +498,33 @@ pub fn duplicate(paths: &crate::paths::Paths, id: &str) -> Result<Instance> {
     let mut inst = Instance::new(&format!("{} (копия)", src.name), &src.mc_version);
     inst.loader = src.loader.clone();
     inst.loader_version = src.loader_version.clone();
+    // P2: копия указывает на тот же version JSON, что и исходник, — без
+    // этого запускался бы чистый mc_version без загрузчика.
+    inst.version_id = src.version_id.clone();
     inst.ram_mb = src.ram_mb;
     inst.jvm_flags = src.jvm_flags.clone();
     inst.game_args_extra = src.game_args_extra.clone();
     inst.notes = src.notes.clone();
     let dst_dir = instance_dir(paths, &inst.id);
     std::fs::create_dir_all(long_path(&dst_dir))?;
+    let mut cleanup = DuplicateCleanup::new(dst_dir.clone());
     store::copy_tree_mixed(&minecraft_dir(&src_dir), &minecraft_dir(&dst_dir))?;
+    // P2: JSON загрузчиков живут в versions/ самого инстанса (спека §6.3),
+    // а не в minecraft/ — переносим отдельным проходом.
+    store::copy_tree_mixed(
+        &instance_versions_dir(paths, id),
+        &instance_versions_dir(paths, &inst.id),
+    )?;
+    // P2: манифест контента — база обновлений установленного контента.
+    let src_manifest = content_manifest_path(paths, id);
+    if src_manifest.exists() {
+        std::fs::copy(
+            long_path(&src_manifest),
+            long_path(&content_manifest_path(paths, &inst.id)),
+        )?;
+    }
     save(paths, &inst)?;
+    cleanup.disarm();
     Ok(inst)
 }
 
@@ -564,8 +639,42 @@ pub fn running_pid(instance_dir: &Path) -> Option<u32> {
     }
 }
 
+/// P1-барьер: доказать, что каталог — настоящий инстанс лаунчера, а не точка
+/// traversal-а: внутри читается `instance.json`, его `id` проходит valid_id и
+/// равен имени каталога. Произвольный каталог с подсунутым `.lock` (через
+/// который kill убивал бы чужой PID) или без instance.json проверку не
+/// проходит.
+fn ensure_own_instance_dir(dir: &Path) -> Result<()> {
+    let data = std::fs::read(long_path(&instance_file(dir))).map_err(|_| {
+        LauncherError::NotFound(format!("instance.json не найден в {}", dir.display()))
+    })?;
+    let inst: Instance = serde_json::from_slice(&data).map_err(|e| {
+        LauncherError::InvalidInput(format!("битый instance.json в {}: {e}", dir.display()))
+    })?;
+    valid_id(&inst.id)?;
+    let name_matches = dir
+        .file_name()
+        .map(|n| n.to_string_lossy() == inst.id)
+        .unwrap_or(false);
+    if !name_matches {
+        return Err(LauncherError::InvalidInput(format!(
+            "каталог {} не соответствует id инстанса {:?}",
+            dir.display(),
+            inst.id
+        )));
+    }
+    Ok(())
+}
+
 /// Kill: завершить дерево процессов игры (спека §6.10) и снять lock.
+///
+/// P1-барьер: каталог обязан быть настоящим инстансом (ensure_own_instance_dir).
+/// Ограничение: в сигнатуре нет `Paths`, поэтому строгая проверка «внутри
+/// instances_dir()» здесь недоступна — её даёт `kill_checked(paths, id)`,
+/// куда и должна переехать IPC-команда; низкоуровневый `kill(Path)` оставлен,
+/// чтобы не ломать чужой commands/mod.rs сменой сигнатуры.
 pub fn kill(instance_dir: &Path) -> Result<()> {
+    ensure_own_instance_dir(instance_dir)?;
     let Some(pid) = running_pid(instance_dir) else {
         let _ = std::fs::remove_file(long_path(&instance_dir.join(".lock")));
         return Ok(());
@@ -589,6 +698,21 @@ pub fn kill(instance_dir: &Path) -> Result<()> {
     }
     let _ = std::fs::remove_file(long_path(&instance_dir.join(".lock")));
     Ok(())
+}
+
+/// Kill по id с полным барьером (P1): valid_id + каталог строго внутри
+/// instances_dir(). Новый код (IPC-команды) должен вызывать её вместо
+/// низкоуровневого `kill(Path)`.
+pub fn kill_checked(paths: &crate::paths::Paths, id: &str) -> Result<()> {
+    valid_id(id)?;
+    let dir = instance_dir(paths, id);
+    if !dir.starts_with(paths.instances_dir()) {
+        return Err(LauncherError::InvalidInput(format!(
+            "каталог инстанса {id:?} вне {}",
+            paths.instances_dir().display()
+        )));
+    }
+    kill(&dir)
 }
 
 /// Запущенные инстансы (id, PID) — для process_status в UI.
@@ -673,7 +797,13 @@ impl Drop for InstanceLock {
         if let Ok(text) = std::fs::read_to_string(&long) {
             let file_pid = text.trim().parse::<u32>().unwrap_or(0);
             let exp = self.expected_pid.load(std::sync::atomic::Ordering::SeqCst);
-            if file_pid == exp || file_pid == std::process::id() {
+            // Только точное равенство с expected_pid. Прежняя запасная ветка
+            // «file_pid == PID лаунчера» снимала ЧУЖОЙ lock: после быстрого
+            // перезапуска новый acquire успевал записать свой PID, а дроп
+            // старого объекта стирал его файл. Окно запуска (в файле ещё PID
+            // лаунчера до записи child-pid) закрывает логика кражи протухшего
+            // лока в acquire: процесс-писатель мёртв → pid_alive=false.
+            if file_pid == exp {
                 let _ = std::fs::remove_file(&long);
             }
         }
@@ -1105,5 +1235,187 @@ mod tests {
         assert_eq!(legacy.quick_play_world, None, "старый файл: мир не задан");
         assert_eq!(legacy.quick_play_server, None, "старый файл: сервер не задан");
         assert_eq!(legacy.account_id, None, "старый файл: профиль глобальный");
+    }
+
+    /// P0-барьер: traversal-id не собирает путь манифеста снаружи каталога
+    /// инстансов — запись отклоняется с InvalidInput, чтение не уходит наружу.
+    #[test]
+    fn content_manifest_rejects_traversal_id() {
+        let (_d, paths) = test_paths();
+        // «Чужой» манифест снаружи instances/ — цель traversal-id.
+        let outside = paths.root().join("backups");
+        std::fs::create_dir_all(long_path(&outside)).unwrap();
+        let victim = outside.join("content-manifest.json");
+        std::fs::write(&victim, b"[]").unwrap();
+
+        for id in ["..\\backups", "../backups", "..", ".", "a/b", ""] {
+            let err = save_content_manifest(&paths, id, &[]).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "id {id:?} отклонён");
+        }
+        assert!(long_path(&victim).exists(), "чужой файл не создан/не тронут");
+
+        // Чтение: сигнатура возвращает Vec, поэтому деградация до пустого
+        // списка (см. комментарий у функции) — главное, что за пределы
+        // каталога инстансов мы не читаем.
+        assert!(load_content_manifest(&paths, "../backups").is_empty());
+        assert!(load_content_manifest(&paths, "..\\backups").is_empty());
+    }
+
+    /// P1-барьер: kill действует только на настоящие каталоги инстансов.
+    /// Произвольный каталог с подсунутым `.lock` отклоняется (иначе kill
+    /// гасил бы чужой PID), чужой `.lock` не сносится; kill_checked даёт
+    /// полный барьер valid_id + «внутри instances_dir()».
+    #[test]
+    fn kill_rejects_foreign_dir_and_traversal() {
+        let (_d, paths) = test_paths();
+        let foreign = paths.root().join("somewhere");
+        std::fs::create_dir_all(long_path(&foreign)).unwrap();
+        std::fs::write(foreign.join(".lock"), "4294967295").unwrap();
+
+        let err = kill(&foreign).unwrap_err();
+        assert_eq!(err.code(), "not_found", "каталог без instance.json — не инстанс: {err}");
+        assert!(foreign.join(".lock").exists(), "чужой .lock не снесён");
+
+        // Полный барьер: traversal-id отклоняется до всяких действий.
+        for id in ["..\\somewhere", "../somewhere", "..", "a/b", ""] {
+            let err = kill_checked(&paths, id).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "id {id:?} отклонён");
+        }
+
+        // Легитимный инстанс (есть instance.json, нет .lock) — kill безвреден.
+        let inst = Instance::new("kill-ok", "1.20.1");
+        save(&paths, &inst).unwrap();
+        let dir = instance_dir(&paths, &inst.id);
+        kill(&dir).unwrap();
+        kill_checked(&paths, &inst.id).unwrap();
+        assert!(dir.join("instance.json").exists(), "instance.json на месте");
+    }
+
+    /// P2: дубликат переносит versions/ (JSON загрузчиков), content-manifest.json
+    /// и version_id — без этого копия теряла загрузчик и базу обновлений.
+    #[test]
+    fn duplicate_carries_versions_manifest_and_version_id() {
+        let (_d, paths) = test_paths();
+        let mut inst = Instance::new("src", "1.20.1");
+        inst.version_id = Some("fabric-loader-0.16.0".into());
+        save(&paths, &inst).unwrap();
+        // Фейковый JSON загрузчика в versions/ инстанса.
+        let vjson = instance_versions_dir(&paths, &inst.id).join("fabric-loader-0.16.0.json");
+        std::fs::create_dir_all(long_path(vjson.parent().unwrap())).unwrap();
+        std::fs::write(&vjson, br#"{"id":"fabric-loader-0.16.0"}"#).unwrap();
+        save_content_manifest(
+            &paths,
+            &inst.id,
+            &[ContentEntry {
+                kind: ContentKind::Mod,
+                file: "mods/a.jar".into(),
+                source: ContentSource::Local,
+                project_id: None,
+                version_id: None,
+                sha1: None,
+                url: None,
+                enabled: true,
+            }],
+        )
+        .unwrap();
+
+        let copy = duplicate(&paths, &inst.id).unwrap();
+        assert_eq!(
+            copy.version_id.as_deref(),
+            Some("fabric-loader-0.16.0"),
+            "version_id перенесён в копию"
+        );
+        let vjson2 = instance_versions_dir(&paths, &copy.id).join("fabric-loader-0.16.0.json");
+        assert_eq!(
+            std::fs::read(&vjson2).unwrap(),
+            br#"{"id":"fabric-loader-0.16.0"}"#,
+            "JSON загрузчика скопирован"
+        );
+        let manifest = load_content_manifest(&paths, &copy.id);
+        assert_eq!(manifest.len(), 1, "content-manifest.json скопирован");
+        assert_eq!(manifest[0].file, "mods/a.jar");
+    }
+
+    /// P3: сбой посреди копирования не оставляет полупустую копию — guard
+    /// удаляет каталог-копию целиком (best-effort), наружу идёт исходная ошибка.
+    #[cfg(windows)]
+    #[test]
+    fn duplicate_cleans_partial_copy_on_error() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let (_d, paths) = test_paths();
+        let inst = Instance::new("src", "1.20.1");
+        save(&paths, &inst).unwrap();
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        // Обычный файл (libraries — hardlink) успешно копируется, а
+        // заблокированный лежит в mods/ — уникальный каталог, он идёт прямым
+        // std::fs::copy, который на sharing violation роняет копирование
+        // посреди дороги.
+        let ok = mc.join("libraries/a/ok.jar");
+        std::fs::create_dir_all(long_path(ok.parent().unwrap())).unwrap();
+        std::fs::write(&ok, b"ok").unwrap();
+        let locked = mc.join("mods/locked.jar");
+        std::fs::create_dir_all(long_path(locked.parent().unwrap())).unwrap();
+        std::fs::write(&locked, b"locked").unwrap();
+        // Хэндл без share-режима (share_mode 0): любой чужой open этого файла
+        // падает с sharing violation — детерминированный сбой копирования.
+        let _guard = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(long_path(&locked))
+            .unwrap();
+
+        assert!(duplicate(&paths, &inst.id).is_err(), "сбой прерывает дублирование");
+        let left = std::fs::read_dir(long_path(&paths.instances_dir()))
+            .unwrap()
+            .count();
+        assert_eq!(left, 1, "полупустая копия удалена, остался только исходник");
+        assert_eq!(list(&paths).len(), 1);
+    }
+
+    /// P2: drop снимает `.lock` только при точном совпадении с expected_pid.
+    /// Прежняя запасная ветка «file_pid == PID лаунчера» стирала чужой файл:
+    /// после быстрого перезапуска новый acquire успевал записать свой PID.
+    #[test]
+    fn lock_drop_requires_exact_expected_pid() {
+        let (_d, paths) = test_paths();
+        let inst = Instance::new("x", "1.20.1");
+        save(&paths, &inst).unwrap();
+        let dir = instance_dir(&paths, &inst.id);
+
+        let lock = InstanceLock::acquire(&dir).unwrap();
+        // expected давно заменён (child), а в файле — PID текущего процесса:
+        // раньше запасная ветка удаляла такой файл, теперь нет.
+        lock.set_child_pid(7777);
+        std::fs::write(dir.join(".lock"), std::process::id().to_string()).unwrap();
+        drop(lock);
+        assert!(
+            dir.join(".lock").exists(),
+            "лок с PID ≠ expected другим drop'ом не снимается"
+        );
+        let _ = std::fs::remove_file(dir.join(".lock"));
+    }
+
+    /// P2-JVM: JMX-удалённое управление, подмена bootclasspath и патч модулей
+    /// отклоняются; легитимные -Xmx/-XX проходят как раньше.
+    #[test]
+    fn validate_settings_rejects_jmx_and_bootclasspath() {
+        let mut inst = Instance::new("x", "1.20.1");
+        for flag in [
+            "-Dcom.sun.management.jmxremote.port=1616",
+            "-Dcom.sun.management.jmxremote.authenticate=false",
+            "-Dcom.sun.management.jmxremote.ssl=false",
+            "-Xbootclasspath/a:evil.jar",
+            "--patch-module=java.base=evil.jar",
+        ] {
+            inst.jvm_flags = vec![flag.to_string()];
+            let err = validate_instance_settings(&inst).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "флаг {flag:?} отклонён");
+        }
+        inst.jvm_flags = vec!["-Xmx2048M".into(), "-XX:+UseG1GC".into()];
+        assert!(
+            validate_instance_settings(&inst).is_ok(),
+            "легитимные флаги не задеты"
+        );
     }
 }

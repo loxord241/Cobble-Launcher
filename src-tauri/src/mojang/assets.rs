@@ -76,9 +76,11 @@ pub fn plan_asset_tasks(index: &AssetIndexJson, assets_store: &Path, group: &str
     index
         .objects
         .values()
-        .map(|o| {
-            let prefix = &o.hash[..2];
-            DownloadTask {
+        .filter_map(|o| {
+            // Аудит 2026-10-06: хэш короче 2 символов — мусор в индексе,
+            // префикс не построить: честный warn+skip вместо паники на срезе.
+            let prefix = o.hash.get(0..2)?;
+            Some(DownloadTask {
                 id: format!("asset:{}", o.hash),
                 url: format!("{RESOURCES_BASE}/{prefix}/{}", o.hash),
                 dest: assets_store.join(prefix).join(&o.hash),
@@ -87,7 +89,7 @@ pub fn plan_asset_tasks(index: &AssetIndexJson, assets_store: &Path, group: &str
                 size: Some(o.size),
                 group: group.to_string(),
                 priority: 0, // ассеты — наименьший приоритет (спека §4.4)
-            }
+            })
         })
         .collect()
 }
@@ -103,7 +105,13 @@ pub fn materialize_virtual(
 
     let mut n = 0;
     for (name, obj) in &index.objects {
-        let src = assets_store.join(&obj.hash[..2]).join(&obj.hash);
+        // Аудит 2026-10-06: хэш короче 2 символов — префикс не построить,
+        // пропуск с warn (один мусорный объект не ломает материализацию).
+        let Some(prefix) = obj.hash.get(0..2) else {
+            tracing::warn!("ассет {name}: некорректный хэш {:?} — пропущен", obj.hash);
+            continue;
+        };
+        let src = assets_store.join(prefix).join(&obj.hash);
         let dst = virtual_dir.join(name);
         let dst_long = crate::util::fs::long_path(&dst);
         if dst_long.exists() {
@@ -175,5 +183,44 @@ mod tests {
         let modern: AssetIndexJson = serde_json::from_str(r#"{"objects": {}}"#).unwrap();
         assert!(!needs_virtual("5", &modern));
         assert!(needs_virtual("pre-1.6", &modern));
+    }
+
+    /// Аудит 2026-10-06: хэш короче 2 символов (мусор в индексе) не паникует
+    /// на срезе — задачи с ним не создаются, легитимные проходят.
+    #[test]
+    fn plan_skips_short_hash_without_panic() {
+        let idx: AssetIndexJson = serde_json::from_str(
+            r#"{"objects": {
+                "good.ogg": {"hash": "abcdef1234567890", "size": 1},
+                "bad1": {"hash": "a", "size": 2},
+                "bad2": {"hash": "", "size": 3}
+            }}"#,
+        )
+        .unwrap();
+        let tasks = plan_asset_tasks(&idx, Path::new("/store"), "assets");
+        assert_eq!(tasks.len(), 1, "только объект с валидным хэшем");
+        assert_eq!(tasks[0].id, "asset:abcdef1234567890");
+    }
+
+    /// materialize_virtual: короткий хэш — warn+skip (не рвёт весь прогон),
+    /// легитимный объект материализуется.
+    #[test]
+    fn materialize_skips_short_hash_without_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx: AssetIndexJson = serde_json::from_str(
+            r#"{"objects": {
+                "good.ogg": {"hash": "abcdef1234567890", "size": 1},
+                "bad": {"hash": "x", "size": 2}
+            }}"#,
+        )
+        .unwrap();
+        let store = dir.path().join("store");
+        std::fs::create_dir_all(store.join("ab")).unwrap();
+        std::fs::write(store.join("ab").join("abcdef1234567890"), b"data").unwrap();
+        let virt = dir.path().join("virtual");
+        let n = materialize_virtual(&idx, &store, &virt).unwrap();
+        assert_eq!(n, 1, "мусорный объект пропущен, валидный — на месте");
+        assert!(virt.join("good.ogg").exists());
+        assert!(!virt.join("bad").exists());
     }
 }

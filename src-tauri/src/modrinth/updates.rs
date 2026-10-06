@@ -114,6 +114,8 @@ fn project_gone(err: &LauncherError) -> bool {
 /// (`batch_latest_versions`), иначе тестовый mock-сервер (TEST_API_BASE) этот
 /// путь не перехватывает и тесты уходят во внешнюю сеть.
 async fn project_versions(client: &HttpClient, project_id: &str) -> Result<Vec<api::Version>> {
+    // id уходит в URL запроса: мусорный id из манифеста отсекаем до сети.
+    api::validate_id_or_slug(project_id)?;
     let url = format!("{}/project/{project_id}/version", api_base());
     client.get_json_retry(&url).await
 }
@@ -270,6 +272,9 @@ pub async fn update_all(
     }
 
     let mut plan: Vec<PlannedUpdate> = Vec::new();
+    // Дедуп по dest: две записи манифеста с одним filename качали бы один
+    // файл в один temp и свопали бы его дважды — вторая запись лишняя.
+    let mut planned_dests: std::collections::HashSet<std::path::PathBuf> = Default::default();
 
     for check in &checks {
         let from_batch = manifest
@@ -306,6 +311,19 @@ pub async fn update_all(
         else {
             continue;
         };
+        // Хэшгвард: без sha1 и без sha512 из доверенного API не качаем —
+        // непроверенное обновление хуже старого проверенного файла. Запись
+        // пропускается, остальные обновляются (update_all не роняем).
+        let sha1 = file.hashes.get("sha1").cloned();
+        let sha512 = file.hashes.get("sha512").cloned();
+        if sha1.is_none() && sha512.is_none() {
+            tracing::warn!(
+                "обновление {}: у файла {} нет хэша — пропускаю (непроверенное не качаем)",
+                check.file,
+                file.filename
+            );
+            continue;
+        }
         let Some(old_entry) = manifest.iter().find(|e| e.file == check.file) else {
             continue;
         };
@@ -315,14 +333,22 @@ pub async fn update_all(
         // бы инстанс сломанным.
         let dir = crate::modrinth::install::dir_for_kind(old_entry.kind);
         let dest = game_dir.join(dir).join(&file.filename);
+        if !planned_dests.insert(dest.clone()) {
+            tracing::warn!(
+                "обновление {}: файл {} уже в плане обновления — дубликат пропускаю",
+                check.file,
+                file.filename
+            );
+            continue;
+        }
         let temp = dest.with_file_name(format!(".update-{}", file.filename));
         plan.push(PlannedUpdate {
             task: DownloadTask {
                 id: format!("update:{}", file.filename),
                 url: file.url.clone(),
                 dest: temp.clone(),
-                sha1: file.hashes.get("sha1").cloned(),
-                sha512: file.hashes.get("sha512").cloned(),
+                sha1,
+                sha512,
                 size: Some(file.size),
                 group: format!("instance:{}", inst.id),
                 priority: 25,
@@ -360,18 +386,41 @@ pub async fn update_all(
             plan.len()
         )));
     }
+    // Отмена посреди скачки — как в install_mrpack: честный Cancelled наружу,
+    // temp'ы снести, старые файлы не тронуты.
+    if st.cancelled > 0 {
+        for p in &plan {
+            crate::util::fs::remove_file_ignore(&p.temp);
+        }
+        return Err(LauncherError::Cancelled);
+    }
 
     // Всё скачалось: свопы (старый → корзина, temp → место) и одна запись
-    // манифеста. Сбой свопа (антивирус держит файл) — честная ошибка,
-    // манифест ещё не тронут.
+    // манифеста. Транзакционность: свопы собираем в список сделанных, сбой на
+    // k-м разворачивает предыдущие (новый файл снести, старый вернуть из
+    // корзины) — иначе осталась бы половина обновлённого инстанса, а манифест
+    // врал бы про файлы на диске. save_content_manifest — только после полного
+    // успеха.
+    let mut done: Vec<SwapRecord> = Vec::new();
     for p in &plan {
-        swap_updated_file(&p.old_path, &p.temp, &p.dest, &trash, &p.filename)?;
-        if let Some(e) = manifest.iter_mut().find(|e| e.file == p.check_file) {
-            e.file = p.new_file_field.clone();
-            e.version_id = Some(p.version_id.clone());
-            e.sha1 = p.new_sha1.clone();
+        match swap_updated_file(&p.old_path, &p.temp, &p.dest, &trash, &p.filename) {
+            Ok(rec) => {
+                if let Some(e) = manifest.iter_mut().find(|e| e.file == p.check_file) {
+                    e.file = p.new_file_field.clone();
+                    e.version_id = Some(p.version_id.clone());
+                    e.sha1 = p.new_sha1.clone();
+                }
+                done.push(rec);
+                updated += 1;
+            }
+            Err(e) => {
+                rollback_swaps(&done);
+                for p in &plan {
+                    crate::util::fs::remove_file_ignore(&p.temp);
+                }
+                return Err(e);
+            }
         }
-        updated += 1;
     }
     crate::instances::save_content_manifest(paths, &inst.id, &manifest)?;
     Ok(updated)
@@ -392,13 +441,23 @@ fn chrono_suffix() -> String {
 /// возвращается из корзины, temp сносится, запись манифеста не тронута:
 /// инстанс остаётся рабочим. Если не вышел даже возврат — честно называем
 /// путь в корзине: файл не потерян, его можно вернуть вручную.
+/// Возвращает запись сделанного свопа — для отката в update_all, если сбой
+/// случился на ПОЗЖЕ идущем файле.
+#[derive(Debug)]
+struct SwapRecord {
+    dest: std::path::PathBuf,
+    /// Куда уехал старый файл; None — старого на диске не было.
+    in_trash: Option<std::path::PathBuf>,
+    old_path: std::path::PathBuf,
+}
+
 fn swap_updated_file(
     old_path: &std::path::Path,
     temp: &std::path::Path,
     dest: &std::path::Path,
     trash: &std::path::Path,
     label: &str,
-) -> Result<()> {
+) -> Result<SwapRecord> {
     if old_path.exists() {
         std::fs::create_dir_all(crate::util::fs::long_path(trash))?;
     }
@@ -425,7 +484,36 @@ fn swap_updated_file(
         }
         return Err(e);
     }
-    Ok(())
+    Ok(SwapRecord {
+        dest: dest.to_path_buf(),
+        in_trash: trashed,
+        old_path: old_path.to_path_buf(),
+    })
+}
+
+/// Откат уже сделанных свопов (сбой на k-м файле не должен оставлять половину
+/// обновлённого инстанса): новый файл сносим с места, старый возвращаем из
+/// корзины. Ошибки только логируются — важнее вернуть наружу исходную причину.
+fn rollback_swaps(done: &[SwapRecord]) {
+    for rec in done.iter().rev() {
+        if let Err(e) = std::fs::remove_file(crate::util::fs::long_path(&rec.dest)) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    "откат обновления: новый файл {} не снесён: {e}",
+                    rec.dest.display()
+                );
+            }
+        }
+        if let Some(in_trash) = &rec.in_trash {
+            if let Err(e) = crate::util::fs::rename_with_retry(in_trash, &rec.old_path) {
+                tracing::warn!(
+                    "откат обновления: старый файл не вернулся из корзины {} → {}: {e}",
+                    in_trash.display(),
+                    rec.old_path.display()
+                );
+            }
+        }
+    }
 }
 
 /// Самозалечивающийся манифест (legacy-модпаки): записи без `project_id`
@@ -538,6 +626,66 @@ mod tests {
         assert!(old.exists(), "старый мод обязан вернуться из корзины");
         assert_eq!(std::fs::read(&old).unwrap(), b"old");
         assert!(!temp.exists(), "temp сносится при сбое");
+    }
+
+    /// Транзакционность пачки обновлений: сбой на 2-м свопе обязан вернуть
+    /// 1-й файл на место (новый снесён, старый из корзины), ошибка видна
+    /// наружу — иначе инстанс остался бы наполовину обновлённым, а манифест
+    /// (пишется только после полного успеха) врал бы про файлы на диске.
+    /// Сценарий мокается на уровне свопов: сетевой прогон update_all целиком
+    /// требует TEST_API_BASE, а тот — один тест на модуль (A43).
+    #[test]
+    fn swap_failure_on_second_file_rolls_back_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("mods");
+        std::fs::create_dir_all(&game).unwrap();
+        let trash = game.join(".trash");
+
+        // 1-й своп проходит: старый a.jar → корзина, temp занимает его место.
+        std::fs::write(game.join("a.jar"), b"old-a").unwrap();
+        let temp_a = game.join(".update-new-a.jar");
+        std::fs::write(&temp_a, b"new-a").unwrap();
+        let first = swap_updated_file(
+            &game.join("a.jar"),
+            &temp_a,
+            &game.join("a.jar"),
+            &trash,
+            "new-a.jar",
+        )
+        .unwrap();
+
+        // 2-й своп заранее обречён: temp не существует (как будто скачка не
+        // оставила файла) — rename честно падает.
+        std::fs::write(game.join("b.jar"), b"old-b").unwrap();
+        let temp_b = game.join(".update-new-b.jar");
+        let err = swap_updated_file(
+            &game.join("b.jar"),
+            &temp_b,
+            &game.join("b.jar"),
+            &trash,
+            "new-b.jar",
+        )
+        .unwrap_err();
+        assert!(matches!(err, LauncherError::Io(_)), "{err}");
+
+        rollback_swaps(&[first]);
+
+        assert_eq!(
+            std::fs::read(game.join("a.jar")).unwrap(),
+            b"old-a",
+            "1-й файл вернулся на место после сбоя на 2-м"
+        );
+        assert!(!temp_a.exists(), "temp 1-го файла был потреблён свопом");
+        assert_eq!(
+            std::fs::read(game.join("b.jar")).unwrap(),
+            b"old-b",
+            "2-й файл сбой не тронул"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&trash)
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(leftovers.is_empty(), "корзина пуста после отката: {leftovers:?}");
     }
 
     fn test_paths(dir: &tempfile::TempDir) -> Paths {

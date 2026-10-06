@@ -79,17 +79,29 @@ impl AppState {
         let limit = self.settings.read().await.speed_limit_kbps;
         self.http().await.set_speed_limit(limit);
         let e = self.engine().await;
-        self.engines
-            .lock()
-            .unwrap()
-            .insert(group.to_string(), e.clone());
-        e
+        // Вставка атомарна (entry-паттерн под одним захватом мьютекса): пока
+        // создавали движок, конкурентный вызов мог зарегистрировать свой —
+        // тогда берём его, а наш дубль выбрасываем. Раньше check-then-insert
+        // оставлял в реестре последний вставленный, а вызыватели одной группы
+        // держали разные движки: engine_done первого не снимал загрузки второго.
+        let mut engines = self.engines.lock().unwrap();
+        engines.entry(group.to_string()).or_insert_with(|| e).clone()
     }
 
     /// Отменить активную загрузку группы (если движок ещё жив).
     pub fn cancel_engine_group(&self, group: &str) {
         if let Some(e) = self.engines.lock().unwrap().remove(group) {
             e.cancel_group(group);
+        }
+    }
+
+    /// «Стоп» инстанса гасит и его фоновые операции — ремонт, контент,
+    /// обновление, оптимизацию: у каждой своя суффикс-группа в реестре
+    /// движков (instance_repair/content_install/content_update_all/
+    /// instance_optimize), иначе они переживали бы остановку игры.
+    pub fn cancel_instance_op_groups(&self, instance_id: &str) {
+        for suffix in [":repair", ":content", ":update", ":optimize"] {
+            self.cancel_engine_group(&format!("instance:{instance_id}{suffix}"));
         }
     }
 
@@ -260,7 +272,12 @@ pub async fn instance_launch(
                         .unwrap_or_default(),
                     reason: e.to_string(),
                 });
-                crate::auth::offline::identity(&player)
+                // Имя из IPC не доверяем: офлайн-uuid считается от того же
+                // санитизированного ника, который увидит игра (как в
+                // account_add_offline, ENV-13).
+                crate::auth::offline::identity(&crate::util::names::sanitize_user_name(
+                    &player, "Player",
+                ))
             }
         };
         // ely.by и свой authlib-сервер: authlib-injector + -javaagent.
@@ -601,6 +618,8 @@ pub async fn content_installed(
     state: State<'_, AppState>,
     instance_id: String,
 ) -> Result<Vec<crate::instances::ContentEntry>> {
+    // IPC-граница: traversal-id читал бы манифест вне каталога инстанса (A23).
+    instances::valid_id(&instance_id)?;
     Ok(crate::instances::load_content_manifest(&state.paths, &instance_id))
 }
 
@@ -611,6 +630,9 @@ pub async fn content_toggle(
     instance_id: String,
     file: String,
 ) -> Result<crate::instances::ContentEntry> {
+    // IPC-граница: traversal-id уводил бы переименование вне каталога
+    // инстанса — валидация до любых дисковых операций (A23).
+    instances::valid_id(&instance_id)?;
     // B9: переименование файлов занятой игры = Sharing Violation на Windows.
     if instances::running_pid(&instances::instance_dir(&state.paths, &instance_id)).is_some() {
         return Err(LauncherError::InstanceRunning(instance_id.clone()));
@@ -630,6 +652,9 @@ pub async fn content_remove(
     instance_id: String,
     file: String,
 ) -> Result<()> {
+    // IPC-граница: traversal-id уводил бы удаление вне каталога инстанса —
+    // валидация до любых дисковых операций (A23).
+    instances::valid_id(&instance_id)?;
     // B9: удаление файлов занятой игры = Sharing Violation на Windows.
     if instances::running_pid(&instances::instance_dir(&state.paths, &instance_id)).is_some() {
         return Err(LauncherError::InstanceRunning(instance_id.clone()));
@@ -832,12 +857,18 @@ pub async fn ram_guide() -> Result<crate::optimize::RamGuide> {
 
 #[tauri::command]
 pub async fn instance_kill(state: State<'_, AppState>, instance_id: String) -> Result<OkMsg> {
+    // IPC-граница: без валидации traversal-id уходил бы в чужой каталог
+    // (instance_dir/kill) — как в instance_force_unlock (A23).
+    instances::valid_id(&instance_id)?;
     let was_launching = {
         let mut launching = state.launching.lock().await;
         launching.remove(&instance_id)
     };
     if was_launching {
         state.cancel_engine_group(&format!("instance:{instance_id}"));
+        // «Стоп» гасит и фоновые операции инстанса (ремонт/контент/обновление/
+        // оптимизация) — иначе они переживали бы остановку.
+        state.cancel_instance_op_groups(&instance_id);
         state.bus.emit(crate::events::LauncherEvent::LaunchState {
             instance_id: instance_id.clone(),
             phase: crate::events::LaunchPhase::Exited,
@@ -858,11 +889,13 @@ pub async fn instance_kill(state: State<'_, AppState>, instance_id: String) -> R
         // Если PID уже неактивен, гарантируем очистку .lock и отправку события Exited в UI
         let _ = std::fs::remove_file(crate::util::fs::long_path(&inst_dir.join(".lock")));
         state.bus.emit(crate::events::LauncherEvent::LaunchState {
-            instance_id,
+            instance_id: instance_id.clone(),
             phase: crate::events::LaunchPhase::Exited,
             exit_code: None,
         });
     }
+    // Основной путь пройден — тоже гасим суффикс-группы фоновых операций.
+    state.cancel_instance_op_groups(&instance_id);
     Ok(OkMsg { ok: true })
 }
 
@@ -1637,12 +1670,34 @@ pub async fn settings_import(
     })
     .await
     .map_err(join_err)??;
-    let settings = crate::settings::import_json(&data)?;
-    // Тот же путь, что settings_set: файл + свап стейта + офлайн-флаг.
+    let mut settings = crate::settings::import_json(&data)?;
+    // Тот же путь, что settings_set: сначала proxy_url — свап HttpClient с
+    // валидацией (невалидный → ошибка в UI, настройки НЕ сохраняются), затем
+    // файл + свап стейта + офлайн-флаг/лимит скорости.
+    let normalized = settings.proxy_url.take().filter(|s| !s.trim().is_empty());
+    settings.proxy_url = normalized;
+    let proxy = settings.proxy_url.clone();
+    let old_proxy = state.settings.read().await.proxy_url.clone();
+    if proxy != old_proxy {
+        match HttpClient::new(proxy.as_deref()) {
+            Ok(new_http) => {
+                *state.http.write().await = Arc::new(new_http);
+                tracing::info!("HTTP-клиент обновлен с новым proxy_url (импорт настроек)");
+            }
+            Err(e) => {
+                return Err(LauncherError::InvalidInput(format!(
+                    "некорректный proxy_url: {e}"
+                )));
+            }
+        }
+    }
     settings.save(&state.paths.settings_file())?;
     let work_offline = settings.work_offline;
+    let speed_limit = settings.speed_limit_kbps;
     *state.settings.write().await = settings.clone();
-    state.http().await.set_offline(work_offline);
+    let http = state.http().await;
+    http.set_offline(work_offline);
+    http.set_speed_limit(speed_limit);
     Ok(settings)
 }
 
@@ -1744,6 +1799,17 @@ pub async fn game_resources(
         .map_err(join_err)
 }
 
+/// Ранний отказ запуска: инстанс уже в процессе запуска. Только проверка —
+/// вставку в launching и снятие делает сам instance_launch, поэтому ошибка
+/// apply_safe_mode/save в instance_launch_safe не оставляет id в launching
+/// (раньше он вставлял сам, и при ошибке инстанс навсегда висел «запускается»).
+fn ensure_not_launching(launching: &std::collections::HashSet<String>, id: &str) -> Result<()> {
+    if launching.contains(id) {
+        return Err(LauncherError::InvalidInput("запуск уже идёт".into()));
+    }
+    Ok(())
+}
+
 /// Запуск в безопасном режиме (F30): сброс JVM-флагов + отключение шейдеров.
 #[tauri::command]
 pub async fn instance_launch_safe(
@@ -1752,16 +1818,11 @@ pub async fn instance_launch_safe(
     player: String,
 ) -> Result<OkMsg> {
     let mut inst = instances::load(&state.paths, &id)?;
-    let launching_check = {
-        let launching = state.launching.lock().await;
-        launching.contains(&id)
-    };
-    if launching_check {
-        return Err(LauncherError::InvalidInput("запуск уже идёт".into()));
-    }
+    // Только проверка для раннего отказа (см. ensure_not_launching): вставку
+    // в launching делает сам instance_launch.
     {
-        let launch_id = id.clone();
-        state.launching.lock().await.insert(launch_id);
+        let launching = state.launching.lock().await;
+        ensure_not_launching(&launching, &id)?;
     }
     let paths = state.paths.clone();
     let measures = tauri::async_runtime::spawn_blocking(move || {
@@ -1953,11 +2014,16 @@ pub async fn data_dir(state: State<'_, AppState>) -> Result<String> {
 #[tauri::command]
 pub async fn logs_tail(state: State<'_, AppState>, lines: u32) -> Result<String> {
     let log = state.paths.logs_dir().join("launcher.log");
-    if !log.exists() {
-        return Ok(String::new());
-    }
-    let data = crate::mclogs::read_tail(&crate::util::fs::long_path(&log), 2 * 1024 * 1024)?;
+    // Чтение файла — дисковый I/O: не в async-потоке (A20/D14), как у соседей.
     // ENV-9: launcher.log может разрастись — читаем хвост до 2 МБ, а не весь файл.
+    let data = tauri::async_runtime::spawn_blocking(move || {
+        if !log.exists() {
+            return Ok(Vec::new());
+        }
+        crate::mclogs::read_tail(&crate::util::fs::long_path(&log), 2 * 1024 * 1024)
+    })
+    .await
+    .map_err(join_err)??;
     let text = String::from_utf8_lossy(&data);
     let all: Vec<&str> = text.lines().collect();
     let skip = all.len().saturating_sub(lines as usize);
@@ -2276,6 +2342,54 @@ mod tests {
         // Лок снят — операция разрешена.
         let _ = std::fs::remove_file(inst_dir.join(".lock"));
         assert!(ensure_not_running(&paths, &inst.id).is_ok());
+    }
+
+    /// P0-фикс: traversal-id контентных команд (content_installed/toggle/
+    /// remove) отбраковывается валидатором id ПЕРВОЙ строкой, до дисковых
+    /// операций: «../x» и «a/b» не должны ничего создать/прочитать вне
+    /// каталога инстанса (A23).
+    #[test]
+    fn content_commands_reject_traversal_ids_before_disk_ops() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+
+        for bad in ["../x", "a/b"] {
+            // Та же первая строка, что в content_installed/content_toggle/
+            // content_remove: InvalidInput до загрузки манифеста и диска.
+            let err = instances::valid_id(bad).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "id {bad:?} отбракован");
+        }
+
+        // До доменных операций дело не дошло: внутри instances/ пусто.
+        assert!(
+            std::fs::read_dir(paths.instances_dir())
+                .unwrap()
+                .next()
+                .is_none(),
+            "traversal-id не должен трогать диск"
+        );
+    }
+
+    /// F30-фикс: launch_safe при занятом launching — InvalidInput, и проверка
+    /// ничего не вставляет в launching (вставку/снятие делает только
+    /// instance_launch: ошибка apply_safe_mode/save больше не оставляет
+    /// инстанс навсегда «запускается»).
+    #[test]
+    fn launch_safe_busy_launching_rejects_without_leaving_id() {
+        let mut launching = std::collections::HashSet::new();
+        launching.insert("busy".to_string());
+
+        // Занятый id: ранний отказ.
+        let err = ensure_not_launching(&launching, "busy").unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+
+        // Свободный id: проверка проходит и ничего не вставляет.
+        assert!(ensure_not_launching(&launching, "free").is_ok());
+        assert!(
+            !launching.contains("free"),
+            "вставку в launching делает только instance_launch"
+        );
     }
 
     /// Смена версии обновляет поля инстанса: mc_version новый, version_id

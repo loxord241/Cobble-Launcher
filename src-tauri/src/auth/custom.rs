@@ -163,7 +163,7 @@ pub async fn login(
     if client.offline() {
         return Err(LauncherError::OfflineMode(format!("вход {base}")));
     }
-    let resp: AuthResp = client
+    let resp = client
         .raw()
         .post(format!("{base}/api/auth/authenticate"))
         .json(&serde_json::json!({
@@ -174,13 +174,16 @@ pub async fn login(
             "requestUser": false
         }))
         .send()
-        .await?
-        .error_for_status()
-        .map_err(|e| {
-            LauncherError::InvalidInput(format!("{base}: неверный логин/пароль ({e})"))
-        })?
-        .json()
         .await?;
+    if !resp.status().is_success() {
+        // 4xx — плохие креды, 5xx — сервер недоступен (аудит 2026-10-06;
+        // классификатор общий с ely.rs, метка — адрес сервера).
+        return Err(crate::auth::ely::classify_login_status(
+            &base,
+            resp.status().as_u16(),
+        ));
+    }
+    let resp: AuthResp = resp.json().await?;
     crate::util::redact::register_secret(&resp.access_token);
     Ok(crate::auth::ely::Session {
         // Как у ely: refreshToken отдельным полем не приходит — при refresh

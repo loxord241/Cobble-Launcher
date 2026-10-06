@@ -74,6 +74,8 @@ pub fn part_path(dest: &Path) -> PathBuf {
 /// и тот же у задач одной группы (один движок) — путь детерминирован, чужие
 /// группы друг друга не трогают. Сигнатура `part_path` не меняется: она
 /// используется одиночными атомарными записями (`atomic_write`).
+/// Уборка хвостов (A51): матчит `file_name` вида `<имя>.part.` + ровно 12 hex —
+/// хелперы в `crate::net::download::{part_file_suffix, part_files_in}`.
 pub fn part_path_unique(dest: &Path, key: &str) -> PathBuf {
     let mut name = dest
         .file_name()

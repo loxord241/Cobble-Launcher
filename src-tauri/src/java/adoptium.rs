@@ -212,7 +212,14 @@ async fn download_to_file(
     };
     let mut done: u64 = resumed;
     let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    // Тишина в стриме дольше 2 минут = «сервер не отвечает» (зеркало
+    // READ_IDLE движка): общий таймаут у HttpClient снят (аудит 2026-10-06),
+    // без этого капа молчащий сервер подвешивал установку JRE навечно.
+    const READ_IDLE: std::time::Duration = std::time::Duration::from_secs(120);
+    while let Some(chunk) = tokio::time::timeout(READ_IDLE, stream.next())
+        .await
+        .map_err(|_| crate::errors::LauncherError::network("Adoptium не отвечает"))?
+    {
         let chunk = chunk?;
         hasher.update(&chunk);
         out.write_all(&chunk)?;

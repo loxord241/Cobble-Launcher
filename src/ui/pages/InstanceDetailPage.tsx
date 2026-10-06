@@ -16,6 +16,7 @@ import {
   FolderOpen,
   Image as ImageIcon,
   ImageOff,
+  LockOpen,
   MonitorSmartphone,
   MoreVertical,
   Pencil,
@@ -26,6 +27,7 @@ import {
   Settings as SettingsIcon,
   Share,
   ShieldCheck,
+  Sparkles,
   HelpCircle,
   Square,
   Trash2,
@@ -158,6 +160,9 @@ export default function InstanceDetailPage({
   useEffect(() => {
     if (loaded && !alive) onBack();
   }, [loaded, alive, onBack]);
+
+  // Новая иконка могла быть валидной — флаг протухания шапки сбрасываем.
+  useEffect(() => setHeroIconBroken(false), [inst?.icon]);
 
   // Фокус на первый пункт меню при открытии — навигация стрелками/Tab.
   useEffect(() => {
@@ -511,6 +516,23 @@ export default function InstanceDetailPage({
                       setTab("logs");
                     }}
                   />
+                  {/* Выравниваем кебаб страницы с меню списка (InstanceKebabMenu). */}
+                  <MenuItem
+                    icon={Sparkles}
+                    label={t("instances.optimize")}
+                    disabled={busy}
+                    onClick={() => {
+                      closeMenu();
+                      void api
+                        .instanceOptimize(instanceId)
+                        .then((applied) => {
+                          // Ядро возвращает список применённых твиков — показываем.
+                          if (applied.length > 0) setNotice(applied.join(" · "));
+                          void load();
+                        })
+                        .catch((e) => setError(apiErrorText(e)));
+                    }}
+                  />
                   <MenuItem
                     icon={Archive}
                     label={t("instances.backup.menu")}
@@ -585,6 +607,22 @@ export default function InstanceDetailPage({
                       void api
                         .instanceShortcut(instanceId)
                         .then((r) => setNotice(t("instances.shortcut.done", { path: r.path })))
+                        .catch((e) => setError(apiErrorText(e)));
+                    }}
+                  />
+                  {/* F27: снять зависшую .lock-блокировку; busy не мешает —
+                      блокировка бывает именно у незапущенной игры. */}
+                  <MenuItem
+                    icon={LockOpen}
+                    label={t("instances.forceUnlock")}
+                    onClick={() => {
+                      closeMenu();
+                      void api
+                        .instanceForceUnlock(instanceId)
+                        .then(() => {
+                          setNotice(t("instances.forceUnlock.done"));
+                          void load();
+                        })
                         .catch((e) => setError(apiErrorText(e)));
                     }}
                   />
@@ -985,11 +1023,16 @@ export default function InstanceDetailPage({
 
       {renameOpen && <RenameInstanceModal instance={inst} onClose={() => setRenameOpen(false)} />}
 
-      {/* Смена версии MC: успех — notice + перечитываем инстанс из ядра. */}
+      {/* Смена версии MC: успех — notice + перечитываем инстанс из ядра;
+          закрытие после ошибки тоже перечитывает — список покажет актуальную
+          версию, если смена удалась частично. */}
       {changeVersionOpen && (
         <ChangeVersionModal
           instance={inst}
-          onClose={() => setChangeVersionOpen(false)}
+          onClose={() => {
+            setChangeVersionOpen(false);
+            void load();
+          }}
           onDone={(version) => {
             setChangeVersionOpen(false);
             setNotice(t("changeVersion.done", { version }));
@@ -1088,7 +1131,8 @@ function LogsPanel({
 
   const copyLogs = async () => {
     try {
-      await navigator.clipboard.writeText(lines.join("\n"));
+      // Копируем то, что видно на экране (с учётом фильтра/архива), а не весь лог.
+      await navigator.clipboard.writeText(shown.join("\n"));
       setCopied(true);
       if (copyTimer.current !== null) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => {
@@ -1147,11 +1191,15 @@ function LogsPanel({
         <button
           disabled={lines.length === 0 || shareState?.kind === "busy"}
           onClick={() => {
-            setShareState({ kind: "busy", text: "" });
-            api
-              .logShareMclogs(instanceId)
-              .then((r) => setShareState({ kind: "ok", text: r.url }))
-              .catch((e) => setShareState({ kind: "err", text: apiErrorText(e) }));
+            // SEC-4: публикация лога на внешний сервис — только с подтверждением.
+            void (async () => {
+              if (!(await askConfirm(t("logs.mclogs.confirm")))) return;
+              setShareState({ kind: "busy", text: "" });
+              api
+                .logShareMclogs(instanceId)
+                .then((r) => setShareState({ kind: "ok", text: r.url }))
+                .catch((e) => setShareState({ kind: "err", text: apiErrorText(e) }));
+            })();
           }}
           className="btn-ghost btn-sm"
         >

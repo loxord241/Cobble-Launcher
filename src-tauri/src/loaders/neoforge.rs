@@ -24,22 +24,46 @@ pub async fn versions(client: &HttpClient) -> Result<Vec<String>> {
 }
 
 /// Префикс семейства NeoForge для версии MC (см. схему именования выше).
+/// Точное семейство (аудит 2026-10-06): MC 1.21.1 → «21.1.», но MC 1.21 →
+/// «21.0.» — прежний «21.» матчит и 21.0.x, и 21.1.x.
 fn family_prefix(mc: &str) -> String {
-    if let Some(rest) = mc.strip_prefix("1.") {
-        format!("{rest}.")
-    } else {
-        format!("{mc}.")
+    // Отбрасываем ведущее «1.»: NeoForge-мажор = minor MC («1.21.1» → 21.1.x).
+    let rest = mc.strip_prefix("1.").unwrap_or(mc);
+    let mut parts = rest.split('.');
+    let minor = parts.next().unwrap_or("0");
+    // Нет третьего компонента MC (просто «1.21») — патч-семейство 0.
+    let patch = parts.next().unwrap_or("0");
+    format!("{minor}.{patch}.")
+}
+
+/// Версия «major.minor.patch» → числовой кортеж: лексикографика String
+/// ставит «21.1.9» выше «21.1.251» (аудит 2026-10-06). Некорректные — skip.
+fn parse_version(v: &str) -> Option<(u32, u32, u32)> {
+    let mut it = v.split('.');
+    let major = it.next()?.parse().ok()?;
+    let minor = it.next()?.parse().ok()?;
+    let patch = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None; // лишние компоненты — не наш формат
     }
+    Some((major, minor, patch))
+}
+
+/// Свежая стабильная версия в списке для семейства (чистая функция —
+/// покрывается тестами без сети).
+fn latest_in(prefix: &str, versions: &[String]) -> Option<String> {
+    versions
+        .iter()
+        .filter(|v| v.starts_with(prefix) && !v.ends_with("-beta"))
+        .filter_map(|v| parse_version(v).map(|t| (t, v)))
+        .max_by_key(|(t, _)| *t)
+        .map(|(_, v)| v.clone())
 }
 
 /// Свежая стабильная версия NeoForge для указанного MC.
 pub async fn latest_for_mc(client: &HttpClient, mc: &str) -> Result<String> {
     let all = versions(client).await?;
-    let prefix = family_prefix(mc);
-    all.iter()
-        .filter(|v| v.starts_with(&prefix) && !v.ends_with("-beta"))
-        .max()
-        .cloned()
+    latest_in(&family_prefix(mc), &all)
         .ok_or_else(|| LauncherError::VersionNotFound(format!("NeoForge для {mc}")))
 }
 
@@ -220,5 +244,54 @@ mod tests {
         let client = HttpClient::new(None).unwrap();
         let v = versions(&client).await.unwrap();
         assert!(v.iter().any(|s| s.starts_with("1.21")));
+    }
+
+    /// Аудит 2026-10-06: точное семейство — «1.21.1» даёт 21.1., а «1.21»
+    /// (без патча) даёт 21.0., не матчит 21.1.x.
+    #[test]
+    fn family_prefix_is_exact_family() {
+        assert_eq!(family_prefix("1.21.1"), "21.1.");
+        assert_eq!(family_prefix("1.21"), "21.0.");
+        assert_eq!(family_prefix("1.20.1"), "20.1.");
+        assert_eq!(family_prefix("1.20"), "20.0.");
+        // MC без ведущего «1.» (схема 26.3.x → MC 26.3) — как есть.
+        assert_eq!(family_prefix("26.3"), "26.3.");
+    }
+
+    /// Аудит 2026-10-06: max по числовому кортежу, не по строке —
+    /// лексикографика ставила бы «21.1.9» выше «21.1.251».
+    #[test]
+    fn latest_in_picks_numeric_max() {
+        let v: Vec<String> = ["21.1.9", "21.1.251", "21.1.100"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(latest_in("21.1.", &v).as_deref(), Some("21.1.251"));
+    }
+
+    /// Бета-фильтр сохранён: суффиксные версии в выборе не участвуют.
+    #[test]
+    fn latest_in_skips_beta_and_keeps_stable() {
+        let v: Vec<String> = ["21.1.9-beta", "21.1.8", "21.1.10-beta"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(latest_in("21.1.", &v).as_deref(), Some("21.1.8"));
+    }
+
+    /// Чужое семейство и мусор вне формата m.m.p отсеиваются; пустой выбор —
+    /// None (latest_for_mc превратит в VersionNotFound).
+    #[test]
+    fn latest_in_filters_foreign_family_and_garbage() {
+        let v: Vec<String> = ["21.0.55", "21.1.9", "не-версия", "21.1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(latest_in("21.1.", &v).as_deref(), Some("21.1.9"));
+        assert_eq!(latest_in("99.9.", &v), None);
+        // «21.1» без третьей компоненты — не наш формат (skip), не паника.
+        assert_eq!(parse_version("21.1"), None);
+        assert_eq!(parse_version("21.1.2.3"), None);
+        assert_eq!(parse_version("21.1.251"), Some((21, 1, 251)));
     }
 }

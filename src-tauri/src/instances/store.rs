@@ -5,14 +5,27 @@ use crate::errors::Result;
 use std::path::{Path, PathBuf};
 
 /// Hardlink `src → dst` с фолбэком на копию (другой том).
-pub fn link_or_copy(src: &Path, dst: &Path) -> Result<()> {
+/// `expected_sha1` — эталон задачи prepare: существующий `dst` больше не верится
+/// на слово (усечённый хвост сбойной копии выглядел бы как «уже на месте») —
+/// сверяем его sha1: совпал → ок; не совпал/не читается → удаляем и линкуем
+/// заново. `None` — сверки нет (деревья дубликата без хэшей, прежний контракт).
+pub fn link_or_copy(src: &Path, dst: &Path, expected_sha1: Option<&str>) -> Result<()> {
     let src_l = crate::util::fs::long_path(src);
     let dst_l = crate::util::fs::long_path(dst);
     if let Some(parent) = dst_l.parent() {
         std::fs::create_dir_all(parent)?;
     }
     if dst_l.exists() {
-        return Ok(()); // уже на месте
+        let matches = match expected_sha1 {
+            None => true, // хэша нет — доверяем наличию, как раньше
+            Some(want) => crate::util::fs::sha1_file(&dst_l)
+                .map(|got| got.eq_ignore_ascii_case(want))
+                .unwrap_or(false), // не читается — считаем битым
+        };
+        if matches {
+            return Ok(()); // уже на месте
+        }
+        crate::util::fs::remove_file_ignore(&dst_l);
     }
     if std::fs::hard_link(&src_l, &dst_l).is_err() {
         // A22: сбой копирования (диск полон/оборвалось чтение) оставлял бы
@@ -138,7 +151,8 @@ pub fn copy_tree_mixed(src_root: &Path, dst_root: &Path) -> Result<()> {
             }
             std::fs::copy(crate::util::fs::long_path(&file), crate::util::fs::long_path(&dst))?;
         } else {
-            link_or_copy(&file, &dst)?;
+            // Дерево дубликата: хэшей у файлов нет — прежний контракт (наличие = годность).
+            link_or_copy(&file, &dst, None)?;
         }
     }
     Ok(())
@@ -232,11 +246,40 @@ mod tests {
         let src = dir.path().join("src.jar");
         std::fs::write(&src, b"data").unwrap();
         let dst = dir.path().join("sub/dir/dst.jar");
-        link_or_copy(&src, &dst).unwrap();
+        link_or_copy(&src, &dst, None).unwrap();
         assert_eq!(std::fs::read(&dst).unwrap(), b"data");
         assert_eq!(hardlink_count(&dst), 2, "hardlink на том же томе");
         // Повтор — идемпотентно
-        link_or_copy(&src, &dst).unwrap();
+        link_or_copy(&src, &dst, None).unwrap();
+    }
+
+    /// Битый dst (усечённый хвост сбойной копии) при известном хэше задачи
+    /// пересоздаётся из src, а не признаётся «уже на месте»; валидный dst
+    /// при повторе остаётся, а нечитаемый (каталог) даёт ошибку.
+    #[test]
+    fn link_or_copy_replaces_corrupted_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.jar");
+        std::fs::write(&src, b"good-payload").unwrap();
+        let want = crate::util::fs::sha1_bytes(b"good-payload");
+        let dst = dir.path().join("dst.jar");
+        std::fs::write(&dst, b"trunc").unwrap(); // усечённый файл с прошлого сбоя
+
+        link_or_copy(&src, &dst, Some(&want)).unwrap();
+        assert_eq!(
+            std::fs::read(&dst).unwrap(),
+            b"good-payload",
+            "битый dst пересоздан из src"
+        );
+
+        // Повтор с совпадающим хэшем — идемпотентен, содержимое не тронуто.
+        link_or_copy(&src, &dst, Some(&want)).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"good-payload");
+
+        // Нечитаемый dst (каталог) при известном хэше — ошибка, а не мнимый Ok.
+        let dst_dir = dir.path().join("as-dir");
+        std::fs::create_dir_all(&dst_dir).unwrap();
+        assert!(link_or_copy(&src, &dst_dir, Some(&want)).is_err());
     }
 
     #[test]
@@ -248,7 +291,7 @@ mod tests {
         let linked = paths.libraries_store().join("a.jar");
         std::fs::write(&linked, b"keep").unwrap();
         let inst_copy = paths.instances_dir().join("i1/a.jar");
-        link_or_copy(&linked, &inst_copy).unwrap();
+        link_or_copy(&linked, &inst_copy, None).unwrap();
         // Несвязанная библиотека
         let unlinked = paths.clients_store().join("old.jar");
         std::fs::write(&unlinked, b"drop").unwrap();
@@ -316,7 +359,7 @@ mod tests {
         let src_dir = dir.path().join("as-dir");
         std::fs::create_dir_all(&src_dir).unwrap();
         let dst = dir.path().join("out").join("dst.bin");
-        let err = link_or_copy(&src_dir, &dst).unwrap_err();
+        let err = link_or_copy(&src_dir, &dst, None).unwrap_err();
         assert_eq!(err.code(), "io", "{err}");
         assert!(!dst.exists(), "недописанный файл не должен остаться: {dst:?}");
     }

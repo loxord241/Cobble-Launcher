@@ -19,6 +19,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useInstances } from "../../state/instances";
 import { api } from "../../api/client";
 import { apiErrorText, currentLanguage, plural, t } from "../../i18n";
+import { formatSize } from "../format";
 import { askConfirm } from "../confirm";
 import { useModalA11y } from "../hooks/useModalA11y";
 import type { Instance, LogFileInfo } from "../../api/types";
@@ -26,13 +27,6 @@ import type { Instance, LogFileInfo } from "../../api/types";
 type LevelFilter = "all" | "errors" | "warns";
 
 const FILTERS: LevelFilter[] = ["all", "errors", "warns"];
-
-function formatSize(bytes: number): string {
-  const mb = bytes / (1024 * 1024);
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} ГБ`;
-  if (mb >= 1) return `${Math.round(mb)} МБ`;
-  return `${Math.round(bytes / 1024)} КБ`;
-}
 
 export default function LogViewerModal({
   instance,

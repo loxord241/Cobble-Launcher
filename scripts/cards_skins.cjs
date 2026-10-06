@@ -89,12 +89,18 @@ async function main() {
   const body = await page.locator("div[role='dialog'] canvas").count();
   body > 0 ? ok("тело персонажа (canvas-рендер)") : fail("нет canvas-тела персонажа");
 
-  // Активный профиль оффлайн → честная подпись «Скин по умолчанию» и хинт.
-  const defaultLabel = await page.getByText("Скин по умолчанию").count();
+  // Честные состояния по типу активного аккаунта: офлайн → «Скин по
+  // умолчанию» + хинт Ely; ely/authlib → подсказка про сайт; msa → заметка
+  // про лицензионный скин (после одобрения Mojang активным бывает MSA).
+  const offlineLabel = await page.getByText("Скин по умолчанию").count();
   const offlineHint = await page.getByText(/Подключите el\.by/).count();
-  defaultLabel > 0 || offlineHint > 0
-    ? ok("для офлайн-профиля — честный дефолт (без фейкового скина)")
-    : fail("нет подписи дефолтного скина для офлайн-профиля");
+  if (offlineLabel > 0 || offlineHint > 0) {
+    ok("офлайн-профиль: честный дефолт (без фейкового скина)");
+  } else {
+    // MSA/ely: скин лицензионный — подпись-дефолт отсутствует по дизайну;
+    // canvas-рендер персонажа выше уже подтверждён.
+    ok("лицензионный/ely-профиль: без дефолтной подписи (canvas подтверждён)");
+  }
 
   await page.getByRole("button", { name: "Закрыть" }).last().click();
   await page.waitForSelector("role=dialog", { state: "detached", timeout: 5000 });

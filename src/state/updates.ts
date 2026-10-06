@@ -52,7 +52,8 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
     silentTimer = setTimeout(
       () => {
         silentTimer = null;
-        void get().check();
+        // Пока таймер тикал, мог пройти ручной чек (кнопка/бейдж) — не дублируем.
+        if (!get().checked) void get().check();
       },
       8000,
     );

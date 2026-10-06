@@ -321,6 +321,7 @@
   "updates.installNow": "Установить и перезапустить",
   "updates.installing": "Устанавливаю обновление…",
   "updates.installerUnavailable": "Установщик обновлений ещё не готов (нет подписанного релиза с манифестом) — обновите вручную:",
+  "updates.moreInSettings": "Подробнее в настройках",
   "updates.availableBadge": "Доступно обновление",
   "instances.tab.worlds": "Миры",
   "worlds.empty": "Миров пока нет — запусти игру и создай первый",

@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../../api/client";
-import { apiErrorText, t } from "../../i18n";
+import { apiErrorText, plural, t } from "../../i18n";
 import { askConfirm } from "../confirm";
 import { useModalA11y } from "../hooks/useModalA11y";
 import { useInstances, type CrashReport } from "../../state/instances";
@@ -219,7 +219,7 @@ export default function CrashReportModal({
         {offerSafeMode && (
           <div className="mt-3 rounded-lg border border-accent/30 bg-accent-soft/40 p-4">
             <p className="text-sm font-semibold text-text">
-              {t("instances.safeMode.title", { n: report.crashCount })}
+              {plural("instances.safeMode.title", report.crashCount)}
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
               <button

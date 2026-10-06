@@ -11,6 +11,11 @@ use crate::paths::Paths;
 /// API mclo.gs: вынесен в константу — офлайн-тест не ходит в сеть.
 const MCLOGS_API: &str = "https://api.mclo.gs/1/log";
 
+/// Потолок тела ответа mclo.gs (короткий JSON `{success,url|error}`, спека
+/// сервиса): адр-хок чтение `resp.text()` без границы тянуло в память всё,
+/// что отдаст сервер (аудит 2026-10-06).
+const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
 /// Читаемые архивные логи: `*.log` и ротаты `*.log.gz` (flate2 — прямая
 /// зависимость, D42). Граница чтения одинаковая: не более `max_bytes`
 /// РАСПАКОВАННОГО текста — иначе .gz стал бы декомпрессионной бомбой.
@@ -152,12 +157,23 @@ pub fn read_archived(
     }
 }
 
+/// Потолок СУММАРНО распакованного объёма gzip-лога (аудит 2026-10-06):
+/// хвостовой cap держит память, но не время — гигабайтная бомба читалась бы
+/// минуты, подвешивая воркер. Больше потолка — честный отказ, а не чтение.
+const GZ_TOTAL_CAP: u64 = 256 * 1024 * 1024;
+
 /// Хвост РАСПАКОВАННОГО gzip-лога (последние `max_bytes`, выровненные по
 /// началу строки). Потоковое чтение с обрезкой буфера спереди: память
 /// ограничена max_bytes независимо от размера архива — декомпрессионная
 /// бомба упирается в тот же потолок, что и обычный лог. Битый gzip —
-/// честная io-ошибка из декодера.
+/// честная io-ошибка из декодера; суммарный объём сверх [`GZ_TOTAL_CAP`] —
+/// InvalidInput («слишком большой распакованный лог»).
 fn gz_tail(path: &std::path::Path, max_bytes: u64) -> Result<String> {
+    gz_tail_with_cap(path, max_bytes, GZ_TOTAL_CAP)
+}
+
+/// Рабочая версия с явным потолком суммарного объёма (параметр — для тестов).
+fn gz_tail_with_cap(path: &std::path::Path, max_bytes: u64, total_cap: u64) -> Result<String> {
     use std::io::Read as _;
     let mut decoder = flate2::read::GzDecoder::new(std::fs::File::open(path)?);
     let mut buf: Vec<u8> = Vec::new();
@@ -169,6 +185,11 @@ fn gz_tail(path: &std::path::Path, max_bytes: u64) -> Result<String> {
             break;
         }
         total += n;
+        if total as u64 > total_cap {
+            return Err(LauncherError::InvalidInput(format!(
+                "слишком большой распакованный лог: > {total_cap} байт"
+            )));
+        }
         buf.extend_from_slice(&chunk[..n]);
         if buf.len() > max_bytes as usize {
             let keep = max_bytes as usize;
@@ -193,14 +214,36 @@ pub async fn upload(client: &crate::net::http::HttpClient, content: &str) -> Res
     if client.offline() {
         return Err(LauncherError::OfflineMode("mclo.gs".into()));
     }
-    let resp = client
-        .raw()
-        .post(MCLOGS_API)
-        .form(&[("content", content)]) // urlencoded: % и \n кодируются
-        .send()
-        .await?;
-    let body = resp.text().await?;
-    parse_response(&body)
+    // Предохранитель на случай молчащего сервера (общий таймаут у HttpClient
+    // снят, аудит 2026-10-06).
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        client
+            .raw()
+            .post(MCLOGS_API)
+            .form(&[("content", content)]) // urlencoded: % и \n кодируются
+            .send(),
+    )
+    .await
+    .map_err(|_| LauncherError::network("mclo.gs не отвечает"))??;
+    // Content-Length известен заранее: известный перебор — ошибка до чтения
+    // тела (как в modrinth/mrpack.rs).
+    if let Some(len) = resp.content_length() {
+        if len > MAX_RESPONSE_BYTES as u64 {
+            return Err(LauncherError::network(format!(
+                "mclo.gs: ответ слишком большой ({len} > {MAX_RESPONSE_BYTES} байт)"
+            )));
+        }
+    }
+    let body = resp.bytes().await?;
+    if body.len() > MAX_RESPONSE_BYTES {
+        // Честный ответ без Content-Length (chunked) — пост-проверка.
+        return Err(LauncherError::network(format!(
+            "mclo.gs: ответ слишком большой ({} > {MAX_RESPONSE_BYTES} байт)",
+            body.len()
+        )));
+    }
+    parse_response(&String::from_utf8_lossy(&body))
 }
 
 /// Ответ mclo.gs: `{success, url?, error?}`.
@@ -448,6 +491,28 @@ mod tests {
         let text = read_archived(&paths, "inst1", "big.log.gz", 1024).unwrap();
         assert!(text.len() <= 1024, "хвост не больше cap");
         assert!(text.ends_with('x'), "хвост содержит конец данных");
+    }
+
+    /// Аудит 2026-10-06: суммарный распакованный объём сверх потолка —
+    /// честный InvalidInput БЫСТРО (крошечный gz распаковывается в 300 КБ,
+    /// потолок в тесте 64 КБ; с боевыми 256 МБ это были бы минуты чтения).
+    #[test]
+    fn read_gz_over_total_cap_is_fast_error() {
+        let (_guard, paths) = test_paths();
+        let logs = make_logs_dir(&paths, "inst1");
+        // Синтетическая «бомба»: сжатый архив крошечный, распаковка — 300 КБ.
+        let bomb = vec![b'x'; 300 * 1024];
+        write_gz(&logs.join("bomb.log.gz"), &bomb);
+        let path = crate::util::fs::long_path(&logs.join("bomb.log.gz"));
+        let err = gz_tail_with_cap(&path, 1024, 64 * 1024)
+            .expect_err("распаковка сверх потолка должна дать ошибку");
+        assert!(
+            matches!(err, LauncherError::InvalidInput(ref m) if m.contains("слишком большой")),
+            "ожидался InvalidInput про размер, получено: {err:?}"
+        );
+        // Читаемый потолок выше реального распакованного размера — проходит.
+        let ok = gz_tail_with_cap(&path, 1024, 1024 * 1024).unwrap();
+        assert!(ok.ends_with('x'), "под потолком читается хвост");
     }
 
     #[test]

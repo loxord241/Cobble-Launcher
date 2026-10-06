@@ -9,20 +9,38 @@ import { useSettings } from "./settings";
 interface AccountsState {
   list: Account[];
   loaded: boolean;
+  /**
+   * F9: профили, у которых упал фоновый refresh токена (событие ядра
+   * account_refresh_failed). Снимается перелогином/удалением профиля; UI-показ
+   * (плашка «перелогиньтесь») — чужая волна, состояние готово.
+   */
+  degradedIds: Set<string>;
   load: () => Promise<void>;
   setActive: (id: string) => Promise<void>;
   addOffline: (name: string) => Promise<Account>;
   addMsaBrowser: () => Promise<Account>;
   addEly: (username: string, password: string) => Promise<Account>;
   remove: (id: string) => Promise<void>;
+  /** F9: пометить профиль деградировавшим (обработчик account_refresh_failed). */
+  setDegraded: (id: string) => void;
+  /** F9: снять метку — успешный перелогин того же профиля. */
+  clearDegraded: (id: string) => void;
 }
 
 export const useAccounts = create<AccountsState>((set, get) => ({
   list: [],
   loaded: false,
+  degradedIds: new Set<string>(),
   load: async () => {
     const list = await api.accountList().catch(() => []);
-    set({ list, loaded: true });
+    set((s) => {
+      // F9: метки удалённых профилей чистим, живых — держим: load() дёргается
+      // многими действиями, и стирать свежую метку нельзя (refresh/логин/
+      // удаление аккаунта все проходят через load — этого достаточно).
+      const ids = new Set(list.map((a) => a.id));
+      const degradedIds = new Set([...s.degradedIds].filter((id) => ids.has(id)));
+      return { list, loaded: true, degradedIds };
+    });
   },
   setActive: async (id) => {
     await api.accountActiveSet(id);
@@ -53,6 +71,22 @@ export const useAccounts = create<AccountsState>((set, get) => ({
     // Ядро переназначает активный аккаунт при удалении активного — подтягиваем
     // свежий accountsActiveId, иначе чип титлбара показывает удалённого.
     await useSettings.getState().load();
+  },
+  setDegraded: (id) => {
+    set((s) => {
+      if (s.degradedIds.has(id)) return s;
+      const degradedIds = new Set(s.degradedIds);
+      degradedIds.add(id);
+      return { degradedIds };
+    });
+  },
+  clearDegraded: (id) => {
+    set((s) => {
+      if (!s.degradedIds.has(id)) return s;
+      const degradedIds = new Set(s.degradedIds);
+      degradedIds.delete(id);
+      return { degradedIds };
+    });
   },
 }));
 

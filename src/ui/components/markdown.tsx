@@ -101,14 +101,19 @@ function renderInline(text: string, keyBase: string, defs: Map<string, string>):
     const [, inner, rawUrl] = best.match;
     const url = safeUrl(rawUrl);
     if (best.kind === "image-link") {
-      // Бейдж-ссылка: картинка (m[2]) внутри ссылки (m[3]); запрещённые URL
-      // превращают конструкцию в текст — как и одиночные ссылки/картинки.
+      // Бейдж-ссылка: картинка (m[2]) внутри ссылки (m[3]) — цель ссылки берём
+      // именно из m[3], а не из URL картинки. Запрещённый URL картинки
+      // превращает конструкцию в текст; запрещённый/отсутствующий target —
+      // картинка остаётся, но без ссылки.
       const img = safeUrl(best.match[2]);
+      const target = safeUrl(best.match[3]);
       out.push(
-        url && img ? (
-          <a key={k} href={url} target="_blank" rel="noreferrer noreferrer" className="inline-block">
+        target && img ? (
+          <a key={k} href={target} target="_blank" rel="noreferrer" className="inline-block">
             <img src={img} alt={inner} loading="lazy" className="rounded bg-surface-2" />
           </a>
+        ) : img ? (
+          <img key={k} src={img} alt={inner} loading="lazy" className="rounded bg-surface-2" />
         ) : (
           <span key={k}>{best.match[0]}</span>
         ),
@@ -125,7 +130,7 @@ function renderInline(text: string, keyBase: string, defs: Map<string, string>):
     } else if (best.kind === "link") {
       out.push(
         url ? (
-          <a key={k} href={url} target="_blank" rel="noreferrer noreferrer" className="text-accent underline">
+          <a key={k} href={url} target="_blank" rel="noreferrer" className="text-accent underline">
             {renderInline(inner, k, defs)}
           </a>
         ) : (

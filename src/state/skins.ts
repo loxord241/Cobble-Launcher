@@ -10,6 +10,12 @@ interface SkinsState {
   /** Повторно спросить ядро (кнопка «Обновить скин»). */
   refresh: (acc: Account) => Promise<void>;
   load: (acc: Account) => Promise<void>;
+  /**
+   * D59: сброс кэша скина профиля — следующий load()/refresh() пойдёт в ядро,
+   * а не отдаст часовой кэш. Для вызова после успешного skinApply (ядро
+   * инвалидирует свой кэш отдельно; фронт-защита от устаревшего превью).
+   */
+  invalidate: (accountId: string) => void;
 }
 
 // Дедупликация параллельных запросов одного аккаунта (чип + модалка).
@@ -42,6 +48,16 @@ export const useSkins = create<SkinsState>((_set, get) => ({
   },
   refresh: async (acc) => {
     await fetchSkin(acc);
+  },
+  invalidate: (accountId) => {
+    // Ключ удаляем (а не пишем null): «не спрашивали» вернёт стор к обычному
+    // load(), а null UI рисовал бы как «скина нет» до конца загрузки.
+    useSkins.setState((s) => {
+      if (!(accountId in s.byId)) return s;
+      const byId = { ...s.byId };
+      delete byId[accountId];
+      return { byId };
+    });
   },
 }));
 

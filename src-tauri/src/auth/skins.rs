@@ -607,6 +607,38 @@ pub fn find_skin_by_id(paths: &Paths, skin_id: &str) -> Option<SkinInfo> {
 /// Официальный эндпоинт смены скина Mojang (вики «Microsoft authentication»).
 const MSA_SKINS_URL: &str = "https://api.minecraftservices.com/minecraft/profile/skins";
 
+/// Ротированный при refresh refresh-токен MSA — обратно в keyring под тем же
+/// ref (аудит 2026-10-06, паттерн launch_identity в auth/mod.rs): MSA может
+/// ротировать токен на каждом refresh, и без сохранения новый следующий
+/// refresh пошёл бы по устаревшему. Нет ротации — но-оп, keyring не трогаем.
+fn persist_rotated_msa_refresh(
+    rr: &str,
+    old_refresh: &str,
+    session: &crate::auth::msa::Session,
+) -> Result<()> {
+    if session.refresh_token != old_refresh {
+        crate::auth::keyring_set(rr, &session.refresh_token)?;
+    }
+    Ok(())
+}
+
+/// Скин применён — дисковый кэш текстуры аккаунта протух (TTL 1 час):
+/// сносим, иначе после смены скина час показывается старый (аудит
+/// 2026-10-06). Best-effort: неудача удаления — только warn (отсутствие
+/// файла — норма), применение скина ошибкой не считаем.
+fn invalidate_account_skin_cache(paths: &Paths, account: &Account) {
+    let cache = crate::util::fs::long_path(&cache_path(paths, account));
+    if let Err(e) = std::fs::remove_file(&cache) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                "skins: не удалось сбросить кэш скина аккаунта {}: {e}",
+                account.id
+            );
+        }
+    }
+}
+
+
 /// SkinInfo несёт PNG как data-URL (тот же, что уходит в UI) — для применения
 /// байты достаются обратно и проходят ту же валидацию, что при загрузке.
 fn decode_skin_data_url(skin: &SkinInfo) -> Result<Vec<u8>> {
@@ -658,14 +690,24 @@ async fn put_ely_skin(
     model: SkinModel,
     png: &[u8],
 ) -> Result<u16> {
-    let resp = client
-        .raw()
-        .put(ely_upload_url(model))
-        .bearer_auth(token)
-        .multipart(ely_skin_form(png))
-        .send()
-        .await?;
-    Ok(resp.status().as_u16())
+    // Предохранитель (общий таймаут снят, аудит 2026-10-06): молчащий
+    // сервер не должен держать смену скина навечно.
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        async {
+            let resp = client
+                .raw()
+                .put(ely_upload_url(model))
+                .bearer_auth(token)
+                .multipart(ely_skin_form(png))
+                .send()
+                .await?;
+            Ok::<u16, LauncherError>(resp.status().as_u16())
+        },
+    )
+    .await
+    .map_err(|_| LauncherError::network("сервер скинов не отвечает"))??;
+    Ok(status)
 }
 
 /// Применить скин аккаунту по типу профиля (D59). Офлайн-гейты — ДО любых
@@ -709,8 +751,17 @@ pub async fn apply_skin(
                     "нет azureClientId в настройках — укажите его в Настройках (MSA-вход)".into(),
                 )
             })?;
-            // Свежий access_token (как в launch_identity): скины требуют валидный токен.
-            let session = crate::auth::msa::refresh_session(client, &refresh, &cid).await?;
+            // Свежий access_token (как в launch_identity): скины требуют
+            // валидный токен. Single-flight на refresh_ref (аудит 2026-10-06):
+            // параллельный launch не гонит второй refresh с тем же токеном.
+            let session = {
+                let gate = crate::auth::refresh_gate(rr);
+                let _held = gate.lock().await;
+                crate::auth::msa::refresh_session(client, &refresh, &cid).await?
+            };
+            // Ротация refresh-токена — новый сохраняем (иначе следующий
+            // refresh пойдёт по протухшему).
+            persist_rotated_msa_refresh(rr, &refresh, &session)?;
             let resp = client
                 .raw()
                 .put(MSA_SKINS_URL)
@@ -723,14 +774,15 @@ pub async fn apply_skin(
                 .await?;
             let status = resp.status();
             if status.is_success() {
+                // Кэш текстуры протух — сбрасываем, UI сразу покажет новый скин.
+                invalidate_account_skin_cache(paths, &account);
                 return Ok(()); // 200/204 = скин применён
             }
             if status.as_u16() == 403 {
-                // Новый код не заводим: 403 = смена скина запрещена (у
-                // саморегистрированного Azure-приложения нет разрешения
-                // Minecraft API до одобрения заявки — как login_with_xbox, D44).
+                // Аудит 2026-10-06 (appID одобрен Mojang): 403 — просто отказ
+                // запроса, без исторических подсказок про заявки/одобрения.
                 return Err(LauncherError::network(
-                    "Mojang skins: HTTP 403 — смена скина отклонена (у приложения нет разрешения на Minecraft API, ожидайте одобрения заявки aka.ms/mce-reviewappid)",
+                    "Mojang skins API отклонил запрос (HTTP 403). Проверь, что аккаунт владеет Java Edition, и попробуй позже",
                 ));
             }
             Err(LauncherError::network(format!("Mojang skins: HTTP {status}")))
@@ -754,7 +806,13 @@ pub async fn apply_skin(
             let mut token = crate::auth::keyring_get(rr)?;
             let mut status = put_ely_skin(client, &token, model, &png).await?;
             if status == 401 {
-                let session = crate::auth::ely::refresh_session(client, &token).await?;
+                // Single-flight на refresh_ref (аудит 2026-10-06): refresh
+                // инвалидирует прежний токен — параллельный потребитель ждёт.
+                let session = {
+                    let gate = crate::auth::refresh_gate(rr);
+                    let _held = gate.lock().await;
+                    crate::auth::ely::refresh_session(client, &token).await?
+                };
                 if session.refresh_token != token {
                     crate::auth::keyring_set(rr, &session.refresh_token)?;
                 }
@@ -763,6 +821,8 @@ pub async fn apply_skin(
                 status = put_ely_skin(client, &token, model, &png).await?;
             }
             if (200..300).contains(&status) {
+                // Кэш текстуры протух — сбрасываем, UI сразу покажет новый скин.
+                invalidate_account_skin_cache(paths, &account);
                 return Ok(()); // 200/204 = скин применён
             }
             if status == 404 {
@@ -1199,5 +1259,71 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, LauncherError::NotFound(_)));
+    }
+
+    /// Аудит 2026-10-06: скин применён — дисковый кэш текстуры аккаунта
+    /// сбрасывается (TTL 1 час, иначе час показывается старый скин);
+    /// отсутствие кэша — не ошибка (best-effort).
+    #[test]
+    fn applied_skin_invalidates_account_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let acc = account(AccountKind::Msa, "Steve", "409f7b8cf6e5441c");
+        let cache = crate::util::fs::long_path(&cache_path(&paths, &acc));
+        std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        std::fs::write(&cache, b"\x89PNG\r\n\x1a\nstale-skin").unwrap();
+
+        invalidate_account_skin_cache(&paths, &acc);
+        assert!(!cache.exists(), "протухший кэш удалён");
+
+        // Повторный вызов без файла — тихо, без ошибки.
+        invalidate_account_skin_cache(&paths, &acc);
+    }
+
+    /// Ротация refresh-токена MSA при apply_skin: новый сохраняется в keyring
+    /// под тем же ref (ручная приёмка на реальном Credential Manager — как
+    /// keyring_roundtrip в auth/mod.rs). Сеть/MSA не участвуют: проверяется
+    /// только политика записи по факту refresh.
+    #[tokio::test]
+    #[ignore]
+    async fn rotated_msa_refresh_is_persisted_to_keyring() {
+        let rr = "test-apply-skin-rotation";
+        let old = "M.COLD-ROTATION-CHECK-0001";
+        let session = crate::auth::msa::Session {
+            access_token: "unused".into(),
+            refresh_token: "M.CNEW-ROTATION-CHECK-0002".into(),
+            player_name: "Steve".into(),
+            uuid: "409f7b8cf6e5441c".into(),
+        };
+        // Стартуем со старым токеном (как после первого логина).
+        crate::auth::keyring_set(rr, old).unwrap();
+        persist_rotated_msa_refresh(rr, old, &session).unwrap();
+        assert_eq!(
+            crate::auth::keyring_get(rr).unwrap(),
+            session.refresh_token,
+            "ротированный токен сохранён под тем же ref"
+        );
+        crate::auth::keyring_delete(rr).unwrap();
+    }
+
+    /// Без ротации — но-оп: запись в keyring не появляется. Герметично, пока
+    /// записи нет; падение теста означает, что helper стал писать без ротации
+    /// (запись утечёт в Credential Manager — починить и удалить её).
+    #[test]
+    fn unrotated_msa_refresh_leaves_keyring_untouched() {
+        let rr = "test-apply-skin-noop";
+        let token = "M.CSAME-TOKEN-NOOP-0003";
+        let session = crate::auth::msa::Session {
+            access_token: "unused".into(),
+            refresh_token: token.into(),
+            player_name: "Steve".into(),
+            uuid: "409f7b8cf6e5441c".into(),
+        };
+        persist_rotated_msa_refresh(rr, token, &session).unwrap();
+        assert!(
+            crate::auth::keyring_get(rr).is_err(),
+            "без ротации keyring не пишется"
+        );
     }
 }

@@ -321,6 +321,7 @@
   "updates.installNow": "Install and restart",
   "updates.installing": "Installing update…",
   "updates.installerUnavailable": "The updater isn't ready yet (no signed release with a manifest) — update manually:",
+  "updates.moreInSettings": "More in Settings",
   "updates.availableBadge": "Update available",
   "instances.tab.worlds": "Worlds",
   "worlds.empty": "No worlds yet — launch the game and create the first one",

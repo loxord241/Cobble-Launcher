@@ -148,6 +148,9 @@ pub async fn fetch_version_json_cached(
     entry: &ManifestVersion,
     cache_dir: &Path,
 ) -> Result<VersionJson> {
+    // Аудит 2026-10-06: id приходит из удалённого манифеста и попадает в имя
+    // файла — до склейки пути проверяем набор символов.
+    require_safe_file_stem(&entry.id)?;
     let path = cache_dir.join(format!("{}.json", entry.id));
     let long = long_path(&path);
     if long.exists() {
@@ -160,6 +163,22 @@ pub async fn fetch_version_json_cached(
     let v = VersionJson::fetch(client, &entry.url, &entry.sha1).await?;
     atomic_write(&path, &serde_json::to_vec_pretty(&v)?)?;
     Ok(v)
+}
+
+/// Имя версии как имя кэш-файла: только [A-Za-z0-9._-] (id из удалённого
+/// манифеста; разделителей пути и прочей экзотики быть не должно).
+fn require_safe_file_stem(id: &str) -> Result<()> {
+    let ok = !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    if ok {
+        Ok(())
+    } else {
+        Err(LauncherError::InvalidInput(format!(
+            "некорректный id версии из манифеста: {id}"
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -199,5 +218,28 @@ mod tests {
         let client = HttpClient::new(Some("http://127.0.0.1:54321")).unwrap();
         let m = fetch_manifest(&client, cache_dir).await.expect("должен вернуть stale-кэш при ошибке сети");
         assert_eq!(m.latest.release, "1.20.1");
+    }
+
+    /// Аудит 2026-10-06: id из удалённого манифеста с разделителями пути —
+    /// честный InvalidInput ДО кэша и сети (сеть в тесте не нужна).
+    #[tokio::test]
+    async fn fetch_version_json_rejects_unsafe_id_before_io() {
+        let client = HttpClient::new(Some("http://127.0.0.1:54321")).unwrap();
+        let entry = ManifestVersion {
+            id: "../evil".into(),
+            version_type: "release".into(),
+            url: "https://example.invalid/none.json".into(),
+            time: "2023-01-01T00:00:00+00:00".into(),
+            release_time: "2023-01-01T00:00:00+00:00".into(),
+            sha1: "0".repeat(40),
+            compliance_level: 1,
+        };
+        let err = fetch_version_json_cached(&client, &entry, Path::new("unused"))
+            .await
+            .expect_err("небезопасный id должен дать ошибку");
+        assert!(
+            matches!(err, LauncherError::InvalidInput(_)),
+            "ожидался InvalidInput, получен {err:?}"
+        );
     }
 }

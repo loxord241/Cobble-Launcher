@@ -122,10 +122,21 @@ export function errorText(e: ErrorPayload): string {
   // Когда причина есть, вместо длинной обёртки с советом берём короткую
   // network_detail («Проблема с сетью: <причина>»), иначе текст задваивался.
   const short = errorDict.network_detail?.[current as keyof ErrorEntry];
+  // Причина из ядра: пустая или равная коду детализации не несёт.
+  const detail = e.message && e.message !== e.code ? e.message : undefined;
   const base =
-    e.code === "network" && e.message && e.message !== e.code
-      ? `${short ?? localized ?? e.code}: ${e.message}`
-      : (localized ?? e.message);
+    // «Сеть» без деталей бесполезна: реальная причина (статус/тело ответа
+    // Microsoft) приходит в message — показываем её (жалоба владельца 2026-09-27).
+    // Когда причина есть, вместо длинной обёртки с советом берём короткую
+    // network_detail («Проблема с сетью: <причина>»), иначе текст задваивался.
+    e.code === "network" && detail
+      ? `${short ?? localized ?? e.code}: ${detail}`
+      : // invalid_input без деталей бесполезен так же, как network: что именно
+        // не прошло валидацию — в message. Симметрично network, но короче:
+        // «локализованный текст (детали)».
+        e.code === "invalid_input" && detail
+        ? `${localized ?? e.code} (${detail})`
+        : (localized ?? e.message);
   // LOC#2: ядро отдаёт КОД подсказки (hintCode) — текст по словарю, иначе
   // en/uk/pl приклеивался бы русский совет из ядра.
   const hint = e.hintCode

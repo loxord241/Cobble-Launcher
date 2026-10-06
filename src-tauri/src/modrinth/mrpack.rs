@@ -11,6 +11,16 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+/// Кап на текстовые манифесты внутри .mrpack: 16 МБ. Зеркало D23 в import
+/// (там константа приватная): modrinth.index.json и missing_mods_checker.json —
+/// килобайты; больше — либо битый архив, либо попытка съесть память ядра
+/// (заявленный размер записи проверяем ДО чтения в память).
+pub(crate) const MAX_MRPACK_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Кап на число файлов в modrinth.index.json: легальные паки — сотни записей,
+/// десятки тысяч — мусор или DoS (перебор таких файлов дороже честного отказа).
+const MAX_INDEX_FILES: usize = 50_000;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MrpackIndex {
@@ -55,6 +65,12 @@ impl MrpackIndex {
                 )));
             }
         }
+        if self.files.len() > MAX_INDEX_FILES {
+            return Err(LauncherError::InvalidInput(format!(
+                "слишком много файлов в модпаке: {} (лимит {MAX_INDEX_FILES})",
+                self.files.len()
+            )));
+        }
         Ok(())
     }
 
@@ -81,6 +97,15 @@ fn open_mrpack(path: &Path) -> Result<MrpackIndex> {
                 "в .mrpack нет modrinth.index.json — это не модпак Modrinth".into(),
             )
         })?;
+    // D23-зеркало: заявленный распакованный размер проверяем ДО чтения —
+    // чужой zip может объявить гигабайтный index.json и уронить ядро по OOM.
+    if index_entry.size() > MAX_MRPACK_MANIFEST_BYTES {
+        return Err(LauncherError::InvalidInput(format!(
+            "манифест modrinth.index.json слишком большой: {} байт (лимит {} МБ)",
+            index_entry.size(),
+            MAX_MRPACK_MANIFEST_BYTES / (1024 * 1024)
+        )));
+    }
     let index: MrpackIndex = serde_json::from_reader(index_entry)?;
     index.validate()?;
     Ok(index)
@@ -101,6 +126,24 @@ struct MissingModsEntry {
     pattern: String,
     /// `mods` | `resourcepacks` | `shaderpacks`; прочее — пропускаем.
     destination: String,
+    /// sha1 из конфига (бывают не у всех паков): по нему сверяем файл, уже
+    /// лежащий на диске, — побитый/подменённый перекачиваем, а не пропускаем.
+    #[serde(default)]
+    sha1: Option<String>,
+}
+
+/// Кап на число записей missing_mods_checker: легальные конфиги — десятки;
+/// больше — мусор, берём первые (спека §15: чужой конфиг не управляет объёмом
+/// работы лаунчера).
+const MAX_MM_ENTRIES: usize = 50;
+
+/// Потолок длины displayName (слаги Modrinth короткие, как CATEGORY_MAX_LEN
+/// в api.rs): длинная строка поиском не является — мусор конфига, skip.
+const MAX_MM_DISPLAY_NAME: usize = 64;
+
+/// displayName годен для поиска: непустой и не длиннее потолка.
+fn display_name_ok(display_name: &str) -> bool {
+    !display_name.is_empty() && display_name.len() <= MAX_MM_DISPLAY_NAME
 }
 
 /// Конфиг MissingModsChecker читаем прямо из zip .mrpack
@@ -122,13 +165,30 @@ fn read_missing_mods_checker(path: &Path) -> Vec<MissingModsEntry> {
     let Ok(entry) = zip.by_name(ENTRY) else {
         return Vec::new(); // конфига нет — обычный пак
     };
-    match serde_json::from_reader(entry) {
+    // Тот же кап, что у index.json: конфиг — килобайты, гигабайтная запись
+    // из чужого архива в память не читается (D23-зеркало).
+    if entry.size() > MAX_MRPACK_MANIFEST_BYTES {
+        tracing::warn!(
+            "конфиг {ENTRY} слишком большой ({} байт) — предустановка пропущена",
+            entry.size()
+        );
+        return Vec::new();
+    }
+    let mut parsed: Vec<MissingModsEntry> = match serde_json::from_reader(entry) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("битый конфиг {ENTRY}: {e} — предустановка пропущена");
             Vec::new()
         }
+    };
+    if parsed.len() > MAX_MM_ENTRIES {
+        tracing::warn!(
+            "missing_mods_checker: {} записей — беру первые {MAX_MM_ENTRIES}",
+            parsed.len()
+        );
+        parsed.truncate(MAX_MM_ENTRIES);
     }
+    parsed
 }
 
 /// Загрузчик из dependencies .mrpack (спека §6.2): у Forge/NeoForge ключ —
@@ -199,6 +259,75 @@ pub fn ensure_allowed_mrpack_url(url: &str) -> Result<()> {
     )))
 }
 
+/// Хосты, с которых разрешено тянуть картинки проекта (иконка `icon_url` и
+/// галерейный арт `raw_url` — оба живут на CDN Modrinth). Ответ API даже в
+/// проде — JSON с чужого сервера: URL картинки не должен уводить GET на
+/// произвольный хост (та же SSRF-гигиена, что A24 у .mrpack).
+const ALLOWED_CDN_HOSTS: &[&str] = &["cdn.modrinth.com"];
+
+/// Проверить URL картинки из ответа API: только https + CDN Modrinth.
+pub(crate) fn ensure_allowed_cdn_url(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| {
+        LauncherError::InvalidInput(format!("некорректный URL картинки {url:?}: {e}"))
+    })?;
+    let host = parsed.host_str().unwrap_or_default();
+    // Тесты гоняют картинки через локальный axum-мок (http, внешней сети нет) —
+    // в test-сборке петельбек разрешён. В релизной сборке этой ветки нет:
+    // прод-проверка не ослаблена (как в ensure_allowed_mrpack_url).
+    #[cfg(test)]
+    if matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
+        return Ok(());
+    }
+    if parsed.scheme() != "https" {
+        return Err(LauncherError::InvalidInput(format!(
+            "картинки разрешено тянуть только по https: {url}"
+        )));
+    }
+    if ALLOWED_CDN_HOSTS
+        .iter()
+        .any(|h| host.eq_ignore_ascii_case(h))
+    {
+        return Ok(());
+    }
+    Err(LauncherError::InvalidInput(format!(
+        "картинка с недоверенного хоста {host}: разрешены {ALLOWED_CDN_HOSTS:?}"
+    )))
+}
+
+/// Скачать картинку (иконка/арт проекта) с жёстким капом размера.
+/// Ok(None) — файл тяжелее лимита: галерейные кадры бывают на несколько МБ,
+/// это не ошибка, вызывающий просто пропускает картинку (спека §15).
+/// Тело читается СТРИМОМ с обрывом на лимите: `resp.bytes()` ждал бы тело
+/// целиком, и сервер, совравший в Content-Length, надул бы память ядра.
+async fn fetch_image_capped(
+    client: &HttpClient,
+    url: &str,
+    max_bytes: usize,
+) -> Result<Option<Vec<u8>>> {
+    ensure_allowed_cdn_url(url)?;
+    let resp = client.raw().get(url).send().await?.error_for_status()?;
+    // Быстрый путь: Content-Length известен заранее — поток не открываем.
+    if let Some(len) = resp.content_length() {
+        if len > max_bytes as u64 {
+            tracing::warn!("картинка {url} больше лимита ({len} > {max_bytes} байт) — пропускаю");
+            return Ok(None);
+        }
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    let mut stream = std::pin::pin!(resp.bytes_stream());
+    while let Some(chunk) = futures::StreamExt::next(&mut stream).await {
+        let chunk = chunk?;
+        if buf.len() + chunk.len() > max_bytes {
+            tracing::warn!(
+                "картинка {url} выросла за лимит ({max_bytes} байт) по ходу стрима — пропускаю"
+            );
+            return Ok(None);
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(Some(buf))
+}
+
 /// Базовый URL Modrinth API: в прод-сборке — константа, в тестах — локальный
 /// mock-сервер (внешней сети в тестах нет). Как в updates.rs.
 fn api_base() -> String {
@@ -259,11 +388,62 @@ async fn project_versions(
 /// (санитизация недоверенных данных, как safe_relative_path у overrides) —
 /// иначе чужой конфиг мог бы записать файл мимо каталога назначения.
 fn is_safe_single_filename(name: &str) -> bool {
-    !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains(['/', '\\', ':', '\0'])
-        && !name.chars().any(char::is_control)
+    // Длина — в байтах: потолок файловой системы (255) именно про байты UTF-8.
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+    if name == "." || name == ".." {
+        return false;
+    }
+    if name.contains(['/', '\\', ':', '\0']) {
+        return false;
+    }
+    // Управляющие символы и невидимый юникод (zero-width, bidi-метки, изоляторы):
+    // имя, которое «не такое, каким выглядит» — вектор подмены и обхода фильтров.
+    if name.chars().any(|c| {
+        char::is_control(c)
+            || matches!(
+                c as u32,
+                0x200B..=0x200F | 0x202A..=0x202E | 0x2066..=0x2069
+            )
+    }) {
+        return false;
+    }
+    // Windows молча съедает хвостовые '.'/' ': заявленный pattern перестал бы
+    // совпадать с реальным именем на диске — такой файл пропускаем.
+    if name != name.trim_end_matches(['.', ' ']) {
+        return false;
+    }
+    // Зарезервированные имена DOS (до первой точки, регистр не важен):
+    // CON/PRN/AUX/NUL/COM1-9/LPT1-9 Windows трактует как устройства.
+    let stem = name.split('.').next().unwrap_or(name);
+    let upper = stem.to_ascii_uppercase();
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return false;
+    }
+    if upper.len() == 4 {
+        let (prefix, digit) = upper.split_at(3);
+        if matches!(prefix, "COM" | "LPT")
+            && matches!(digit.as_bytes()[0], b'1'..=b'9')
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Файл уже лежит на диске: пропускаем ли мы его? Если в конфиге нет sha1 —
+/// да (exists() достаточно, прежнее поведение). Если есть — сверяем с диском:
+/// побитый или подменённый файл перекачиваем, а не считаем установленным.
+fn existing_file_matches(dest: &Path, config_sha1: Option<&str>) -> bool {
+    match config_sha1 {
+        None => true,
+        Some(want) => match crate::util::fs::sha1_file(&crate::util::fs::long_path(dest)) {
+            Ok(actual) => actual.eq_ignore_ascii_case(want),
+            // Нечитаемый файл (каталог, права) — считаем несовпадением.
+            Err(_) => false,
+        },
+    }
 }
 
 /// Предустановка модов MissingModsChecker: каждый пункт конфига ищем на
@@ -306,9 +486,18 @@ async fn satisfy_missing_mods_checker(
             );
             continue;
         }
+        if !display_name_ok(&entry.display_name) {
+            tracing::warn!(
+                "missing-mods-checker: displayName пустой или длиннее {MAX_MM_DISPLAY_NAME} символов — пропускаю {}",
+                entry.pattern
+            );
+            continue;
+        }
         let dest = mc_dir.join(&entry.destination).join(&entry.pattern);
-        if crate::util::fs::long_path(&dest).exists() {
-            continue; // уже на диске (повторная установка) — сеть не трогаем
+        if crate::util::fs::long_path(&dest).exists()
+            && existing_file_matches(&dest, entry.sha1.as_deref())
+        {
+            continue; // уже на диске (и хэш из конфига сошёлся) — сеть не трогаем
         }
         let hits = match search_mods(client, &entry.display_name, 5).await {
             Ok(r) => r.hits,
@@ -338,6 +527,10 @@ async fn satisfy_missing_mods_checker(
             let sha1 = file.hashes.get("sha1").cloned();
             let sha512 = file.hashes.get("sha512").cloned();
             if sha1.is_none() && sha512.is_none() {
+                tracing::warn!(
+                    "missing-mods-checker: у файла {} на Modrinth нет хэша — не качаю непроверенное",
+                    file.filename
+                );
                 continue;
             }
             found = Some(DownloadTask {
@@ -686,6 +879,12 @@ async fn apply_project_artwork(
     project_id: &str,
     instance_id: &str,
 ) {
+    // id уходит в URL запроса: мусор отсекаем до сети (арт — некритичный шаг,
+    // любая ошибка ниже — warn и продолжение установки).
+    if let Err(e) = crate::modrinth::api::validate_id_or_slug(project_id) {
+        tracing::warn!("иконка/арт модпака {project_id} не установлены: {e}");
+        return;
+    }
     let project = match crate::modrinth::api::project(client, project_id).await {
         Ok(p) => p,
         Err(e) => {
@@ -707,19 +906,17 @@ async fn apply_icon_from_project(
     project: &serde_json::Value,
     instance_id: &str,
 ) -> Result<()> {
+    // ~300 КБ — зеркало MAX_ICON_BYTES в instances/content (там константа
+    // приватная; set_icon_from_bytes перепроверит лимит по сигнатуре).
+    const MAX_ICON_BYTES: usize = 300 * 1024;
     let icon_url = project
         .get("icon_url")
         .and_then(|v| v.as_str())
         .filter(|u| !u.is_empty())
         .ok_or_else(|| LauncherError::NotFound("у проекта нет icon_url".into()))?;
-    let bytes = client
-        .raw()
-        .get(icon_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
+    let Some(bytes) = fetch_image_capped(client, icon_url, MAX_ICON_BYTES).await? else {
+        return Ok(()); // тяжелее лимита — warn уже в хелпере, это не ошибка
+    };
     crate::instances::content::set_icon_from_bytes(paths, instance_id, &bytes)?;
     Ok(())
 }
@@ -745,27 +942,9 @@ async fn apply_art_from_project(
         })
         .filter(|u| !u.is_empty())
         .ok_or_else(|| LauncherError::NotFound("у проекта нет галереи".into()))?;
-    let resp = client
-        .raw()
-        .get(art_url)
-        .send()
-        .await?
-        .error_for_status()?;
-    // Content-Length известен заранее: не тянем много-мегабайтный кадр целиком.
-    if let Some(len) = resp.content_length() {
-        if len > MAX_ART_BYTES as u64 {
-            tracing::warn!("арт {art_url} больше лимита ({len} > {MAX_ART_BYTES} байт) — пропускаю");
-            return Ok(());
-        }
-    }
-    let bytes = resp.bytes().await?;
-    if bytes.len() > MAX_ART_BYTES {
-        tracing::warn!(
-            "арт {art_url} больше лимита ({} > {MAX_ART_BYTES} байт) — пропускаю",
-            bytes.len()
-        );
-        return Ok(());
-    }
+    let Some(bytes) = fetch_image_capped(client, art_url, MAX_ART_BYTES).await? else {
+        return Ok(()); // тяжелее лимита — warn уже в хелпере, это не ошибка
+    };
     crate::instances::content::set_art_from_bytes(paths, instance_id, &bytes)?;
     Ok(())
 }
@@ -1160,19 +1339,225 @@ mod tests {
     }
 
     /// Разбор конфига MissingModsChecker: camelCase displayName (alias —
-    /// snake_case), посторонние поля (включая curseforge-url) игнорируются.
+    /// snake_case), посторонние поля (включая curseforge-url) игнорируются;
+    /// sha1 из конфига (не обязателен) разбирается для сверки с диском.
     #[test]
     fn missing_mods_config_parses_ignoring_url() {
         let entries: Vec<MissingModsEntry> = serde_json::from_str(
             r#"[{"displayName":"Balm","pattern":"balm.jar",
                  "url":"https://www.curseforge.com/minecraft/mc-mods/balm",
-                 "destination":"mods","someExtra":42}]"#,
+                 "sha1":"abc123","destination":"mods","someExtra":42}]"#,
         )
         .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].display_name, "Balm");
         assert_eq!(entries[0].pattern, "balm.jar");
         assert_eq!(entries[0].destination, "mods");
+        assert_eq!(entries[0].sha1.as_deref(), Some("abc123"));
+
+        let entries: Vec<MissingModsEntry> = serde_json::from_str(
+            r#"[{"displayName":"Balm","pattern":"balm.jar","destination":"mods"}]"#,
+        )
+        .unwrap();
+        assert_eq!(entries[0].sha1, None, "sha1 в конфиге не обязателен");
+    }
+
+    /// zip-запись, распакованно больше капа манифеста (16 МБ): ~17 МБ повторов,
+    /// deflate сжимает в килобайты — тест быстрый.
+    fn write_oversized_entry(path: &Path, entry_name: &str) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts: zip::write::SimpleFileOptions = Default::default();
+        zip.start_file(entry_name, opts).unwrap();
+        let chunk = [b'a'; 64 * 1024];
+        let mut written = 0u64;
+        while written <= MAX_MRPACK_MANIFEST_BYTES {
+            zip.write_all(&chunk).unwrap();
+            written += chunk.len() as u64;
+        }
+        zip.finish().unwrap();
+    }
+
+    /// P1: гигантский modrinth.index.json отвергается ДО чтения в память
+    /// (зеркало D23): ошибка — InvalidInput именно про размер, а не serde-разбор.
+    #[test]
+    fn oversized_manifest_rejected_without_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("big.mrpack");
+        write_oversized_entry(&pack, "modrinth.index.json");
+        let err = open_mrpack(&pack).unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+        assert!(err.to_string().contains("слишком большой"), "{err}");
+    }
+
+    /// Тот же кап для missing_mods_checker.json: warn и пусто — гигабайтный
+    /// конфиг из чужого архива в память не читается.
+    #[test]
+    fn oversized_missing_mods_config_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("big-config.mrpack");
+        write_oversized_entry(&pack, "overrides/config/missing_mods_checker.json");
+        assert!(read_missing_mods_checker(&pack).is_empty());
+    }
+
+    /// P1: кап на число файлов в манифесте — десятки тысяч записей не проходят
+    /// validate (легальные паки — сотни, остальное — мусор или DoS).
+    #[test]
+    fn index_with_too_many_files_is_rejected() {
+        let mut index: MrpackIndex =
+            serde_json::from_str(&index_without_files("Много файлов")).unwrap();
+        index.files = (0..=MAX_INDEX_FILES)
+            .map(|i| MrpackFile {
+                path: format!("mods/f{i}.jar"),
+                hashes: HashMap::new(),
+                env: None,
+                downloads: vec!["https://cdn.modrinth.com/x.jar".to_string()],
+                file_size: 1,
+            })
+            .collect();
+        let err = index.validate().unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+        assert!(err.to_string().contains("слишком много файлов"), "{err}");
+    }
+
+    /// P2: картинки проекта (icon_url/галерейный raw_url) тянутся только с
+    /// CDN Modrinth — чужой URL из ответа API (или тестового мока) не уводит
+    /// GET на произвольный хост (SSRF-гигиена, как A24 у .mrpack).
+    #[test]
+    fn art_urls_are_cdn_only() {
+        for url in [
+            "http://cdn.modrinth.com/x.png", // только https
+            "https://evil.example/x.png",
+            "https://api.modrinth.com/x.png", // API-хост — не CDN
+            "https://cdn.modrinth.com.evil.ru/x.png",
+            "не-url",
+        ] {
+            let err = ensure_allowed_cdn_url(url).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "{url}: {err}");
+        }
+        for url in [
+            "https://cdn.modrinth.com/data/AANobbMI/1.png",
+            "https://CDN.modrinth.com/data/x/y.webp", // регистр не важен
+        ] {
+            ensure_allowed_cdn_url(url).unwrap_or_else(|e| panic!("{url}: {e}"));
+        }
+    }
+
+    /// Санитизация имени из чужого missing_mods_checker.json: разделители пути,
+    /// управляющие, невидимый юникод, зарезервированные DOS-имена, хвостовые
+    /// '.'/' ' и длина — всё отсекается; нормальные имена проходят.
+    #[test]
+    fn unsafe_filenames_are_rejected() {
+        for ok in [
+            "balm-fabric-1.20.1-7.3.38.jar",
+            "Some Mod 2.jar",
+            "console-helper.jar",
+            "companion.mod",
+        ] {
+            assert!(is_safe_single_filename(ok), "{ok}");
+        }
+        // прежние запреты: пусто, точки-ссылки, разделители, control-символы
+        for bad in [
+            "", ".", "..", "a/b.jar", "a\\b.jar", "a:b.jar", "a\0b.jar", "a\u{1}b.jar",
+        ] {
+            assert!(!is_safe_single_filename(bad), "{bad:?}");
+        }
+        // (а) невидимый юникод: zero-width, bidi-метки, изоляторы направлений
+        for bad in [
+            "a\u{200B}b.jar",
+            "a\u{200F}b.jar",
+            "a\u{202A}b.jar",
+            "a\u{202E}b.jar",
+            "a\u{2066}b.jar",
+            "a\u{2069}b.jar",
+        ] {
+            assert!(!is_safe_single_filename(bad), "{bad:?}");
+        }
+        // (б) зарезервированные имена DOS (регистр не важен, стем до точки)
+        for bad in [
+            "CON", "con.jar", "PrN.txt", "AUX", "NUL.jar", "COM1", "com9.jar", "LPT1",
+            "lpt4.jar",
+        ] {
+            assert!(!is_safe_single_filename(bad), "{bad}");
+        }
+        // COM10/LPT0 — не из списка COM1-9/LPT1-9: проходят
+        assert!(is_safe_single_filename("COM10.jar"));
+        assert!(is_safe_single_filename("LPT0.jar"));
+        // (в) хвостовые '.'/' ' — Windows их молча съедает
+        for bad in ["mod.jar.", "mod.jar ", "mod.jar. ."] {
+            assert!(!is_safe_single_filename(bad), "{bad:?}");
+        }
+        // (г) длина ≤ 255 байт (именно байты UTF-8)
+        assert!(is_safe_single_filename(&"x".repeat(255)));
+        assert!(!is_safe_single_filename(&"x".repeat(256)));
+        assert!(is_safe_single_filename(&"ы".repeat(127)), "254 байта — можно");
+        assert!(!is_safe_single_filename(&"ы".repeat(128)), "256 байт — нельзя");
+    }
+
+    /// P3: кап на число записей missing_mods_checker — больше 50 берутся
+    /// первые (чужой конфиг не управляет объёмом работы лаунчера).
+    #[test]
+    fn missing_mods_config_entries_are_capped() {
+        let entries: Vec<String> = (0..60)
+            .map(|i| {
+                format!(r#"{{"displayName":"Mod{i}","pattern":"m{i}.jar","destination":"mods"}}"#)
+            })
+            .collect();
+        let config = format!("[{}]", entries.join(","));
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("capped.mrpack");
+        write_mrpack_entries(
+            &pack,
+            &index_without_files("Капы"),
+            &[(
+                "overrides/config/missing_mods_checker.json",
+                config.as_bytes(),
+            )],
+        );
+        let mm = read_missing_mods_checker(&pack);
+        assert_eq!(mm.len(), MAX_MM_ENTRIES, "лишние записи отброшены");
+        assert_eq!(mm[0].display_name, "Mod0");
+        assert_eq!(mm.last().unwrap().display_name, "Mod49");
+    }
+
+    /// P3: потолок displayName — пустой или слишком длинный не годится для
+    /// поиска (отсекается до сети).
+    #[test]
+    fn display_name_is_capped() {
+        assert!(display_name_ok("Balm"));
+        assert!(!display_name_ok(""), "пустой — мусор конфига");
+        let long = "x".repeat(MAX_MM_DISPLAY_NAME + 1);
+        assert!(!display_name_ok(&long), "длиннее 64 — skip");
+        let exact = "x".repeat(MAX_MM_DISPLAY_NAME);
+        assert!(display_name_ok(&exact), "ровно лимит — можно");
+    }
+
+    /// P3: файл, уже лежащий на диске, сверяется с sha1 из конфига (если он
+    /// там есть): совпал — skip, не совпал/нечитаем — перекачка; без хэша в
+    /// конфиге — прежнее поведение (exists() достаточно).
+    #[test]
+    fn existing_file_checked_against_config_sha1() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("x.jar");
+        std::fs::write(&file, b"payload").unwrap();
+        let good = crate::util::fs::sha1_bytes(b"payload");
+        assert!(
+            existing_file_matches(&file, None),
+            "нет хэша в конфиге — exists() достаточно, как раньше"
+        );
+        assert!(existing_file_matches(&file, Some(&good)), "совпал — skip");
+        assert!(
+            existing_file_matches(&file, Some(&good.to_uppercase())),
+            "регистр хэша не важен"
+        );
+        assert!(
+            !existing_file_matches(&file, Some("deadbeef")),
+            "не совпал — задача на перекачку"
+        );
+        assert!(
+            !existing_file_matches(dir.path(), Some(&good)),
+            "каталог вместо файла (нечитаем) — перекачка"
+        );
     }
 
     /// MissingModsChecker, весь сценарий на ОДНОМ mock-сервере (TEST_API_BASE —

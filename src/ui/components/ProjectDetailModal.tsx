@@ -104,6 +104,24 @@ export default function ProjectDetailModal({
   }, [zoom]);
   const { containerRef: dialogRef, requestClose } = useModalA11y(onClose);
 
+  // Установка идёт — окно не закрываем (✕/Escape/клик по подложке): результат
+  // пользователь ждёт в диалоге, потерять баннер успеха/ошибки обидно.
+  const requestCloseSafe = () => {
+    if (busy) return;
+    requestClose();
+  };
+  // Escape ловим в window-capture: событие срабатывает раньше слушателя хука
+  // (document-capture), stopPropagation не даёт модалке начать закрытие.
+  useEffect(() => {
+    if (!busy) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [busy]);
+
   const loadDetail = useCallback(async () => {
     setDetailBusy(true);
     setDetailErr(null);
@@ -213,7 +231,7 @@ export default function ProjectDetailModal({
     <div
       className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => {
-        if (e.target === e.currentTarget) requestClose();
+        if (e.target === e.currentTarget) requestCloseSafe();
       }}
     >
       <div
@@ -241,7 +259,17 @@ export default function ProjectDetailModal({
             </span>
           )}
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-xl font-bold leading-tight">{hit.title}</h2>
+            <h2 className="truncate text-xl font-bold leading-tight">
+              {hit.title}
+              {/* Установка идёт — спиннер прямо в заголовке: окно «живое». */}
+              {busy && (
+                <LoaderCircle
+                  size={16}
+                  aria-hidden
+                  className="ml-2 inline-block animate-spin align-[-2px] text-accent"
+                />
+              )}
+            </h2>
             <div className="mt-0.5 text-[13px] text-text-muted">
               {t("mods.by", { author: hit.author })}
             </div>
@@ -281,9 +309,10 @@ export default function ProjectDetailModal({
               {busy ? t("project.installing") : t("project.install")}
             </button>
             <button
-              onClick={requestClose}
+              onClick={requestCloseSafe}
               aria-label={t("common.close")}
-              className="icon-btn text-text-muted hover:text-text"
+              disabled={busy}
+              className="icon-btn text-text-muted hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
             >
               <X size={18} aria-hidden />
             </button>

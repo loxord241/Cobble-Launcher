@@ -39,6 +39,10 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
   const [saveError, setSaveError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingPatch = useRef<Partial<Settings>>({});
+  // Значения, отправленные в ядро с этой страницы: эффект синхронизации
+  // сравнивает с ними и не затирает незакоммиченный ввод (отложенный коммит
+  // возвращает настройки — эффект не должен переписывать поле посреди ввода).
+  const lastSent = useRef<{ ram?: number; par?: number }>({});
   // F18: статистика диска + сообщение (результат уборки или ошибка).
   const [stats, setStats] = useState<StorageStats | null>(null);
   const [storageMsg, setStorageMsg] = useState<string | null>(null);
@@ -94,8 +98,12 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
     if (settings) {
       setProxyInput(settings.proxyUrl ?? "");
       setAzureInput(settings.azureClientId ?? "");
-      setRamInput(settings.defaultRamMb);
-      setParInput(settings.downloadParallelism);
+      // Числовые поля: синхронизируем из стора только внешние изменения
+      // (импорт настроек, правка из другого окна) — своё отправленное
+      // значение эффекта не интересует, иначе ввод затирается.
+      if (settings.defaultRamMb !== lastSent.current.ram) setRamInput(settings.defaultRamMb);
+      if (settings.downloadParallelism !== lastSent.current.par)
+        setParInput(settings.downloadParallelism);
     }
   }, [settings]);
 
@@ -305,7 +313,10 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               step={512}
               value={ramInput}
               onChange={(e) => {
-                const value = Number(e.target.value) || 2048;
+                // Кламп в границы HTML min/max: браузер не мешает вводить
+                // руками что угодно — нормализуем до записи в ядро.
+                const value = Math.min(Math.max(Number(e.target.value) || 2048, 1024), 32768);
+                lastSent.current.ram = value;
                 setRamInput(value);
                 commitDebounced({ defaultRamMb: value });
               }}
@@ -320,7 +331,9 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               max={64}
               value={parInput}
               onChange={(e) => {
-                const value = Number(e.target.value) || 16;
+                // Кламп в границы HTML min/max — как у поля RAM.
+                const value = Math.min(Math.max(Number(e.target.value) || 16, 1), 64);
+                lastSent.current.par = value;
                 setParInput(value);
                 commitDebounced({ downloadParallelism: value });
               }}
