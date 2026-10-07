@@ -248,6 +248,11 @@ export default function ProjectDetailModal({
   const headerArt =
     (detail ? (detail.gallery.find((g) => g.featured) ?? detail.gallery[0])?.url : undefined) ??
     hit.icon_url;
+  // D65-фикс качества: иконки Modrinth 96px на всю ширину шапки не тянем —
+  // мелкий источник (натуральная ширина < 220px) уходит в ambient (размытая
+  // подложка + чёткая иконка по центру).
+  const [headerArtSmall, setHeaderArtSmall] = useState(false);
+  useEffect(() => setHeaderArtSmall(false), [headerArt]);
   const changelogList = versions?.filter((v) => v.changelog && v.changelog.trim()) ?? [];
 
   // Общий вид «не загрузилось + повторить» для страницы и для версий.
@@ -286,14 +291,31 @@ export default function ProjectDetailModal({
             поверх — версия, название, «автор · скачивания · обновлён»;
             ✕ в углу арта (доступна и при busy, D64). ─────────────────── */}
         <div className="relative h-[150px] shrink-0">
-          {headerArt ? (
+          {headerArt && !headerArtSmall ? (
             <img
               src={headerArt}
               alt=""
               aria-hidden
               draggable={false}
+              onLoad={(e) => setHeaderArtSmall(e.currentTarget.naturalWidth < 220)}
               className="absolute inset-0 size-full object-cover"
             />
+          ) : headerArt ? (
+            // Ambient для мелкого источника: blur-подложка + чёткая иконка.
+            <>
+              <div
+                aria-hidden
+                className="absolute inset-0 scale-125 bg-cover bg-center blur-lg brightness-[.5]"
+                style={{ backgroundImage: `url(${headerArt})` }}
+              />
+              <img
+                src={headerArt}
+                alt=""
+                aria-hidden
+                draggable={false}
+                className="absolute inset-0 m-auto size-24 object-contain drop-shadow-lg"
+              />
+            </>
           ) : (
             // Арта нет вовсе: спокойный градиент вместо пустого пятна.
             <div

@@ -47,6 +47,51 @@ function compactCount(n: number): string {
 }
 
 /**
+ * Арт-материал каталога (D65-фикс качества): поиск Modrinth отдаёт иконки
+ * 96px (_96.webp) — растянутые на плитку они «сжатые и мутные». Решение:
+ * лениво (по одному запросу на проект, кэш на сессию) подтягиваем первую
+ * галерейную картинку (~350px — для плитки хватает), мелкие иконки до её
+ * прихода показываем честным ambient-стилем (размытая подложка + чёткая
+ * иконка в центре), а не апскейлом на всю плитку.
+ */
+const galleryCache = new Map<string, Promise<string | null>>()
+
+function loadGalleryArt(projectId: string): Promise<string | null> {
+  let p = galleryCache.get(projectId)
+  if (!p) {
+    p = api
+      .modrinthProject(projectId)
+      .then((d) => d.gallery?.[0]?.url ?? null)
+      .catch(() => null)
+    galleryCache.set(projectId, p)
+  }
+  return p
+}
+
+/** Галерейный арт проекта (null — галереи нет); undefined — ещё грузится. */
+function useGalleryArt(projectId: string | undefined): string | null | undefined {
+  const [url, setUrl] = useState<string | null | undefined>(undefined)
+  useEffect(() => {
+    let alive = true
+    setUrl(undefined)
+    if (!projectId) return
+    loadGalleryArt(projectId).then((u) => {
+      if (alive) setUrl(u)
+    })
+    return () => {
+      alive = false
+    }
+  }, [projectId])
+  return url
+}
+
+/** Иконка оказалась мелкой (натуральная ширина < 220px) — не тянуть на плитку. */
+function useIconTooSmall(): [boolean, (e: { currentTarget: HTMLImageElement }) => void] {
+  const [small, setSmall] = useState(false)
+  return [small, (e) => setSmall(e.currentTarget.naturalWidth < 220)]
+}
+
+/**
  * HERO «Популярное сейчас» (D65): широкая плитка на всю ширину контента с
  * артом пака-лидера по скачиваниям среди УЖЕ загруженных строк (icon_url той
  * же выдачи — никакого нового API и выдуманных данных). Снизу градиент-вуаль
@@ -55,6 +100,11 @@ function compactCount(n: number): string {
  * плитке, и клик по кнопке открывают окно проекта — установка не отсюда.
  */
 function HeroTile({ hit, onOpen }: { hit: SearchHit, onOpen: () => void }) {
+  // D65-фикс качества: галерея (~350px) как арт; фон — размытая подложка,
+  // справа — ЧЁТКИЙ кадр в рамке (даунскейл, не апскейл). Иконку 96px на
+  // всю ширину hero не растягиваем.
+  const gallery = useGalleryArt(hit.project_id)
+  const art = gallery ?? hit.icon_url
   return (
     <section
       role="button"
@@ -69,13 +119,23 @@ function HeroTile({ hit, onOpen }: { hit: SearchHit, onOpen: () => void }) {
       }}
       className="anim-fade-up relative flex h-48 cursor-pointer flex-col overflow-hidden rounded-xl border border-border-app bg-surface-2 shadow-lg shadow-black/25 transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/70"
     >
-      {hit.icon_url && (
-        <img
-          src={hit.icon_url}
-          alt=""
-          loading="lazy"
-          className="absolute inset-0 size-full object-cover"
-        />
+      {art && (
+        <>
+          {/* Размытая подложка на всю ширину — скрывает малый источник. */}
+          <div
+            aria-hidden
+            className="absolute inset-0 scale-125 bg-cover bg-center blur-xl brightness-[.45]"
+            style={{ backgroundImage: `url(${art})` }}
+          />
+          {/* Чёткий кадр справа: даунскейл до ~208×128 — резкий при любом
+              источнике; рамка/тень как у «featured» витрины. */}
+          <img
+            src={art}
+            alt=""
+            loading="lazy"
+            className="absolute bottom-4 right-4 hidden h-32 w-52 rounded-lg border border-white/20 object-cover shadow-lg shadow-black/40 sm:block"
+          />
+        </>
       )}
       {/* Вуаль, как .veil макета: арт темнеет книзу — текст читается на любом арте.
           Верх тоже притемнён: на светлых баннерах бейдж версии тонул. */}
@@ -87,7 +147,7 @@ function HeroTile({ hit, onOpen }: { hit: SearchHit, onOpen: () => void }) {
         <span className="chip-mono absolute left-3 top-3 bg-bg/85">{hit.versions[0]}</span>
       )}
       <div className="relative mt-auto flex items-end gap-4 p-4">
-        <div className="min-w-0">
+        <div className="min-w-0 sm:max-w-[calc(100%-13.5rem)]">
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/75">
             {t("home.featured")}
           </div>
@@ -129,6 +189,12 @@ function HeroTile({ hit, onOpen }: { hit: SearchHit, onOpen: () => void }) {
 function CatalogTile({ hit, idx, onOpen }: { hit: SearchHit, idx: number, onOpen: () => void }) {
   // Загрузчик для подписи под именем: Modrinth кладёт его в categories.
   const loader = hit.categories.find((c) => LOADERS.includes(c))
+  // D65-фикс качества: галерея (~350px) во всю плитку — резкая; мелкая
+  // иконка (натуральная ширина < 220px) — ambient (размытая подложка +
+  // чёткая иконка по центру), НЕ апскейл на всю плитку.
+  const gallery = useGalleryArt(hit.project_id)
+  const [iconSmall, onIconLoad] = useIconTooSmall()
+  const bigArt = gallery ?? (hit.icon_url && !iconSmall ? hit.icon_url : null)
   return (
     <div
       role="button"
@@ -147,13 +213,30 @@ function CatalogTile({ hit, idx, onOpen }: { hit: SearchHit, idx: number, onOpen
       }}
       className="anim-fade-up group relative aspect-[280/238] cursor-pointer overflow-hidden rounded-xl border border-border-app bg-surface-2 shadow-md shadow-black/20 transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/70 hover:shadow-lg hover:shadow-black/25"
     >
-      {hit.icon_url ? (
+      {bigArt ? (
         <img
-          src={hit.icon_url}
+          src={bigArt}
           alt=""
           loading="lazy"
+          onLoad={gallery ? undefined : onIconLoad}
           className="absolute inset-0 size-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
         />
+      ) : hit.icon_url ? (
+        // Ambient: мелкая иконка как материал подложки (blur прячет апскейл),
+        // сверху — чёткая копия в натуральном размере.
+        <>
+          <div
+            aria-hidden
+            className="absolute inset-0 scale-125 bg-cover bg-center blur-lg brightness-[.4]"
+            style={{ backgroundImage: `url(${hit.icon_url})` }}
+          />
+          <img
+            src={hit.icon_url}
+            alt=""
+            loading="lazy"
+            className="absolute inset-0 m-auto size-24 object-contain drop-shadow-lg"
+          />
+        </>
       ) : (
         // Без иконки — честная заглушка с первой буквой названия.
         <span
