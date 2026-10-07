@@ -52,6 +52,16 @@ pub struct MrpackFile {
     pub downloads: Vec<String>,
     #[serde(default)]
     pub file_size: u64,
+    /// D64: projectId/versionId КОНКРЕТНОГО файла. Официальная спека их НЕ
+    /// описывает (там только path/hashes/env/downloads/fileSize), но Modrinth
+    /// App пишет их в files[] — а в content-manifest нужна версия МОДА, а не
+    /// версия пака (index.version_id): check_updates сверяет запись с версией
+    /// мода, и паковая версия делала весь свежий пак «устаревшим». Полей нет —
+    /// None, версию добирает CDN-ссылка (ids_from_cdn_url).
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub version_id: Option<String>,
 }
 
 impl MrpackIndex {
@@ -577,6 +587,25 @@ async fn satisfy_missing_mods_checker(
     tasks
 }
 
+/// D64: projectId/versionId КОНКРЕТНОГО файла из его CDN-ссылки
+/// (`…/data/<project>/versions/<version>/<filename>`). Запасной источник для
+/// content-manifest: официальная спека не требует этих полей в files[], не
+/// все паки их пишут. Паковый version_id (index.version_id) сюда НЕ годится:
+/// это версия пака, и сверка с ней считала бы весь свежий пак «устаревшим».
+fn ids_from_cdn_url(url: &str) -> (Option<String>, Option<String>) {
+    const MARKER: &str = "cdn.modrinth.com/data/";
+    let Some(rest) = url.split(MARKER).nth(1) else {
+        return (None, None);
+    };
+    let mut seg = rest.split('/');
+    let project = seg.next().filter(|s| !s.is_empty()).map(String::from);
+    let version = match (seg.next(), seg.next()) {
+        (Some("versions"), Some(v)) if !v.is_empty() => Some(v.to_string()),
+        _ => None,
+    };
+    (project, version)
+}
+
 /// Полная установка .mrpack: инстанс по dependencies → overrides поверх →
 /// файлы с хэшами → content-manifest. Возвращает созданный инстанс.
 ///
@@ -706,19 +735,23 @@ pub async fn install_mrpack(
         } else {
             continue; // конфиги и прочее — не контент для обновлений
         };
+        // D64: projectId/versionId КОНКРЕТНОГО файла, не пака: спека их не
+        // описывает, Modrinth App пишет — иначе добираем из CDN-ссылки. Когда
+        // нет ни в JSON, ни в ссылке, запись остаётся без version_id и
+        // обновления по ней не проверяются (как legacy-записи) — писать
+        // версию ПАКА нельзя: check_updates сверяет её с версией мода и
+        // перекачивал бы весь свежий пак целиком.
+        let (url_project, url_version) = f
+            .downloads
+            .first()
+            .map(|u| ids_from_cdn_url(u))
+            .unwrap_or((None, None));
         manifest.push(ContentEntry {
             kind,
             file: rel_str,
             source: ContentSource::Modrinth,
-            // projectId зашит в ссылке CDN (cdn.modrinth.com/data/<id>/versions/…)
-            // — извлекаем, чтобы UI показывал иконки и названия модов модпака.
-            project_id: f.downloads.first().and_then(|u| {
-                let marker = "cdn.modrinth.com/data/";
-                let rest = u.split(marker).nth(1)?;
-                let pid = rest.split('/').next()?;
-                (!pid.is_empty()).then(|| pid.to_string())
-            }),
-            version_id: Some(index.version_id.clone()),
+            project_id: f.project_id.clone().or(url_project),
+            version_id: f.version_id.clone().or(url_version),
             sha1: f.hashes.get("sha1").cloned(),
             url: f.downloads.first().cloned(),
             enabled: true,
@@ -840,11 +873,11 @@ pub async fn install_modpack_project(
     // первого, финальный sha1 ловил гонку. Файл по-прежнему удаляется после
     // установки и при сбоях ниже — меняется только сам путь, не жизненный цикл.
     let tmp_tail = uuid::Uuid::new_v4().simple().to_string();
-    let tmp_path = crate::util::fs::long_path(&tmp_dir.join(format!(
-        "{}-{}",
-        &tmp_tail[..8],
-        file.filename
-    )));
+    // D64: filename из API — не доверенный путь: санитайзер (как в install/
+    // updates) не даст «имени» вида `../../x` вынести temp наружу каталога.
+    let tmp_name = crate::modrinth::api::sanitize_file_name(&file.filename);
+    let tmp_path =
+        crate::util::fs::long_path(&tmp_dir.join(format!("{}-{tmp_name}", &tmp_tail[..8])));
     let wrote = async {
         use futures::StreamExt;
         use std::io::Write as _;
@@ -1456,6 +1489,8 @@ mod tests {
                 env: None,
                 downloads: vec!["https://cdn.modrinth.com/x.jar".to_string()],
                 file_size: 1,
+                project_id: None,
+                version_id: None,
             })
             .collect();
         let err = index.validate().unwrap_err();
@@ -1600,6 +1635,83 @@ mod tests {
         assert!(
             !existing_file_matches(dir.path(), Some(&good)),
             "каталог вместо файла (нечитаем) — перекачка"
+        );
+    }
+
+    /// D64: CDN-ссылка — запасной источник projectId/versionId КОНКРЕТНОГО
+    /// файла; не-cdn и усечённые ссылки дают None (пакетную версию
+    /// index.version_id подставлять в манифест нельзя — см. тест ниже).
+    #[test]
+    fn cdn_url_yields_project_and_version() {
+        let (p, v) = ids_from_cdn_url(
+            "https://cdn.modrinth.com/data/AABBCC/versions/xy12zz/sodium.jar",
+        );
+        assert_eq!(p.as_deref(), Some("AABBCC"));
+        assert_eq!(v.as_deref(), Some("xy12zz"));
+        assert_eq!(ids_from_cdn_url("http://127.0.0.1:9/x.jar"), (None, None));
+        assert_eq!(
+            ids_from_cdn_url("https://cdn.modrinth.com/data/"),
+            (None, None)
+        );
+        assert_eq!(
+            ids_from_cdn_url("https://cdn.modrinth.com/data/AABBCC"),
+            (Some("AABBCC".into()), None),
+            "без versions/ проекта нет версии"
+        );
+    }
+
+    /// D64-регресс: в content-manifest пишется projectId/versionId
+    /// КОНКРЕТНОГО файла (Modrinth App кладёт их в files[]), а не версия ПАКА
+    /// (index.version_id) — check_updates сверяет запись с версией мода, и
+    /// паковая версия делала весь свежий пак «устаревшим» с полной
+    /// перекачкой модов.
+    #[tokio::test]
+    async fn manifest_records_per_file_version_not_pack() {
+        let app = axum::Router::new().route(
+            "/mods/x.jar",
+            axum::routing::get(|| async { axum::body::Body::from(MOD_BYTES.to_vec()) }),
+        );
+        let base = spawn_axum(app).await;
+        let sha1 = crate::util::fs::sha1_bytes(MOD_BYTES);
+        let index = format!(
+            r#"{{"formatVersion":1,"game":"minecraft","versionId":"pack-1.0",
+                 "name":"Тест-пак",
+                 "files":[{{"path":"mods/x.jar","hashes":{{"sha1":"{sha1}"}},
+                            "downloads":["{base}/mods/x.jar"],"fileSize":{size},
+                            "projectId":"proj-x","versionId":"file-ver-9"}}],
+                 "dependencies":{{"minecraft":"1.21.1"}}}}"#,
+            size = MOD_BYTES.len()
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(&dir);
+        let pack = dir.path().join("pack.mrpack");
+        write_mrpack(&pack, &index);
+
+        let client = Arc::new(HttpClient::new(None).unwrap());
+        let engine = DownloadEngine::new(client.clone(), 2, EventBus::default());
+        let inst = install_mrpack(
+            &paths,
+            &Settings::default(),
+            engine,
+            client,
+            "mrpack:ids",
+            &pack,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let manifest = crate::instances::load_content_manifest(&paths, &inst.id);
+        assert_eq!(manifest.len(), 1, "{manifest:?}");
+        assert_eq!(
+            manifest[0].project_id.as_deref(),
+            Some("proj-x"),
+            "projectId файла из files[]"
+        );
+        assert_eq!(
+            manifest[0].version_id.as_deref(),
+            Some("file-ver-9"),
+            "versionId ФАЙЛА, не версия пака pack-1.0"
         );
     }
 

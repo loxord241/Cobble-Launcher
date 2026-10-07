@@ -47,9 +47,15 @@ export function hasStoredLanguage(): boolean {
 
 let current = storedLanguage() ?? "en";
 
+// D64: <html lang> в index.html зашит «ru» и сам не обновляется — синхронно
+// приводим его к фактическому языку до первой отрисовки, иначе скринридеры
+// озвучивают интерфейс по-русски при любом выборе языка.
+if (typeof document !== "undefined") document.documentElement.lang = current;
+
 export function setLanguage(lang: string) {
   if (!isLang(lang)) return;
   current = lang;
+  if (typeof document !== "undefined") document.documentElement.lang = lang;
   try {
     localStorage.setItem(LANG_STORAGE_KEY, lang);
   } catch {
@@ -83,18 +89,28 @@ export function t(key: string, params?: Record<string, string | number>): string
 
 /**
  * A40: плюрализация числительных. Ключ — база, форма выбирается правилами
- * языка: ru/uk/pl — one/few/many (1 linia, 2 linie, 5 linii — у польского
- * те же славянские правила), en — one/other.
+ * языка. ru/uk — славянские правила (1/21 → one, 2–4 кроме 12–14 → few,
+ * иначе many); pl — свои: one ТОЛЬКО для точной единицы (n=1; «21 pobranie»
+ * — many, а не one), 2–4 кроме 12–14 → few, иначе many; en — one/other.
  * Набор форм `one/few/many/other` есть во всех словарях (паритет ключей);
  * недостижимые для языка формы служат только этому паритету.
  * {n} подставляется всегда.
  */
 function pluralCandidates(lang: string, n: number): string[] {
-  if (lang === "ru" || lang === "uk" || lang === "pl") {
-    const mod10 = n % 10;
-    const mod100 = n % 100;
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (lang === "ru" || lang === "uk") {
     const primary =
       mod10 === 1 && mod100 !== 11
+        ? "one"
+        : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+          ? "few"
+          : "many";
+    return [primary, "many", "few", "one", "other"];
+  }
+  if (lang === "pl") {
+    const primary =
+      n === 1
         ? "one"
         : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
           ? "few"
@@ -123,15 +139,17 @@ export function errorText(e: ErrorPayload): string {
   // network_detail («Проблема с сетью: <причина>»), иначе текст задваивался.
   const short = errorDict.network_detail?.[current as keyof ErrorEntry];
   // Причина из ядра: пустая или равная коду детализации не несёт.
-  const detail = e.message && e.message !== e.code ? e.message : undefined;
+  // D64: сырой message ядра (кириллица) подклеиваем ТОЛЬКО в ru-интерфейсе —
+  // en/uk/pl получают локализованный текст по коду без русской каши в хвосте.
+  const ruMessage = current === "ru" && e.message && e.message !== e.code ? e.message : undefined;
   const base =
-    e.code === "network" && detail
-      ? `${short ?? localized ?? e.code}: ${detail}`
+    e.code === "network" && ruMessage
+      ? `${short ?? localized ?? e.code}: ${ruMessage}`
       : // invalid_input без деталей бесполезен так же, как network: что именно
         // не прошло валидацию — в message. Симметрично network, но короче:
         // «локализованный текст (детали)».
-        e.code === "invalid_input" && detail
-        ? `${localized ?? e.code} (${detail})`
+        e.code === "invalid_input" && ruMessage
+        ? `${localized ?? e.code} (${ruMessage})`
         : (localized ?? e.message);
   // LOC#2: ядро отдаёт КОД подсказки (hintCode) — текст по словарю, иначе
   // en/uk/pl приклеивался бы русский совет из ядра.

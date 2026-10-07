@@ -74,6 +74,11 @@ pub enum LauncherEvent {
         phase: LaunchPhase,
         #[serde(skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
+        /// Unix-ms старта ЭТОГО запуска (только у событий живого супервизора):
+        /// фронт отличает устаревший exited старого процесса от свежего
+        /// preparing после быстрого перезапуска (D64).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        launch_started_at: Option<u64>,
     },
     GameLogLine {
         instance_id: String,
@@ -110,7 +115,11 @@ impl EventBus {
 
 impl Default for EventBus {
     fn default() -> Self {
-        Self::new(1024)
+        // 8192, а не 1024: подробный лог игры идёт построчно через GameLogLine,
+        // и при бурном выводе (краш-стеки, модпаки с дебаг-логами) канал
+        // 1024 переполнялся — broadcast вытеснял непрочитанные строки и в UI
+        // лог терялся. Слоты стоят копейки (указатель, не сообщение).
+        Self::new(8192)
     }
 }
 
@@ -124,12 +133,14 @@ mod tests {
             instance_id: "inst-1".into(),
             phase: LaunchPhase::Running,
             exit_code: Some(0),
+            launch_started_at: Some(1_700_000_000_000),
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"event\":\"launch_state\""));
         assert!(json.contains("\"instanceId\":\"inst-1\""));
         assert!(json.contains("\"phase\":\"running\""));
         assert!(json.contains("\"exitCode\":0"));
+        assert!(json.contains("\"launchStartedAt\":1700000000000"));
 
         let dl = LauncherEvent::DlProgress(DlProgress {
             group: "instance:inst-1".into(),

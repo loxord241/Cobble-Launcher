@@ -2,7 +2,7 @@
 import { create } from "zustand";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api, onCoreEvent } from "../api/client";
-import { apiErrorText } from "../i18n";
+import { apiErrorText, t } from "../i18n";
 import { useAccounts } from "./accounts";
 import type {
   CoreEvent,
@@ -55,6 +55,11 @@ interface InstancesState {
   logs: Record<string, string[]>;
   /** Состояние очереди загрузок ядра (A30): данные есть, UI-панели пока нет. */
   queueState: QueueState | null;
+  /**
+   * D64: производное queueState для индикатора Shell (F-волна Shell). null —
+   * ядро ничего не качает (и очередь пуста), иначе — только живые счётчики.
+   */
+  dlQueue: { pending: number; downloading: number } | null;
   crashReport: CrashReport | null;
   error: string | null;
   load: () => Promise<void>;
@@ -162,6 +167,21 @@ const WATCHDOG_MS = 90_000;
 const DL_FRESH_MS = 15_000;
 /** Момент последнего dl_progress по инстансу — критерий «загрузка жива». */
 const lastDlProgressAt = new Map<string, number>();
+/**
+ * D64: последний dl_progress ЛЮБОЙ группы — общий признак жизни ядра. Тихая
+ * докачка Java при запуске идёт группой `jre:{major}` без инстанса-владельца:
+ * без этого якоря watchdog снимал бы честную preparing на 90-й секунде, пока
+ * ядро активно качает JRE.
+ */
+let lastAnyDlProgressAt = 0;
+
+/**
+ * D64: инстансы, для которых «Стоп» нажат вручную. taskkill /F доходит до UI
+ * как launch_state(exited) с exit_code=1 — без метки штатный kill выглядел бы
+ * крашем и поднимал фантомную crash-модалку. Чистится в обработчике exited
+ * либо при новом launch (старый исход больше неактуален).
+ */
+const stoppingIds = new Set<string>();
 
 /** ENV-10 + P1: тик опроса — снимает зависшие статусы running и заглохшие
  *  preparing/downloading/launching. */
@@ -173,7 +193,8 @@ async function pollRunningProcesses() {
     if (st.phase !== "preparing" && st.phase !== "downloading" && st.phase !== "launching") {
       return false;
     }
-    return now - st.startedAt > WATCHDOG_MS;
+    // D64: дедлайн фазы продлевает любой dl_progress (см. lastAnyDlProgressAt).
+    return now - Math.max(st.startedAt, lastAnyDlProgressAt) > WATCHDOG_MS;
   });
   // Пока UI не считает запущенным ничего и нечему протухать, ядро дёргать не о чем.
   if (!entries.some(([, st]) => st.phase === "running") && hung.length === 0) return;
@@ -194,7 +215,8 @@ async function pollRunningProcesses() {
         changed = true;
       } else if (
         (st.phase === "preparing" || st.phase === "downloading" || st.phase === "launching") &&
-        now - st.startedAt > WATCHDOG_MS &&
+        // D64: дедлайн фазы продлевает любой dl_progress (в т.ч. jre:*).
+        now - Math.max(st.startedAt, lastAnyDlProgressAt) > WATCHDOG_MS &&
         // Процесс по ядру не жив (подготовка/загрузка игрового процесса не имеют)
         !alive.has(id) &&
         // Активный dl_progress (события ~раз в секунду) держит фазу: не рвём
@@ -228,6 +250,7 @@ export const useInstances = create<InstancesState>((set, get) => ({
   status: {},
   logs: {},
   queueState: null,
+  dlQueue: null,
   crashReport: null,
   error: null,
   load: async () => {
@@ -279,6 +302,16 @@ export const useInstances = create<InstancesState>((set, get) => ({
         if (event.event === "launch_state") {
           const { instanceId, phase, exitCode } = event;
 
+          // D64: exited от УЖЕ заменённого запуска («Стоп» → «Играть» быстрее
+          // 0.5 с). Статус с startedAt заметно новее launchStartedAt события
+          // принадлежит новому запуску — событие старого процесса игнорируем
+          // целиком, иначе оно затирает свежий preparing. Порог 2 с — запас на
+          // дрожание часов между стартом статуса и меткой ядра.
+          if (phase === "exited" && typeof event.launchStartedAt === "number") {
+            const st = get().status[instanceId];
+            if (st && st.startedAt > event.launchStartedAt + 2000) return;
+          }
+
           set((s) => {
             const status = { ...s.status };
             if (phase === "exited" && !status[instanceId]) {
@@ -295,12 +328,17 @@ export const useInstances = create<InstancesState>((set, get) => ({
           });
 
           if (phase === "exited") {
+            // D64: exited после ручного «Стоп» — штатный исход (taskkill даёт
+            // exit_code=1), crash-анализ и модалку не запускаем. Логи и
+            // перечитку списка оставляем: хвост лога и статистика полезны
+            // и после остановки.
+            const manualStop = stoppingIds.delete(instanceId);
             // Дозаписать буферизованные строки: crash-анализ читает logs сразу.
             flushLogs();
             // Обновить статистику launchCount/lastPlayed из ядра
             void get().load();
 
-            if (exitCode !== undefined && exitCode !== 0) {
+            if (!manualStop && exitCode !== undefined && exitCode !== 0) {
               // A9: анализ запускаем с задержкой — последние строки stdout ещё
               // идут по IPC, и без паузы хвост падения в отчёт не попадает.
               setTimeout(() => {
@@ -343,8 +381,18 @@ export const useInstances = create<InstancesState>((set, get) => ({
         } else if (event.event === "dl_queue_state") {
           // A30: состояние очереди загрузок (pending/downloading/done/failed).
           // UI-панели под него пока нет — данные честно храним в сторе.
-          set({ queueState: event });
+          // D64: рядом держим готовый агрегат dlQueue для индикатора Shell,
+          // чтобы потребителю не приходилось сводить счётчики самому.
+          const { pending, downloading } = event;
+          set({
+            queueState: event,
+            dlQueue:
+              pending === 0 && downloading === 0 ? null : { pending, downloading },
+          });
         } else if (event.event === "dl_progress") {
+          // D64: любой прогресс — даже без инстанса-владельца (тихая докачка
+          // JRE, группа `jre:{major}`) — признак жизни ядра для watchdog.
+          lastAnyDlProgressAt = Date.now();
           // D18/D60: если ядро прислало instanceId — привязываем прогресс строго
           // к этому инстансу. Иначе (старое ядро) прежняя эвристика-фолбэк:
           // владелец по группе `instance:{id}`. Группы `mrpack:*` дают id
@@ -454,13 +502,20 @@ export const useInstances = create<InstancesState>((set, get) => ({
     unlistenCore = unlisten;
   },
   launch: async (id, player) => {
+    // D64: новый запуск отменяет метку ручного «Стоп» — поздний exited старого
+    // процесса отсечётся по launchStartedAt, метка больше не нужна.
+    stoppingIds.delete(id);
+    // D64: запуск без единого профиля молча идёт под «Player» — предупреждаем
+    // через готовый канал ошибки стора (баннер страницы), не блокируя запуск.
+    const accounts = useAccounts.getState();
+    const noAccount = accounts.loaded && accounts.list.length === 0;
     // Очистить логи перед новым запуском (в т.ч. ещё не сброшенный буфер)
     dropBufferedLogs(id);
     set((s) => ({
       status: { ...s.status, [id]: { phase: "preparing", startedAt: Date.now() } },
       logs: { ...s.logs, [id]: [] },
       crashReport: s.crashReport?.instanceId === id ? null : s.crashReport,
-      error: null,
+      error: noAccount ? t("accounts.launchNoAccountNotice") : null,
     }));
     try {
       await api.instanceLaunch(id, player);
@@ -477,13 +532,17 @@ export const useInstances = create<InstancesState>((set, get) => ({
   // F30: как launch, но ядро (instance_launch_safe) перед спавном применяет
   // безопасный режим: сбрасывает JVM-флаги инстанса и выключает шейдеры.
   launchSafe: async (id, player) => {
+    // D64: та же гигиена метки «Стоп» и предупреждения о профиле, что в launch.
+    stoppingIds.delete(id);
+    const accounts = useAccounts.getState();
+    const noAccount = accounts.loaded && accounts.list.length === 0;
     // Очистить логи перед новым запуском (в т.ч. ещё не сброшенный буфер)
     dropBufferedLogs(id);
     set((s) => ({
       status: { ...s.status, [id]: { phase: "preparing", startedAt: Date.now() } },
       logs: { ...s.logs, [id]: [] },
       crashReport: s.crashReport?.instanceId === id ? null : s.crashReport,
-      error: null,
+      error: noAccount ? t("accounts.launchNoAccountNotice") : null,
     }));
     try {
       await api.instanceLaunchSafe(id, player);
@@ -525,7 +584,16 @@ export const useInstances = create<InstancesState>((set, get) => ({
     await get().load();
   },
   stop: async (id: string) => {
-    await api.instanceKill(id);
+    // D64: метка ДО kill — exited от taskkill /F (exit_code=1) не должен
+    // поднимать crash-модалку. При неудаче kill метку снимаем: будущий
+    // настоящий краш этого инстанса должен быть показан.
+    stoppingIds.add(id);
+    try {
+      await api.instanceKill(id);
+    } catch (e) {
+      stoppingIds.delete(id);
+      throw e;
+    }
     set((s) => {
       const status = { ...s.status };
       delete status[id];

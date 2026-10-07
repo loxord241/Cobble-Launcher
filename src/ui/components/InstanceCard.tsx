@@ -52,34 +52,43 @@ function InstanceCard({
   const [iconBroken, setIconBroken] = useState(false);
   // Новая иконка могла быть валидной — флаг протухания сбрасываем.
   useEffect(() => setIconBroken(false), [inst.icon]);
+  // D64: битый арт из галереи пака не должен оставлять дыру в карточке —
+  // цепочка продолжается (иконка → панорама/процедурный арт).
+  const [artBroken, setArtBroken] = useState(false);
+  useEffect(() => setArtBroken(false), [inst.art]);
 
   // D63: панорама из собственных файлов игры — пока грузится/её нет,
-  // показывается пиксель-пейзаж; грузим только когда ни арта, ни иконки.
+  // показывается пиксель-пейзаж. D64: грузим не только при отсутствии
+  // арта/иконки, но и когда они битые — иначе панораме нет шанса.
+  // Второй аргумент — версия MC (ядро подбирает панораму своей эпохи).
   const [pano, setPano] = useState<string | null>(null);
+  const fallbackArt = (!inst.art || artBroken) && (!inst.icon || iconBroken);
   useEffect(() => {
     let alive = true;
     setPano(null);
-    if (!inst.art && !inst.icon) {
-      instancePanorama(inst.id).then((url) => {
+    if (fallbackArt) {
+      instancePanorama(inst.id, inst.mcVersion).then((url) => {
         if (alive) setPano(url);
       });
     }
     return () => {
       alive = false;
     };
-  }, [inst.id, inst.art, inst.icon]);
+  }, [inst.id, inst.mcVersion, fallbackArt]);
 
   return (
     <div className="group flex h-full flex-col overflow-hidden rounded-lg border border-border-app bg-card transition-all duration-200 hover:border-accent/70 hover:shadow-lg hover:shadow-black/25">
       {/* Арт: большой арт модпака из галереи, своя иконка (размытая подложка +
           чёткая копия в натуральном размере) или процедурная «карта» от имени */}
       <div className="relative aspect-[4/3] w-full shrink-0 overflow-hidden bg-surface-2">
-        {inst.art ? (
-          // Арт из галереи пака: полноценное изображение на всю область.
+        {inst.art && !artBroken ? (
+          // Арт из галереи пака: полноценное изображение на всю область;
+          // битое — падаем дальше по цепочке (иконка → панорама/процедурный).
           <img
             src={inst.art}
             alt=""
             draggable={false}
+            onError={() => setArtBroken(true)}
             className="size-full object-cover"
           />
         ) : inst.icon && !iconBroken ? (

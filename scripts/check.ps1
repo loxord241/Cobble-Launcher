@@ -8,8 +8,8 @@ npm run build
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Push-Location src-tauri
-Write-Host "==> cargo clippy -- -D warnings" -ForegroundColor Cyan
-cargo clippy -- -D warnings
+Write-Host "==> cargo clippy --all-targets -- -D warnings (тот же набор, что в ci.yml)" -ForegroundColor Cyan
+cargo clippy --all-targets -- -D warnings
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 
 Write-Host "==> cargo test" -ForegroundColor Cyan

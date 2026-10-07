@@ -111,7 +111,15 @@ pub async fn refresh_session(client: &HttpClient, refresh_token: &str) -> Result
                     "clientToken": CLIENT_TOKEN
                 })),
         )
-        .await?
+        .await?;
+    // D64: 401 — сервер отклонил креды сессии; раньше уходил в network-маппинг
+    // ниже и показывался как «сервер недоступен». Честный текст.
+    if resp.status().as_u16() == 401 {
+        return Err(LauncherError::InvalidInput(
+            "сервер ely.by отклонил учётные данные (401) — проверь логин или войди заново".into(),
+        ));
+    }
+    let resp = resp
         .error_for_status()
         .map_err(|e| LauncherError::network_err("ely.by refresh", &e))?;
     let resp: RefreshResp = client.json_timed(resp).await?;

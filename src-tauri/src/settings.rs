@@ -3,7 +3,7 @@
 use crate::errors::{LauncherError, Result};
 use crate::util::fs::atomic_write;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -13,6 +13,46 @@ fn is_hex_color(value: &str) -> bool {
     regex::Regex::new(r"^#[0-9a-fA-F]{6}$")
         .map(|re| re.is_match(value))
         .unwrap_or(false)
+}
+
+/// Допустимые логотипы (D38). Общий для `validate` и санитизации в `migrate`:
+/// рассинхрон списков означал бы, что `load` принимает то, что `save` отвергнет.
+const VALID_LOGOS: [&str; 7] = ["", "grass", "copper", "chest", "honey", "flat", "custom"];
+
+/// Битый settings.json отправить в карантин: переименовать в `settings.json.bad`
+/// (занятый слот не затираем — тогда `.bad.1`, `.bad.2`, ...). Иначе молча
+/// подставленные дефолты при первом же save ПЕРЕЗАПИСАЛИ бы файл вместе с
+/// curseforge-ключом и активным аккаунтом — карантин оставляет данные для
+/// ручного восстановления.
+fn quarantine_broken(path: &Path, reason: &str) {
+    let from = crate::util::fs::long_path(path);
+    for i in 0..10u32 {
+        let mut name = path.as_os_str().to_os_string();
+        match i {
+            0 => name.push(".bad"),
+            _ => name.push(format!(".bad.{i}")),
+        }
+        let candidate = PathBuf::from(name);
+        if candidate.exists() {
+            continue;
+        }
+        match std::fs::rename(&from, crate::util::fs::long_path(&candidate)) {
+            Ok(()) => {
+                tracing::warn!(
+                    "settings.json невалиден ({reason}) — перемещён в {}",
+                    candidate.display()
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("settings.json невалиден ({reason}), карантин не удался: {e}");
+                return;
+            }
+        }
+    }
+    tracing::warn!(
+        "settings.json невалиден ({reason}); слоты карантина заняты — файл оставлен как есть"
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,14 +142,23 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Загрузить; при отсутствии файла — дефолт. Миграции по schemaVersion.
+    /// Загрузить; при отсутствии файла — дефолт. Битый JSON не молча
+    /// подменяется дефолтом (которые затем затёрли бы файл при первом save):
+    /// сначала карантин в `settings.json.bad`, потом дефолт. Миграции по
+    /// schemaVersion.
     pub fn load(path: &Path) -> Result<Self> {
         let long = crate::util::fs::long_path(path);
         if !long.exists() {
             return Ok(Self::default());
         }
         let data = std::fs::read(&long)?;
-        let mut settings: Settings = serde_json::from_slice(&data)?;
+        let mut settings: Settings = match serde_json::from_slice(&data) {
+            Ok(s) => s,
+            Err(e) => {
+                quarantine_broken(&long, &e.to_string());
+                return Ok(Self::default());
+            }
+        };
         settings.migrate();
         Ok(settings)
     }
@@ -130,8 +179,7 @@ impl Settings {
                 self.ui_accent
             )));
         }
-        const LOGOS: [&str; 7] = ["", "grass", "copper", "chest", "honey", "flat", "custom"];
-        if !LOGOS.contains(&self.logo.as_str()) {
+        if !VALID_LOGOS.contains(&self.logo.as_str()) {
             return Err(LauncherError::InvalidInput(format!(
                 "logo: неизвестное значение {:?}",
                 self.logo
@@ -148,6 +196,16 @@ impl Settings {
             tracing::warn!("ui_accent в settings.json невалиден — сброшен в значение темы");
             self.ui_accent.clear();
         }
+        // Тот же принцип для logo: невалидное значение бьёт validate() и
+        // блокировало бы ВСЕ сохранения (смена аккаунта и пр.) — сбрасываем
+        // во встроенный дефолт, как ui_accent.
+        if !VALID_LOGOS.contains(&self.logo.as_str()) {
+            tracing::warn!(
+                "logo в settings.json невалиден ({:?}) — сброшен в значение по умолчанию",
+                self.logo
+            );
+            self.logo.clear();
+        }
         if self.schema_version < SCHEMA_VERSION {
             // Будущие миграции: match self.schema_version { 0 => {...}, ... }
             self.schema_version = SCHEMA_VERSION;
@@ -155,13 +213,37 @@ impl Settings {
     }
 }
 
-/// Экспорт настроек в JSON без секретов (F20): `curseforge_api_key` и
-/// `azure_client_id` обнуляются — файл может уйти другому человеку/машине,
-/// токены и клиентские id наружу не вывозим.
+/// `scheme://user:pass@host:port` → `scheme://host:port`. Креды прокси —
+/// такие же секреты, как ключи: в экспорт не вывозим. URL без userinfo
+/// (и вовсе без схемы) возвращается как есть.
+fn strip_proxy_credentials(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let rest = &url[scheme_end + "://".len()..];
+    // authority = до первого '/', '?' или '#'; userinfo — до последнего '@'.
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let Some(at) = authority.rfind('@') else {
+        return url.to_string();
+    };
+    let mut clean = String::with_capacity(url.len() - at - 1);
+    clean.push_str(&url[..scheme_end + "://".len()]);
+    clean.push_str(&authority[at + 1..]);
+    clean.push_str(&rest[authority_end..]);
+    clean
+}
+
+/// Экспорт настроек в JSON без секретов (F20): `curseforge_api_key`,
+/// `azure_client_id` и креды из `proxy_url` обнуляются/вычищаются — файл
+/// может уйти другому человеку/машине, секреты наружу не вывозим.
 pub fn export_json(s: &Settings) -> String {
     let mut clean = s.clone();
     clean.curseforge_api_key = None;
     clean.azure_client_id = None;
+    if let Some(url) = clean.proxy_url.take() {
+        clean.proxy_url = Some(strip_proxy_credentials(&url));
+    }
     // Pretty-формат: файл читают и правят руками. Сериализация структуры без
     // карт/чисел с плавающей точкой не падает, но паниковать запрещено.
     serde_json::to_string_pretty(&clean).unwrap_or_else(|_| "{}".into())
@@ -364,5 +446,65 @@ mod tests {
     #[test]
     fn import_json_rejects_broken_json() {
         assert!(import_json("не json").is_err());
+    }
+
+    #[test]
+    fn load_quarantines_broken_file_and_falls_back_to_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(&p, b"{ broken json").unwrap();
+        let s = Settings::load(&p).unwrap();
+        assert_eq!(s.download_parallelism, 16, "битый файл → дефолт");
+        let bad = dir.path().join("settings.json.bad");
+        assert!(bad.exists(), "битый файл сохранён в карантин");
+        assert!(!p.exists(), "оригинал переименован, не оставлен на месте");
+        // Дефолт можно сохранить: Settings::load больше не молча затирает
+        // битый файл (карантин уже забрал данные).
+        s.save(&p).unwrap();
+    }
+
+    #[test]
+    fn quarantine_does_not_overwrite_previous_bad() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(&p, b"{ first broken").unwrap();
+        Settings::load(&p).unwrap();
+        assert!(dir.path().join("settings.json.bad").exists());
+        std::fs::write(&p, b"{ second broken").unwrap();
+        Settings::load(&p).unwrap();
+        let first = std::fs::read_to_string(dir.path().join("settings.json.bad")).unwrap();
+        assert_eq!(first, "{ first broken", "прежний карантин не затёрт");
+        assert!(dir.path().join("settings.json.bad.1").exists());
+    }
+
+    #[test]
+    fn load_sanitizes_invalid_logo_from_hand_edited_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(&p, br##"{"logo": "javascript:alert(1)", "uiFont": "mono"}"##).unwrap();
+        let s = Settings::load(&p).unwrap();
+        assert_eq!(s.logo, "", "мусор в logo сброшен в дефолт, как ui_accent");
+        assert_eq!(s.ui_font, "mono", "валидное поле из файла сохранено");
+        // Санитизация разблокирует сохранение: logo больше не бьёт validate.
+        s.save(&p).unwrap();
+    }
+
+    #[test]
+    fn export_json_strips_proxy_credentials() {
+        let mut s = Settings {
+            proxy_url: Some("http://user:pa%40ss@proxy.local:8080".into()),
+            ..Default::default()
+        };
+        let json = export_json(&s);
+        assert!(
+            json.contains("\"proxyUrl\": \"http://proxy.local:8080\""),
+            "креды прокси вычищены, хост оставлен: {json}"
+        );
+        assert!(!json.contains("pa%40ss"), "пароль прокси не вывозится");
+
+        // Прокси без userinfo не трогаем.
+        s.proxy_url = Some("socks5://proxy.local:1080".into());
+        let json = export_json(&s);
+        assert!(json.contains("\"proxyUrl\": \"socks5://proxy.local:1080\""));
     }
 }

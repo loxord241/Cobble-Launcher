@@ -261,17 +261,36 @@ pub async fn instance_launch(
         let engine = state.engine_for(&group).await;
         let settings_guard = state.settings.read().await.clone();
         let http = state.http().await;
+        // Один срез активного аккаунта ДО launch_identity: и решение о
+        // AccountRefreshFailed, и javaagent ниже должны видеть ОДИН и тот же
+        // аккаунт — смена активного в момент подготовки смешивала бы identity
+        // одного аккаунта с javaagent другого.
+        let active_acc = crate::auth::active(&state.paths);
         // Идентичность активного аккаунта (offline/MSA/ely) — спека §6.8.
         let identity = match crate::auth::launch_identity(&state.paths, &http).await {
             Ok(id) => id,
             Err(e) => {
-                // Обновление токена не удалось (нет сети и пр.) — событие в UI + fallback.
-                state.bus.emit(crate::events::LauncherEvent::AccountRefreshFailed {
-                    account_id: crate::auth::active(&state.paths)
-                        .map(|a| a.id)
-                        .unwrap_or_default(),
-                    reason: e.to_string(),
-                });
+                // Обновление токена не удалось (нет сети и пр.) — событие в UI
+                // + fallback. Только для token-based аккаунтов: у офлайн-
+                // профиля (или когда аккаунта нет) сессия не «истекала» —
+                // событие вводило бы в заблуждение; молча идём в офлайн-
+                // идентичность.
+                if matches!(
+                    active_acc.as_ref().map(|a| a.kind),
+                    Some(
+                        crate::auth::AccountKind::Msa
+                            | crate::auth::AccountKind::Ely
+                            | crate::auth::AccountKind::Authlib
+                    )
+                ) {
+                    state.bus.emit(crate::events::LauncherEvent::AccountRefreshFailed {
+                        account_id: active_acc
+                            .as_ref()
+                            .map(|a| a.id.clone())
+                            .unwrap_or_default(),
+                        reason: e.to_string(),
+                    });
+                }
                 // Имя из IPC не доверяем: офлайн-uuid считается от того же
                 // санитизированного ника, который увидит игра (как в
                 // account_add_offline, ENV-13).
@@ -281,8 +300,10 @@ pub async fn instance_launch(
             }
         };
         // ely.by и свой authlib-сервер: authlib-injector + -javaagent.
-        let active_acc = crate::auth::active(&state.paths);
-        let javaagent = match (&active_acc, active_acc.as_ref().and_then(|a| a.authlib_server.clone())) {
+        let javaagent = match (
+            active_acc.as_ref(),
+            active_acc.as_ref().and_then(|a| a.authlib_server.clone()),
+        ) {
             (Some(crate::auth::Account { kind: crate::auth::AccountKind::Ely, .. }), _) => {
                 let jar =
                     crate::auth::ely::authlib_injector_jar(&http, &state.paths.cache_dir()).await?;
@@ -345,6 +366,7 @@ pub async fn instance_launch(
                 instance_id: inst_id_clone,
                 phase: crate::events::LaunchPhase::Exited,
                 exit_code: None,
+                launch_started_at: None,
             });
             return Ok(OkMsg { ok: true });
         }
@@ -356,6 +378,7 @@ pub async fn instance_launch(
                     instance_id: inst_id_clone,
                     phase: crate::events::LaunchPhase::Exited,
                     exit_code: None,
+                    launch_started_at: None,
                 });
                 return Err(e);
             }
@@ -390,10 +413,13 @@ pub async fn instance_launch(
 
 /// Guard «инстанс запущен» для операций, трогающих файлы игры (B9): игра
 /// держит их открытыми — на Windows это Sharing Violation. Вынесен из команды
-/// смены версии, чтобы тестироваться без State.
-fn ensure_not_running(paths: &crate::paths::Paths, id: &str) -> Result<()> {
+/// смены версии, чтобы тестироваться без State. `op` — что сейчас пойдёт
+/// («сменой версии»), чтобы в тексте ошибки было понятно, что остановить.
+fn ensure_not_running(paths: &crate::paths::Paths, id: &str, op: &str) -> Result<()> {
     if instances::running_pid(&instances::instance_dir(paths, id)).is_some() {
-        return Err(LauncherError::InvalidInput("инстанс запущен".into()));
+        return Err(LauncherError::InvalidInput(format!(
+            "инстанс запущен — останови игру перед {op}"
+        )));
     }
     Ok(())
 }
@@ -445,7 +471,7 @@ pub async fn instance_version_change(
     new_mc_version: String,
 ) -> Result<OkMsg> {
     // Запущенный инстанс менять нельзя (B9), затем формат и «та же версия».
-    ensure_not_running(&state.paths, &id)?;
+    ensure_not_running(&state.paths, &id, "сменой версии")?;
     let inst = instances::load(&state.paths, &id)?;
     validate_version_change(&inst.mc_version, &new_mc_version)?;
 
@@ -747,14 +773,20 @@ pub async fn content_update_all(
     let engine = state.engine_for(&group).await;
     let http = state.http().await;
     // F8: перед пакетным обновлением — авто-снапшот mods/ (ротация 3).
+    // Снапшот best-effort: неудача не срывает обновление, но должна
+    // оставлять след в логе (раньше ошибка тихо проглатывалась).
     {
         let snap_paths = state.paths.clone();
         let snap_id = instance_id.clone();
-        let _ = tauri::async_runtime::spawn_blocking(move || {
+        let snap_res = tauri::async_runtime::spawn_blocking(move || {
             crate::instances::snapshots::create(&snap_paths, &snap_id)
         })
         .await
-        .map_err(join_err);
+        .map_err(join_err)
+        .and_then(|inner| inner);
+        if let Err(e) = snap_res {
+            tracing::warn!("авто-снапшот mods перед обновлением не удался: {e}");
+        }
     }
     let out = crate::modrinth::updates::update_all(&state.paths, http, engine, &inst).await;
     state.engine_done(&group);
@@ -767,13 +799,24 @@ fn join_err(e: tauri::Error) -> LauncherError {
 }
 
 
+/// Результат установки модпака: инстанс + группа загрузок. Группа нужна
+/// фронту, чтобы подписаться на dl_progress/dl_queue_state и отменять
+/// установку через downloads_cancel_group — внутрь команды она раньше
+/// пряталась, и отменить установку снаружи было нечем.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModpackInstallResult {
+    pub instance: Instance,
+    pub group: String,
+}
+
 /// Установка .mrpack в новый инстанс (путь выбирается диалогом/drag&drop).
 #[tauri::command]
 pub async fn mrpack_install(
     state: State<'_, AppState>,
     path: String,
     name: Option<String>,
-) -> Result<Instance> {
+) -> Result<ModpackInstallResult> {
     // Ключ реестра движков = группа задач установки: иначе «Стоп» не нашёл бы,
     // что отменять (D1). У .mrpack до парсинга манифеста нет id — берём имя
     // файла. Хвост-uuid: две одновременные установки (переоткрытое окно
@@ -803,7 +846,7 @@ pub async fn mrpack_install(
     .await;
     // Группу снимаем в любом исходе (успех/ошибка) — как в content_install.
     state.engine_done(&group);
-    out
+    out.map(|instance| ModpackInstallResult { instance, group })
 }
 
 /// Установка модпака Modrinth по project_id: последняя версия → .mrpack →
@@ -813,7 +856,7 @@ pub async fn modpack_install(
     state: State<'_, AppState>,
     project_id: String,
     name: Option<String>,
-) -> Result<Instance> {
+) -> Result<ModpackInstallResult> {
     // Хвост-uuid — как в mrpack_install: параллельные установки одного
     // проекта не делят движок и tmp-файл.
     let group = format!("mrpack:{project_id}:{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
@@ -831,7 +874,16 @@ pub async fn modpack_install(
     )
     .await;
     state.engine_done(&group);
-    out
+    out.map(|instance| ModpackInstallResult { instance, group })
+}
+
+/// Отменить активную группу загрузок по имени (прогресс модпаков/ремонта —
+/// D1): снимает движок группы с регистрации и гасит его задачи. Для уже
+/// завершённой группы — no-op.
+#[tauri::command]
+pub async fn downloads_cancel_group(state: State<'_, AppState>, group: String) -> Result<()> {
+    state.cancel_engine_group(&group);
+    Ok(())
 }
 
 // ---------- оптимизация и процессы (спека §6.9, §6.10) ----------
@@ -879,18 +931,24 @@ pub async fn instance_kill(state: State<'_, AppState>, instance_id: String) -> R
             instance_id: instance_id.clone(),
             phase: crate::events::LaunchPhase::Exited,
             exit_code: None,
+            launch_started_at: None,
         });
-        // Если процесс уже успел запуститься — гарантированно гасим его тоже
+        // Если процесс уже успел запуститься — гарантированно гасим его тоже.
+        // taskkill внутри kill ждёт завершения — блокирующий вызов не в
+        // async-потоке (A20).
         let inst_dir = instances::instance_dir(&state.paths, &instance_id);
         if instances::running_pid(&inst_dir).is_some() {
-            let _ = instances::kill(&inst_dir);
+            let _ = tauri::async_runtime::spawn_blocking(move || instances::kill(&inst_dir)).await;
         }
         return Ok(OkMsg { ok: true });
     }
 
     let inst_dir = instances::instance_dir(&state.paths, &instance_id);
     if instances::running_pid(&inst_dir).is_some() {
-        instances::kill(&inst_dir)?;
+        // Блокирующий taskkill — не в async-потоке (A20).
+        tauri::async_runtime::spawn_blocking(move || instances::kill(&inst_dir))
+            .await
+            .map_err(join_err)??;
     } else {
         // Если PID уже неактивен, гарантируем очистку .lock и отправку события Exited в UI
         let _ = std::fs::remove_file(crate::util::fs::long_path(&inst_dir.join(".lock")));
@@ -898,6 +956,7 @@ pub async fn instance_kill(state: State<'_, AppState>, instance_id: String) -> R
             instance_id: instance_id.clone(),
             phase: crate::events::LaunchPhase::Exited,
             exit_code: None,
+            launch_started_at: None,
         });
     }
     // Основной путь пройден — тоже гасим суффикс-группы фоновых операций.
@@ -922,6 +981,7 @@ pub async fn instance_force_unlock(state: State<'_, AppState>, id: String) -> Re
             instance_id: id,
             phase: crate::events::LaunchPhase::Exited,
             exit_code: None,
+            launch_started_at: None,
         });
     }
     Ok(OkMsg { ok: true })
@@ -1014,7 +1074,11 @@ pub async fn account_add_msa_browser(
     let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
     crate::auth::keyring_set(&ref_name, &session.refresh_token)?;
     let acc = crate::auth::Account {
-        id: uuid::Uuid::new_v4().to_string(),
+        // D64: id = uuid профиля из сессии — стабилен между перелогинами.
+        // Раньше id был случайным при каждом входе: auth::add (retain по id)
+        // не находил старую запись, список плодил дубли, а плашка «сессия
+        // истекла» (D62) не снималась повторным входом.
+        id: session.uuid.clone(),
         kind: crate::auth::AccountKind::Msa,
         name: session.player_name.clone(),
         uuid: session.uuid.clone(),
@@ -1068,7 +1132,11 @@ pub async fn account_add_msa_poll(
     let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
     crate::auth::keyring_set(&ref_name, &session.refresh_token)?;
     let acc = crate::auth::Account {
-        id: uuid::Uuid::new_v4().to_string(),
+        // D64: id = uuid профиля из сессии — стабилен между перелогинами.
+        // Раньше id был случайным при каждом входе: auth::add (retain по id)
+        // не находил старую запись, список плодил дубли, а плашка «сессия
+        // истекла» (D62) не снималась повторным входом.
+        id: session.uuid.clone(),
         kind: crate::auth::AccountKind::Msa,
         name: session.player_name.clone(),
         uuid: session.uuid.clone(),
@@ -1092,7 +1160,9 @@ pub async fn account_add_ely(
     let ref_name = format!("ely-refresh-{}", uuid::Uuid::new_v4());
     crate::auth::keyring_set(&ref_name, &session.refresh_token)?;
     let acc = crate::auth::Account {
-        id: uuid::Uuid::new_v4().to_string(),
+        // D64: id = uuid профиля из сессии — стабилен между перелогинами
+        // (см. комментарий в account_add_msa_poll).
+        id: session.uuid.clone(),
         kind: crate::auth::AccountKind::Ely,
         name: session.player_name.clone(),
         uuid: session.uuid.clone(),
@@ -1345,6 +1415,9 @@ pub async fn loader_install(
     loader: String,
     loader_version: Option<String>,
 ) -> Result<Instance> {
+    // B9: установка загрузчика пишет version JSON в каталог игры — у занятой
+    // игры это Sharing Violation, как у смены версии.
+    ensure_not_running(&state.paths, &id, "установкой загрузчика")?;
     let inst = instances::load(&state.paths, &id)?;
     let settings_guard = state.settings.read().await.clone();
     let http = state.http().await;
@@ -1416,22 +1489,17 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> Res
     merged.proxy_url = normalized;
     let proxy = merged.proxy_url.clone();
     let old_proxy = state.settings.read().await.proxy_url.clone();
-    if proxy != old_proxy {
-        match HttpClient::new(proxy.as_deref()) {
-            Ok(new_http) => {
-                *state.http.write().await = Arc::new(new_http);
-                tracing::info!("HTTP-клиент обновлен с новым proxy_url");
-            }
-            // ENV-8: раньше ошибка конструктора только логировалась, битый
-            // proxy_url СОХРАНЯЛСЯ и все сетевые вызовы продолжали падать.
-            // Теперь настройки не сохраняются — пользователь сразу видит ошибку.
-            Err(e) => {
-                return Err(LauncherError::InvalidInput(format!(
-                    "некорректный proxy_url: {e}"
-                )));
-            }
-        }
-    }
+    // ENV-8: битый proxy_url не должен попасть в файл — валидируем его
+    // конструированием клиента заранее. Но живой клиент НЕ трогаем до
+    // успешной записи настроек: иначе при сбое записи файл и живой клиент
+    // расходились бы (клиент уже с новым прокси, файл — со старым).
+    let new_http = if proxy != old_proxy {
+        Some(HttpClient::new(proxy.as_deref()).map_err(|e| {
+            LauncherError::InvalidInput(format!("некорректный proxy_url: {e}"))
+        })?)
+    } else {
+        None
+    };
     // accounts_active_id принадлежит auth-потоку (account_active_set и пр.),
     // а не странице настроек: её снимок мог устареть, и слепое сохранение
     // откатывало бы смену активного аккаунта — берём значение с диска.
@@ -1448,6 +1516,11 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> Res
         };
     }
     merged.save(&state.paths.settings_file())?;
+    // Запись успешна — теперь можно подменить живой клиент.
+    if let Some(new_http) = new_http {
+        *state.http.write().await = Arc::new(new_http);
+        tracing::info!("HTTP-клиент обновлен с новым proxy_url");
+    }
     // F16/F17: офлайн-режим и лимит скорости применяются к актуальному
     // HTTP-клиенту (в т.ч. к созданному при смене прокси — swap уже был).
     let work_offline = merged.work_offline;
@@ -1513,6 +1586,9 @@ pub async fn instance_repair(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<crate::instances::repair::RepairReport> {
+    // B9: ремонт перезаписывает client-jar/libraries — занятая игра = Sharing
+    // Violation на Windows.
+    ensure_not_running(&state.paths, &id, "ремонтом")?;
     instances::load(&state.paths, &id)?;
     let group = format!("instance:{id}:repair");
     let engine = state.engine_for(&group).await;
@@ -1704,27 +1780,29 @@ pub async fn settings_import(
     .await
     .map_err(join_err)??;
     let mut settings = crate::settings::import_json(&data)?;
-    // Тот же путь, что settings_set: сначала proxy_url — свап HttpClient с
-    // валидацией (невалидный → ошибка в UI, настройки НЕ сохраняются), затем
-    // файл + свап стейта + офлайн-флаг/лимит скорости.
+    // Тот же путь, что settings_set: proxy_url — валидация без свапа
+    // (невалидный → ошибка в UI, настройки НЕ сохраняются), затем файл +
+    // свап живого клиента/стейта + офлайн-флаг/лимит скорости.
     let normalized = settings.proxy_url.take().filter(|s| !s.trim().is_empty());
     settings.proxy_url = normalized;
     let proxy = settings.proxy_url.clone();
     let old_proxy = state.settings.read().await.proxy_url.clone();
-    if proxy != old_proxy {
-        match HttpClient::new(proxy.as_deref()) {
-            Ok(new_http) => {
-                *state.http.write().await = Arc::new(new_http);
-                tracing::info!("HTTP-клиент обновлен с новым proxy_url (импорт настроек)");
-            }
-            Err(e) => {
-                return Err(LauncherError::InvalidInput(format!(
-                    "некорректный proxy_url: {e}"
-                )));
-            }
-        }
-    }
+    // Тот же инвариант, что в settings_set: proxy_url валидируется заранее
+    // (ENV-8 — битый не попадает в файл), живой клиент перестраивается
+    // только ПОСЛЕ успешной записи, чтобы при сбое записи файл и клиент
+    // не разошлись.
+    let new_http = if proxy != old_proxy {
+        Some(HttpClient::new(proxy.as_deref()).map_err(|e| {
+            LauncherError::InvalidInput(format!("некорректный proxy_url: {e}"))
+        })?)
+    } else {
+        None
+    };
     settings.save(&state.paths.settings_file())?;
+    if let Some(new_http) = new_http {
+        *state.http.write().await = Arc::new(new_http);
+        tracing::info!("HTTP-клиент обновлен с новым proxy_url (импорт настроек)");
+    }
     let work_offline = settings.work_offline;
     let speed_limit = settings.speed_limit_kbps;
     *state.settings.write().await = settings.clone();
@@ -1946,7 +2024,9 @@ pub async fn account_add_authlib(
     let server = crate::auth::custom::normalize_server_url(&server_url)?;
     let session = crate::auth::custom::login(&http, &server, &username, &password).await?;
     let acc = crate::auth::Account {
-        id: uuid::Uuid::new_v4().to_string(),
+        // D64: id = uuid профиля с authlib-сервера — стабилен между
+        // перелогинами (см. комментарий в account_add_msa_poll).
+        id: session.uuid.clone(),
         kind: crate::auth::AccountKind::Authlib,
         name: if session.player_name.is_empty() { username } else { session.player_name },
         uuid: session.uuid,
@@ -2180,6 +2260,13 @@ fn is_newer(latest: &str, current: &str) -> bool {
 pub async fn update_check(state: State<'_, AppState>) -> Result<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION").to_string();
     let http = state.http().await;
+    // Офлайн-гейт — как у соседних сетевых команд (auth/mclogs): проверка
+    // обновлений в режиме «Работать офлайн» лишена смысла.
+    if http.offline() {
+        return Err(LauncherError::OfflineMode(
+            "проверка обновлений лаунчера".into(),
+        ));
+    }
     let (latest, url, note) =
         match tokio::time::timeout(UPDATE_CHECK_TIMEOUT, fetch_latest_release(&http)).await {
             Ok(Ok((tag, url))) => (Some(tag), Some(url), None),
@@ -2370,12 +2457,12 @@ mod tests {
             std::process::id().to_string(),
         )
         .unwrap();
-        let err = ensure_not_running(&paths, &inst.id).unwrap_err();
+        let err = ensure_not_running(&paths, &inst.id, "сменой версии").unwrap_err();
         assert_eq!(err.code(), "invalid_input", "{err}");
 
         // Лок снят — операция разрешена.
         let _ = std::fs::remove_file(inst_dir.join(".lock"));
-        assert!(ensure_not_running(&paths, &inst.id).is_ok());
+        assert!(ensure_not_running(&paths, &inst.id, "сменой версии").is_ok());
     }
 
     /// P0-фикс: traversal-id контентных команд (content_installed/toggle/

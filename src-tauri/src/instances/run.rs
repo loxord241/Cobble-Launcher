@@ -2,7 +2,7 @@
 //! версия → загрузки в стор → hardlink в инстанс → Java → команда → спавн.
 
 use crate::errors::{LauncherError, Result};
-use crate::events::{EventBus, LaunchPhase, LauncherEvent};
+use crate::events::{DlProgress, EventBus, LaunchPhase, LauncherEvent};
 use crate::instances::{minecraft_dir, Instance, InstanceLock, LockFile, process_start_time};
 use crate::java::detect::{pick_java, scan_all, JavaInstall};
 use crate::mojang::assets::{
@@ -36,7 +36,16 @@ fn emit(bus: &EventBus, instance_id: &str, phase: LaunchPhase) {
         instance_id: instance_id.to_string(),
         phase,
         exit_code: None,
+        launch_started_at: None,
     });
+}
+
+/// Unix-время в миллисекундах — метка старта запуска для launch_state (D64).
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// `-Xmx` с клампом ram_mb к валидному диапазону (зеркало validate_instance_settings
@@ -53,29 +62,96 @@ fn xmx_flag(ram_mb: u32) -> String {
 /// обязаны проходить redaction (A15): логи модов/чата печатают токен доступа,
 /// а реестр секретов наполняется при авторизации (спека §11, «секреты не
 /// покидают процесс»). Логировался без redact только launcher.log — этого мало.
-fn write_game_line(
-    log_path: &std::path::Path,
-    bus: &EventBus,
-    instance_id: &str,
-    line: &str,
-    stream: crate::events::LogStream,
-) {
-    let safe = crate::util::redact::redact(line);
-    // ENV-4: handle лога живёт только внутри этой функции — игра (Log4j)
-    // пишет и РОТИРУЕТ тот же latest.log, чужой открытый дескриптор ломал
-    // ротацию и давал двойную запись с затиранием байтов. Append-режим на
-    // Windows дописывает в конец атомарно, дескриптор почти всегда закрыт.
-    // Открыть не удалось — запуск не роняем, событие в UI уходит как обычно.
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{safe}\n").as_bytes()));
-    bus.emit(LauncherEvent::GameLogLine {
-        instance_id: instance_id.to_string(),
-        line: safe,
-        stream,
-    });
+///
+/// Пачечная запись строк игры в `latest.log` (D64): раньше файл открывался на
+/// КАЖДУЮ строку лога — на активном логе это сотни open/write/close в секунду.
+/// Теперь строки буферизуются (до 64 строк или 200 мс — что раньше) и пишутся
+/// одним open + write_all. События GameLogLine остаются построчными (контракт
+/// фронта не меняется), redaction тоже построчный; строки копятся в единственном
+/// потоке супервизора, поэтому порядок в файле совпадает с порядком событий.
+struct GameLogWriter {
+    log_path: PathBuf,
+    pending: Vec<String>,
+    since_first: Option<std::time::Instant>,
+}
+
+impl GameLogWriter {
+    /// Пачка: 64 строки ИЛИ 200 мс с первой незаписанной — что раньше.
+    const MAX_LINES: usize = 64;
+    const MAX_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+
+    fn new(log_path: PathBuf) -> Self {
+        Self {
+            log_path,
+            pending: Vec::new(),
+            since_first: None,
+        }
+    }
+
+    /// Событие в UI уходит сразу; строка копится в буфере файла.
+    fn push(
+        &mut self,
+        bus: &EventBus,
+        instance_id: &str,
+        line: &str,
+        stream: crate::events::LogStream,
+    ) {
+        let safe = crate::util::redact::redact(line);
+        bus.emit(LauncherEvent::GameLogLine {
+            instance_id: instance_id.to_string(),
+            line: safe.clone(),
+            stream,
+        });
+        self.pending.push(format!("{safe}\n"));
+        if self.since_first.is_none() {
+            self.since_first = Some(std::time::Instant::now());
+        }
+        if self.ready() {
+            self.flush();
+        }
+    }
+
+    /// Пора ли писать: 64 строки или 200 мс с первой незаписанной — что раньше.
+    fn ready(&self) -> bool {
+        self.pending.len() >= Self::MAX_LINES
+            || self
+                .since_first
+                .is_some_and(|t| t.elapsed() >= Self::MAX_DELAY)
+    }
+
+    /// Дописать пачку одним open + write_all. Вызывается супервизором и по
+    /// заполнению пачки, и при завершении процесса/канала — фронт после exited
+    /// делает flushLogs/анализ краша, файл обязан быть дописан к этому моменту.
+    fn flush(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let blob = self.pending.concat();
+        self.pending.clear();
+        self.since_first = None;
+        // ENV-4: handle лога живёт только внутри этой функции — игра (Log4j)
+        // пишет и РОТИРУЕТ тот же latest.log, чужой открытый дескриптор ломал
+        // ротацию и давал двойную запись с затиранием байтов. Append-режим на
+        // Windows дописывает в конец атомарно, дескриптор почти всегда закрыт.
+        // Открыть не удалось — запуск не роняем, события в UI ушли как обычно.
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log_path)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, blob.as_bytes()));
+    }
+}
+
+/// Декод строки из потока игры (D64): `BufRead::lines` + `map_while(Result::ok)`
+/// обрывал поток на первом не-UTF-8 байте и нить умирала молча. Теперь читаем
+/// байтами до `\n` и декодируем с потерями: мусорный байт → U+FFFD, поток живёт
+/// до конца. Хвостовой `\r` от CRLF отрезается (split(b'\n') его оставляет).
+fn lossy_line(buf: &[u8]) -> String {
+    let mut line = String::from_utf8_lossy(buf).into_owned();
+    while line.ends_with('\r') || line.ends_with('\n') {
+        line.pop();
+    }
+    line
 }
 
 /// Подготовить инстанс к запуску: файлы, Java, команда (без спавна).
@@ -122,7 +198,15 @@ pub async fn prepare(
         .as_ref()
         .map(|j| j.major_version)
         .unwrap_or_else(|| fallback_major(&inst.mc_version));
-    let java = resolve_java(paths, settings, client.clone(), need_major, &inst.java_path).await?;
+    let java = resolve_java(
+        paths,
+        settings,
+        client.clone(),
+        need_major,
+        &inst.java_path,
+        Some(bus),
+    )
+    .await?;
     let is_arm = std::env::consts::ARCH.contains("arm");
     let os_ctx = OsContext::current(java.arch_bits, is_arm);
 
@@ -191,6 +275,16 @@ pub async fn prepare(
     if st.failed > 0 {
         for (url, reason) in &st.failed_items {
             tracing::error!("загрузка не удалась: {url}: {reason}");
+        }
+        // D64: офлайн — честная причина, а не «сеть»: в офлайн-режиме задачи
+        // движка падают с OfflineMode, и сводить их к Network («сервер
+        // недоступен») — враньё; фронт по offline_mode показывает подсказку
+        // offline_toggle (выключить офлайн-режим).
+        if client.offline() {
+            return Err(LauncherError::OfflineMode(format!(
+                "запуск: {0} загрузок не выполнено в офлайн-режиме",
+                st.failed
+            )));
         }
         return Err(LauncherError::network(format!(
             "{} загрузок не удалось (см. список в UI)",
@@ -458,40 +552,38 @@ pub struct AccountIdentity {
     pub javaagent: Option<String>,
 }
 
-pub fn offline_identity(nick: &str) -> AccountIdentity {
-    AccountIdentity {
-        player_name: nick.to_string(),
-        uuid: crate::auth::offline::offline_uuid(nick).to_string(),
-        access_token: "0".into(), // offline: token="0" (спека §6.8)
-        user_type: "legacy".into(),
-        javaagent: None,
-    }
-}
-
 /// Java для инстанса: путь из инстанса (валидация) → системная → Adoptium.
+/// `bus` — Some в запуске инстанса (D64: прогресс установки JRE виден фронту,
+/// иначе 90-с watchdog сбрасывал фазу запуска); None — установка JRE молчит
+/// (пути без шины событий: установка загрузчика).
 pub async fn resolve_java(
     paths: &Paths,
     settings: &crate::settings::Settings,
     client: Arc<HttpClient>,
     need_major: u32,
     instance_java_path: &Option<String>,
+    bus: Option<&EventBus>,
 ) -> Result<JavaInstall> {
-    // 1. Явный путь в инстансе
+    // 1. Явный путь в инстансе. D64: путь пользовательский — проверяем, что он
+    //    указывает на настоящий исполняемый файл Java (Windows — .exe; на
+    //    прочих ОС — исполняемый файл, но не .bat/.cmd/.exe скрипт-обёртки).
+    //    Раньше принимался любой путь, и ошибка всплывала непонятным сбоем
+    //    спавна вместо честного InvalidInput на границе настроек.
     if let Some(p) = instance_java_path {
         let exe = java_exe_of(PathBuf::from(p));
-        if exe.exists() {
-            let inst = crate::java::detect::inspect(&exe, "инстанс").await?;
-            if inst.major < need_major {
-                return Err(LauncherError::JavaNotFound(format!(
-                    "указанная Java {} < требуемой {need_major}",
-                    inst.major
-                )));
-            }
-            return Ok(inst);
+        if !valid_java_exe(&exe) {
+            return Err(LauncherError::InvalidInput(format!(
+                "javaPath указывает не на исполняемый файл Java (.exe): {p}"
+            )));
         }
-        return Err(LauncherError::JavaNotFound(format!(
-            "java_path не существует: {p}"
-        )));
+        let inst = crate::java::detect::inspect(&exe, "инстанс").await?;
+        if inst.major < need_major {
+            return Err(LauncherError::JavaNotFound(format!(
+                "указанная Java {} < требуемой {need_major}",
+                inst.major
+            )));
+        }
+        return Ok(inst);
     }
     // 2. Быстрый путь (PERF#5): свой рантайм jdk{major} — один probe вместо
     // полного сканирования, которое спавнит java -version на каждую Java.
@@ -508,11 +600,9 @@ pub async fn resolve_java(
     if let Some(found) = pick_java(need_major, &installs) {
         return Ok(found.clone());
     }
-    // 4. Adoptium (спека §6.5, M2)
+    // 4. Adoptium (спека §6.5, M2) — с видимым фронту прогрессом (D64).
     tracing::info!("Java {need_major} не найдена — скачиваю с Adoptium");
-    let exe = crate::java::adoptium::install_jre(&client, &paths.runtime_dir(), need_major, |_, _| {})
-        .await?;
-    crate::java::detect::inspect(&exe, "adoptium").await
+    install_jre_with_progress(bus, client, &paths.runtime_dir(), need_major).await
 }
 
 fn java_exe_of(dir_or_exe: PathBuf) -> PathBuf {
@@ -522,6 +612,108 @@ fn java_exe_of(dir_or_exe: PathBuf) -> PathBuf {
     } else {
         dir_or_exe.join("bin").join(name)
     }
+}
+
+/// D64: пользовательский javaPath обязан указывать на настоящий исполняемый
+/// файл Java: на Windows — только `.exe`; на прочих ОС — исполняемый файл,
+/// но не `.bat`/`.cmd`/`.exe` скрипт-обёртки (через них под видом Java можно
+/// подсовывать что угодно, а спавн с CREATE_NO_WINDOW по скрипту ломается).
+fn valid_java_exe(exe: &std::path::Path) -> bool {
+    if !exe.is_file() {
+        return false;
+    }
+    let ext = exe
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    if cfg!(windows) {
+        ext.as_deref() == Some("exe")
+    } else {
+        match ext.as_deref() {
+            Some("bat" | "cmd" | "exe") => false,
+            _ => unix_executable(exe),
+        }
+    }
+}
+
+/// Исполняемый бит для не-Windows ветки valid_java_exe.
+#[cfg(unix)]
+fn unix_executable(exe: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(exe)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn unix_executable(_exe: &std::path::Path) -> bool {
+    true
+}
+
+/// Установка JRE с видимым фронту прогрессом (D64). Раньше колбэк был пустым
+/// (`|_, _| {}`): UI не получал ни одного DlProgress, 90-секундный watchdog
+/// сбрасывал фазу запуска («инстанс уже запускается»), хотя загрузка шла.
+/// Группа `jre:{major}` без instance_id — рантайм общий для всех инстансов;
+/// события троттлятся до ~10/с (спека §4.4), watchdog фронта продлевается
+/// любым DlProgress. По завершении (успех/ошибка) уходит DlGroupDone, чтобы
+/// UI не держал висящую полосу прогресса. `bus: None` — установка молчит
+/// (пути без шины событий, например установка загрузчика).
+async fn install_jre_with_progress(
+    bus: Option<&EventBus>,
+    client: Arc<HttpClient>,
+    runtime_dir: &std::path::Path,
+    major: u32,
+) -> Result<JavaInstall> {
+    let group = format!("jre:{major}");
+    let started = std::time::Instant::now();
+    // (последний эмит, был ли хоть один) — троттлинг 100 мс.
+    let throttle =
+        Arc::new(std::sync::Mutex::new((Option::<std::time::Instant>::None, false)));
+    let on_progress = {
+        // Клон шины (broadcast sender) — замыкание обязано быть 'static.
+        let bus = bus.cloned();
+        let group = group.clone();
+        let throttle = throttle.clone();
+        move |done: u64, total: u64| {
+            let Some(bus) = bus.as_ref() else { return };
+            let now = std::time::Instant::now();
+            let mut st = throttle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if st.0.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(100)) {
+                return;
+            }
+            *st = (Some(now), true);
+            drop(st);
+            let secs = now.duration_since(started).as_secs_f64().max(0.001);
+            let bytes_per_sec = done as f64 / secs;
+            let eta_secs = if total > 0 && bytes_per_sec > 0.0 {
+                Some(((total.saturating_sub(done)) as f64 / bytes_per_sec).ceil() as u64)
+            } else {
+                None
+            };
+            bus.emit(LauncherEvent::DlProgress(DlProgress {
+                group: group.clone(),
+                instance_id: None,
+                done_files: 0,
+                total_files: 1,
+                done_bytes: done,
+                total_bytes: total,
+                bytes_per_sec,
+                eta_secs,
+            }));
+        }
+    };
+    let res = crate::java::adoptium::install_jre(&client, runtime_dir, major, on_progress).await;
+    if let Some(bus) = bus {
+        bus.emit(LauncherEvent::DlGroupDone {
+            group,
+            instance_id: None,
+            failed: res.is_err(),
+        });
+    }
+    let exe = res?;
+    crate::java::detect::inspect(&exe, "adoptium").await
 }
 
 /// Каталог для `Command::current_dir` (A50): дочерний процесс получает его
@@ -600,7 +792,7 @@ fn supervise_to_menu(
     std::fs::create_dir_all(crate::util::fs::long_path(&logs_dir))?;
     let log_path = crate::util::fs::long_path(&logs_dir.join("latest.log"));
     // ENV-4: только создаём/усекаем свежий лог на запуск и СРАЗУ закрываем —
-    // держать handle нельзя, его держит сама игра (см. write_game_line).
+    // держать handle нельзя, его держит сама игра (см. GameLogWriter::flush).
     drop(std::fs::File::create(&log_path)?);
 
     let stdout = child
@@ -616,9 +808,13 @@ fn supervise_to_menu(
     for stream in streams {
         let tx = tx.clone();
         std::thread::spawn(move || {
+            // D64: `lines().map_while(Result::ok)` обрывал поток на первом
+            // не-UTF-8 байте — нить умирала молча, хвост лога терялся.
+            // Построчное чтение байтов с lossy-декодом (см. lossy_line).
             let reader = std::io::BufReader::new(stream);
-            for line in reader.lines().map_while(std::result::Result::ok) {
-                if tx.send(line).is_err() {
+            for buf in reader.split(b'\n') {
+                let Ok(buf) = buf else { break };
+                if tx.send(lossy_line(&buf)).is_err() {
                     break;
                 }
             }
@@ -628,6 +824,7 @@ fn supervise_to_menu(
 
     let start = std::time::Instant::now();
     let mut found_at: Option<std::time::Instant> = None;
+    let mut logs = GameLogWriter::new(log_path);
     loop {
         if start.elapsed() > std::time::Duration::from_secs(timeout_secs) {
             break;
@@ -641,7 +838,7 @@ fn supervise_to_menu(
         }
         match rx.recv_timeout(std::time::Duration::from_millis(250)) {
             Ok(line) => {
-                write_game_line(&log_path, bus, instance_id, &line, crate::events::LogStream::Stdout);
+                logs.push(bus, instance_id, &line, crate::events::LogStream::Stdout);
                 if found_at.is_none() && line.contains("Sound engine started") {
                     found_at = Some(std::time::Instant::now());
                 }
@@ -650,10 +847,17 @@ fn supervise_to_menu(
                 if let Ok(Some(_)) = child.try_wait() {
                     break;
                 }
+                // Строки больше не идут, а пачка «созрела» по времени — пишем.
+                if logs.ready() {
+                    logs.flush();
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+    // Процесс/канал завершены — дописываем пачку ДО возврата: фронт анализирует
+    // latest.log после exited, файл обязан быть полным к этому моменту.
+    logs.flush();
     Ok(found_at.is_some())
 }
 
@@ -737,7 +941,7 @@ pub async fn install_loader(
                 Some(v) => v.to_string(),
                 None => pick_loader_version(&client, "forge", &inst.mc_version).await?,
             };
-            let java = resolve_java(paths, settings, client.clone(), need_major, &None).await?;
+            let java = resolve_java(paths, settings, client.clone(), need_major, &None, None).await?;
             let game_dir = minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
             std::fs::create_dir_all(crate::util::fs::long_path(&game_dir))?;
             let id = crate::loaders::forge::install(
@@ -759,7 +963,7 @@ pub async fn install_loader(
                 Some(v) => v.to_string(),
                 None => pick_loader_version(&client, "neoforge", &inst.mc_version).await?,
             };
-            let java = resolve_java(paths, settings, client.clone(), need_major, &None).await?;
+            let java = resolve_java(paths, settings, client.clone(), need_major, &None, None).await?;
             let game_dir = minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
             std::fs::create_dir_all(crate::util::fs::long_path(&game_dir))?;
             let id = crate::loaders::neoforge::install(
@@ -834,6 +1038,7 @@ pub fn launch_detached(
         instance_id: instance_id.to_string(),
         phase: LaunchPhase::Running,
         exit_code: None,
+        launch_started_at: Some(unix_ms()),
     });
 
     let paths_clone = paths.clone();
@@ -909,9 +1114,12 @@ fn supervise_detached(
         let tx = tx.clone();
         std::thread::spawn(move || {
             let Some(stream) = stream else { return };
+            // D64: lossy-чтение вместо lines().map_while — не-UTF-8 байт больше
+            // не обрывает поток молча (подробно в supervise_to_menu).
             let reader = std::io::BufReader::new(stream);
-            for line in std::io::BufRead::lines(reader).map_while(std::result::Result::ok) {
-                if tx.send((line, kind)).is_err() {
+            for buf in std::io::BufRead::split(reader, b'\n') {
+                let Ok(buf) = buf else { break };
+                if tx.send((lossy_line(&buf), kind)).is_err() {
                     break;
                 }
             }
@@ -920,6 +1128,8 @@ fn supervise_detached(
     drop(tx);
 
     let started = std::time::Instant::now();
+    let started_unix = unix_ms();
+    let mut logs = GameLogWriter::new(log_path);
     // F30: «игра дошла до запуска» — тот же маркер меню, что в
     // supervise_to_menu. Краш ДО него считается падением запуска (инкремент
     // crash_count); достигнутый running или нулевой выход — сброс счётчика.
@@ -927,18 +1137,22 @@ fn supervise_detached(
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(500)) {
             Ok((line, stream)) => {
-                write_game_line(&log_path, bus, instance_id, &line, stream);
+                logs.push(bus, instance_id, &line, stream);
                 if !saw_running && line.contains("Sound engine started") {
                     saw_running = true;
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if let Ok(Some(status)) = child.try_wait() {
+                    // D64: дописываем пачку ДО Exited — фронт после exited делает
+                    // flushLogs и анализ краша, latest.log обязан быть полным.
+                    logs.flush();
                     let code = status.code();
                     bus.emit(LauncherEvent::LaunchState {
                         instance_id: instance_id.to_string(),
                         phase: LaunchPhase::Exited,
                         exit_code: code,
+                        launch_started_at: Some(started_unix),
                     });
                     // A28: статистика пишется атомарно под SAVE_LOCK,
                     // чтобы не затереть настройки, сохранённые из UI во время игры.
@@ -951,15 +1165,22 @@ fn supervise_detached(
                     drop(lock);
                     return;
                 }
+                // Строки нет, но пачка «созрела» по времени — пишем (200 мс).
+                if logs.ready() {
+                    logs.flush();
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+    // Канал закрыт — дописываем пачку до ожидания выхода и события Exited.
+    logs.flush();
     let exit_code = child.wait().ok().and_then(|s| s.code());
     bus.emit(LauncherEvent::LaunchState {
         instance_id: instance_id.to_string(),
         phase: LaunchPhase::Exited,
         exit_code,
+        launch_started_at: Some(started_unix),
     });
     // A28: атомарно под SAVE_LOCK (см. instances::update).
     let _ = crate::instances::update(paths, instance_id, |inst| {
@@ -1088,14 +1309,15 @@ mod tests {
         let mut rx = bus.subscribe();
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("latest.log");
-        // ENV-4: файл write_game_line открывает сам (append на каждую строку).
-        write_game_line(
-            &log_path,
+        // ENV-4: файл GameLogWriter открывает сам на flush (append пачкой).
+        let mut w = GameLogWriter::new(log_path.clone());
+        w.push(
             &bus,
             "inst-1",
             &format!("Authorization: Bearer {secret}"),
             LogStream::Stdout,
         );
+        w.flush();
 
         let text = std::fs::read_to_string(&log_path).unwrap();
         assert!(!text.contains(secret), "секрет утёк в latest.log: {text}");
@@ -1115,13 +1337,14 @@ mod tests {
         // паники нет, событие в UI всё равно уходит и остаётся чистым.
         let bad_log = dir.path().join("log-dir");
         std::fs::create_dir(&bad_log).unwrap();
-        write_game_line(
-            &bad_log,
+        let mut bad = GameLogWriter::new(bad_log);
+        bad.push(
             &bus,
             "inst-2",
             &format!("token={secret}"),
             LogStream::Stderr,
         );
+        bad.flush();
         let LauncherEvent::GameLogLine { line, .. } = rx.try_recv().unwrap() else {
             panic!("ожидалось событие GameLogLine");
         };
@@ -1366,6 +1589,72 @@ mod tests {
         assert!(inst.jvm_flags.is_empty(), "флаги сброшены независимо от шейдеров");
         assert_eq!(actions.len(), 1, "мера только о флагах: {actions:?}");
         assert!(actions[0].contains("JVM"), "{actions:?}");
+    }
+
+    /// D64: декод строки потока — не-UTF-8 байт даёт U+FFFD (а не обрыв потока,
+    /// как раньше с lines().map_while), хвостовой \r от CRLF отрезается.
+    #[test]
+    fn lossy_line_decodes_and_trims() {
+        assert_eq!(lossy_line(b"plain"), "plain");
+        assert_eq!(lossy_line(b"ok\r"), "ok", "хвостовой \\r от CRLF отрезан");
+        assert_eq!(lossy_line(b""), "");
+        let bad = vec![b'a', b'd', 0xFF, b'x'];
+        let decoded = lossy_line(&bad);
+        assert!(decoded.contains('\u{FFFD}'), "{decoded:?}");
+        assert!(decoded.starts_with("ad") && decoded.ends_with('x'), "{decoded:?}");
+    }
+
+    /// D64: пачечная запись — после MAX_LINES строк пачка на диске, хвост в
+    /// буфере; flush дописывает; события GameLogLine построчные и в порядке.
+    #[test]
+    fn game_log_writer_batches_and_flushes() {
+        let bus = EventBus::new(256);
+        let mut rx = bus.subscribe();
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("latest.log");
+        let mut w = GameLogWriter::new(log_path.clone());
+        let total = GameLogWriter::MAX_LINES + 6;
+        for i in 0..total {
+            w.push(&bus, "inst", &format!("line-{i}"), LogStream::Stdout);
+        }
+        // 64 строки уже на диске, последние 6 — в буфере.
+        let written = std::fs::read_to_string(&log_path).unwrap();
+        assert!(written.contains("line-63"), "первая пачка записана");
+        assert!(
+            !written.contains("line-64"),
+            "хвост обязан быть в буфере: {written}"
+        );
+        w.flush();
+        let full = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(full.lines().count(), total, "всё дописано одним хвостом");
+        assert!(full.contains("line-69"));
+        for i in 0..total {
+            let LauncherEvent::GameLogLine { line, .. } = rx.try_recv().unwrap() else {
+                panic!("ожидалось GameLogLine");
+            };
+            assert_eq!(line, format!("line-{i}"), "события построчные и по порядку");
+        }
+    }
+
+    /// D64: пользовательский javaPath — только настоящий исполняемый файл
+    /// (Windows-ветка: .exe да, .bat/нет расширения/каталог/отсутствующий — нет).
+    #[test]
+    fn valid_java_exe_accepts_only_real_executables() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("java.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+        assert!(valid_java_exe(&exe), ".exe файл проходит");
+
+        let bat = dir.path().join("java.bat");
+        std::fs::write(&bat, b"@echo off").unwrap();
+        assert!(!valid_java_exe(&bat), ".bat — не исполняемый файл Java");
+
+        let noext = dir.path().join("javaw");
+        std::fs::write(&noext, b"MZ").unwrap();
+        assert!(!valid_java_exe(&noext), "без .exe — отказ");
+
+        assert!(!valid_java_exe(&dir.path().join("missing.exe")), "файла нет");
+        assert!(!valid_java_exe(dir.path()), "каталог — не файл");
     }
 
     /// D62: запись .lock после спавна (JSON pid+startTime, как в

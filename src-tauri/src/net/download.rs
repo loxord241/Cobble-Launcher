@@ -7,7 +7,7 @@ use crate::events::{DlProgress, DlQueueState, EventBus, LauncherEvent};
 use crate::net::http::{backoff_delay, retryable_wait, HttpClient};
 use crate::util::fs::{long_path, part_path_unique, sha1_file, sha512_file};
 use futures::StreamExt;
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -155,14 +155,43 @@ enum StreamFail {
     Local(LauncherError),
 }
 
+/// D64: флаг отмены группы + маркер «поднят во время активного прогона».
+/// Сброс в начале run() стирает только флаги, поднятые во время прошлых
+/// прогонов (остатки отмены/паузы — движок не «кирпич»); cancel, выставленный
+/// пока движок простаивал (окно между регистрацией движка/add_tasks и стартом
+/// run()), переживает старт — раньше reset_run_flags его стирал: «Стоп»
+/// терялся, а движок, уже снятый с реестра (cancel_engine_group), делал
+/// докачку неотменяемой.
+struct GroupFlag {
+    flag: Arc<AtomicBool>,
+    set_in_run: bool,
+}
+
 struct Runtime {
     tasks: Mutex<Vec<TaskEntry>>,
+    /// D64: max-heap кандидатов (priority, idx) — замена линейного скана vec
+    /// в take_next_pending (O(n) на каждое взятие = O(n^2) на очередь из
+    /// тысяч задач: воркеры простаивали под мьютексом). Устаревшие ключи
+    /// (задача ушла из Pending после повторного пуша) выбрасываются лениво.
+    /// idx стабилен: vec задач только растёт, задачи не удаляются.
+    pending: Mutex<BinaryHeap<(u32, usize)>>,
+    /// D64: (alive, failed) по группам; alive = Pending + Downloading.
+    /// Обновляются в тех же критических секциях, что и смена состояний
+    /// (порядок захвата: tasks → group_stats → pending). Заменяет полный
+    /// скан vec в finish_group_if_complete — тот зовётся после КАЖДОЙ задачи.
+    group_stats: Mutex<HashMap<String, (u64, u64)>>,
     /// PERF#6: уникальные группы — задачи из вектора не удаляются, поэтому
     /// множество растёт только в add_tasks; тикеру не нужно клонировать
     /// тысячи строк под локом каждые 100 мс.
     groups: Mutex<std::collections::HashSet<String>>,
     global_cancel: AtomicBool,
-    group_cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// D64: global_cancel поднят во время активного прогона? (аналог
+    /// GroupFlag::set_in_run — см. reset_run_flags).
+    global_cancel_in_run: AtomicBool,
+    group_cancels: Mutex<HashMap<String, GroupFlag>>,
+    /// D64: идёт ли сейчас прогон run() — сеттеры флагов отмены помечают их
+    /// «поднят в прогоне» по этому признаку (см. GroupFlag).
+    running: AtomicBool,
     paused: AtomicBool,
     done_files: AtomicU64,
     failed_files: AtomicU64,
@@ -188,9 +217,13 @@ impl DownloadEngine {
             bus,
             rt: Runtime {
                 tasks: Mutex::new(Vec::new()),
+                pending: Mutex::new(BinaryHeap::new()),
+                group_stats: Mutex::new(HashMap::new()),
                 groups: Mutex::new(std::collections::HashSet::new()),
                 global_cancel: AtomicBool::new(false),
+                global_cancel_in_run: AtomicBool::new(false),
                 group_cancels: Mutex::new(HashMap::new()),
+                running: AtomicBool::new(false),
                 paused: AtomicBool::new(false),
                 done_files: AtomicU64::new(0),
                 failed_files: AtomicU64::new(0),
@@ -215,42 +248,75 @@ impl DownloadEngine {
             .map(|e| (e.task.url.clone(), e.task.dest.clone()))
             .collect();
         let mut added = 0;
-        for t in tasks {
-            let dup = seen_file.contains(&file_key(&t))
-                || seen_url.contains(&(t.url.clone(), t.dest.clone()));
-            if dup {
-                tracing::debug!("дедуп задачи: {}", t.url);
-                continue;
+        // D64: пуш в heap кандидатов — пачкой после цикла (не держим второй
+        // мьютекс на каждую задачу); индексы стабильны, vec только растёт.
+        let mut fresh: Vec<(u32, usize)> = Vec::new();
+        let mut alive_by_group: HashMap<String, u64> = HashMap::new();
+        {
+            let mut groups = self.rt.groups.lock().unwrap();
+            for t in tasks {
+                let dup = seen_file.contains(&file_key(&t))
+                    || seen_url.contains(&(t.url.clone(), t.dest.clone()));
+                if dup {
+                    tracing::debug!("дедуп задачи: {}", t.url);
+                    continue;
+                }
+                seen_file.insert(file_key(&t));
+                seen_url.insert((t.url.clone(), t.dest.clone()));
+                groups.insert(t.group.clone());
+                *alive_by_group.entry(t.group.clone()).or_insert(0) += 1;
+                fresh.push((t.priority, guard.len()));
+                guard.push(TaskEntry {
+                    task: t,
+                    state: TaskState::Pending,
+                    error: None,
+                });
+                added += 1;
             }
-            seen_file.insert(file_key(&t));
-            seen_url.insert((t.url.clone(), t.dest.clone()));
-            self.rt.groups.lock().unwrap().insert(t.group.clone());
-            guard.push(TaskEntry {
-                task: t,
-                state: TaskState::Pending,
-                error: None,
-            });
-            added += 1;
+        }
+        self.rt.pending.lock().unwrap().extend(fresh);
+        {
+            let mut stats = self.rt.group_stats.lock().unwrap();
+            for (group, n) in alive_by_group {
+                stats.entry(group).or_insert((0, 0)).0 += n;
+            }
         }
         added
     }
 
-    /// P3: полный сброс флагов прерывания в начале `run()` — новый прогон
-    /// стартует с чистыми global_cancel/paused и всеми group-флагами (после
-    /// отмены движок не «кирпич»).
+    /// P3: сброс флагов прерывания в начале `run()` — новый прогон стартует с
+    /// чистыми paused и «своими» cancel-флагами (после отмены движок не
+    /// «кирпич»).
+    /// D64: стираются ТОЛЬКО флаги, поднятые во время прошлых прогонов
+    /// (остатки отмены/паузы). Cancel, выставленный пока движок простаивал
+    /// (например, «Стоп» между add_tasks и стартом очереди), переживает
+    /// старт — иначе он терялся, а движок, уже снятый с реестра движков
+    /// (cancel_engine_group), делал докачку неотменяемой.
     fn reset_run_flags(&self) {
-        self.rt.global_cancel.store(false, Ordering::SeqCst);
         self.rt.paused.store(false, Ordering::SeqCst);
-        let map = self.rt.group_cancels.lock().unwrap();
-        for flag in map.values() {
-            flag.store(false, Ordering::SeqCst);
+        if self.rt.global_cancel_in_run.swap(false, Ordering::SeqCst) {
+            self.rt.global_cancel.store(false, Ordering::SeqCst);
+        }
+        let mut map = self.rt.group_cancels.lock().unwrap();
+        for gf in map.values_mut() {
+            if gf.set_in_run {
+                gf.flag.store(false, Ordering::SeqCst);
+                gf.set_in_run = false;
+            }
         }
     }
 
     /// Выполнить очередь до завершения (или паузы/отмены).
     /// Упавшие задачи остаются Failed — см. `queue_state` / `retry_failed`.
     pub async fn run(self: &Arc<Self>) -> Result<()> {
+        // D64: маркер «прогон активен» — ДО reset: сеттеры флагов отмены
+        // маркируют их «поднят в прогоне» по этому признаку, и residual-флаги
+        // текущего старта обязаны стираться (движок не «кирпич»).
+        self.rt.running.store(true, Ordering::SeqCst);
         self.reset_run_flags();
+        // D64: heap кандидатов пересобирается на старте — самовосстановление
+        // после паузы (задачи снова Pending) и любых расхождений с vec.
+        self.rebuild_pending_heap();
 
         let ticker = {
             let this = Arc::clone(self);
@@ -271,6 +337,7 @@ impl DownloadEngine {
             }
         }
         ticker.abort();
+        self.rt.running.store(false, Ordering::SeqCst);
 
         let st = self.queue_state();
         if st.failed > 0 {
@@ -285,7 +352,7 @@ impl DownloadEngine {
             {
                 return;
             }
-            let Some(entry) = self.take_next_pending() else {
+            let Some((idx, entry)) = self.take_next_pending() else {
                 return;
             };
             let permit = match sem.clone().acquire_owned().await {
@@ -297,19 +364,28 @@ impl DownloadEngine {
             drop(permit);
 
             let mut guard = self.rt.tasks.lock().unwrap();
-            if let Some(e) = guard.iter_mut().find(|e| e.task.id == entry.task.id) {
+            if let Some(e) = guard.get_mut(idx) {
+                // D64: счётчики группы обновляются ровно вместе со сменой
+                // состояния (порядок захвата tasks → group_stats → pending),
+                // чтобы finish_group_if_complete решал без скана vec.
+                let mut stats = self.rt.group_stats.lock().unwrap();
+                let gs = stats.entry(entry.task.group.clone()).or_insert((0, 0));
+                let mut back_to_queue = false;
                 match &result {
                     Ok(()) => {
                         e.state = TaskState::Done;
                         e.error = None;
                         self.rt.done_files.fetch_add(1, Ordering::SeqCst);
+                        gs.0 = gs.0.saturating_sub(1);
                     }
                     Err(LauncherError::Cancelled) => {
                         // Пауза → снова Pending (переживёт рестарт); отмена → Cancelled.
                         if self.rt.paused.load(Ordering::SeqCst) {
                             e.state = TaskState::Pending;
+                            back_to_queue = true;
                         } else {
                             e.state = TaskState::Cancelled;
+                            gs.0 = gs.0.saturating_sub(1);
                         }
                         e.error = Some("отменено".into());
                     }
@@ -317,10 +393,18 @@ impl DownloadEngine {
                         e.state = TaskState::Failed;
                         e.error = Some(err.to_string());
                         self.rt.failed_files.fetch_add(1, Ordering::SeqCst);
+                        gs.0 = gs.0.saturating_sub(1);
+                        gs.1 += 1;
                     }
                 }
+                if back_to_queue {
+                    // D64: взятие идёт из heap, а не сканом — задача,
+                    // вернувшаяся в Pending после паузы, без пуша пережила бы
+                    // рестарт незамеченной.
+                    self.rt.pending.lock().unwrap().push((e.task.priority, idx));
+                }
             }
-            drop(guard); // D62: дальше хелпер сам берёт лок tasks — вложенный захват std Mutex повесил бы поток
+            drop(guard); // D62: дальше хелпер сам берёт нужные локи — вложенный захват std Mutex хрупок
 
             // D62: группа без живых (Pending/Downloading) задач дошла до конца —
             // ровно один worker убирает её из реестра и шлёт dl_group_done.
@@ -335,22 +419,50 @@ impl DownloadEngine {
     }
 
     /// Взять следующую Pending-задачу с наивысшим приоритетом.
-    fn take_next_pending(&self) -> Option<TaskEntry> {
+    /// D64: был линейный скан всего vec под мьютексом на КАЖДОЕ взятие —
+    /// O(n^2) на очередь (тысячи задач = сотни миллионов итераций под локом,
+    /// воркеры простаивали). Теперь max-heap (priority, idx): O(log n) под
+    /// локом; устаревшие ключи (задача уже не Pending — повторный пуш после
+    /// retry/паузы) выбрасываются лениво. Порядок совпадает со старым
+    /// max_by_key: при равном приоритете берётся последняя добавленная
+    /// (больший idx).
+    fn take_next_pending(&self) -> Option<(usize, TaskEntry)> {
         let mut guard = self.rt.tasks.lock().unwrap();
-        let idx = guard
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.state == TaskState::Pending)
-            .max_by_key(|(_, e)| e.task.priority)
-            .map(|(i, _)| i)?;
-        guard[idx].state = TaskState::Downloading;
-        Some(guard[idx].clone())
+        let mut heap = self.rt.pending.lock().unwrap();
+        while let Some((_, idx)) = heap.pop() {
+            if let Some(e) = guard.get_mut(idx) {
+                if e.state == TaskState::Pending {
+                    e.state = TaskState::Downloading;
+                    return Some((idx, e.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// D64: пересобрать heap кандидатов из текущих Pending-задач (старт run()).
+    fn rebuild_pending_heap(&self) {
+        let guard = self.rt.tasks.lock().unwrap();
+        let mut heap = self.rt.pending.lock().unwrap();
+        heap.clear();
+        heap.extend(
+            guard
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.state == TaskState::Pending)
+                .map(|(i, e)| (e.task.priority, i)),
+        );
     }
 
     fn group_flag(&self, group: &str) -> Arc<AtomicBool> {
+        let in_run = self.rt.running.load(Ordering::SeqCst);
         let mut map = self.rt.group_cancels.lock().unwrap();
         map.entry(group.to_string())
-            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .or_insert_with(|| GroupFlag {
+                flag: Arc::new(AtomicBool::new(false)),
+                set_in_run: in_run,
+            })
+            .flag
             .clone()
     }
 
@@ -361,31 +473,23 @@ impl DownloadEngine {
     /// группы и молчат); заодно тикер перестаёт слебить пустую группу.
     /// None — в группе ещё есть живые задачи либо событие уже ушло.
     /// `failed` = в группе есть Failed-задачи (Cancelled отменой не считается —
-    /// отмена не «провал», её состояние UI видит в queue_state). Порядок
-    /// блокировок tasks → groups — как в add_tasks: обратный дал бы дедлок,
-    /// поэтому `failed` считается под ПЕРВЫМ локом tasks (состояния финальны:
-    /// живых задач нет, worker до них больше не дотянется до retry_failed).
-    /// group_cancels не трогаем — флаги отмены живут отдельно от реестра групп,
-    /// cancel_group обязан работать и после «завершения» группы.
+    /// отмена не «провал», её состояние UI видит в queue_state).
+    /// D64: было — полный скан vec на каждый вызов (а зовётся он после КАЖДОЙ
+    /// завершённой задачи) = O(n^2) на очередь; теперь счётчики (alive, failed)
+    /// из group_stats, обновляемые в тех же критических секциях, что и смена
+    /// состояний (см. add_tasks/worker/retry_failed). group_cancels не трогаем
+    /// — флаги отмены живут отдельно от реестра групп, cancel_group обязан
+    /// работать и после «завершения» группы.
     fn finish_group_if_complete(&self, group: &str) -> Option<bool> {
         let (alive, failed) = {
-            let guard = self.rt.tasks.lock().unwrap();
-            let mut alive = false;
-            let mut failed = false;
-            for e in guard.iter().filter(|e| e.task.group == group) {
-                match e.state {
-                    TaskState::Pending | TaskState::Downloading => alive = true,
-                    TaskState::Failed => failed = true,
-                    TaskState::Done | TaskState::Cancelled => {}
-                }
-            }
-            (alive, failed)
+            let stats = self.rt.group_stats.lock().unwrap();
+            stats.get(group).copied().unwrap_or((0, 0))
         };
-        if alive {
+        if alive > 0 {
             return None;
         }
         let mut groups = self.rt.groups.lock().unwrap();
-        groups.remove(group).then_some(failed)
+        groups.remove(group).then_some(failed > 0)
     }
 
     /// Скачать один файл: `.part` → хэш → атомарный rename.
@@ -397,19 +501,52 @@ impl DownloadEngine {
             // P3: ошибка ЧТЕНИЯ кэша (Defender/OneDrive придержали файл) — это
             // НЕ «хэш не совпал»: dest не трогаем, наружу уходит обычная
             // ретраибельная IO-ошибка (retry_failed/следующий прогон повторят).
-            let existing_ok = if let Some(sha) = &task.sha1 {
-                sha1_file(&task.dest)? == *sha
-            } else if let Some(sha) = &task.sha512 {
-                sha512_file(&task.dest)? == *sha
+            // D64 PERF: (b) fast-path по размеру из доверенного манифеста —
+            // расхождение решает судьбу файла БЕЗ чтения/хэширования (stat
+            // дешевле чтения гигабайтов на HDD).
+            let mut wrong_size = false;
+            if let Some(expected) = task.size {
+                if let Ok(m) = std::fs::metadata(&task.dest) {
+                    wrong_size = m.len() != expected;
+                }
+                // stat не удался — хэш-путь ниже вернёт честную IO-ошибку;
+                // без хэшей остаётся старое поведение «файл считается готовым».
+            }
+            if wrong_size {
+                // A26: удаление с повторами — файл мог придержать
+                // Defender/OneDrive; дальше обычная перекачка.
+                let _ = crate::util::fs::remove_file_with_retry(&task.dest);
+            } else if task.sha1.is_some() || task.sha512.is_some() {
+                // D64 PERF: (a) хэширование существующего файла — в
+                // blocking-пул: синхронное чтение гигабайтов в async-контексте
+                // блокировало tokio-воркеров на десятки секунд на HDD.
+                // Полная хэш-верификация при совпавшем размере обязательна
+                // (правило проекта: файлы проверяются по хэшам доверенных
+                // манифестов) — не ослабляем, только уносим из async.
+                let dest = task.dest.clone();
+                let want_sha1 = task.sha1.clone();
+                let want_sha512 = task.sha512.clone();
+                let verified = tokio::task::spawn_blocking(move || -> Result<bool> {
+                    if let Some(sha) = &want_sha1 {
+                        Ok(sha1_file(&dest)? == *sha)
+                    } else if let Some(sha) = &want_sha512 {
+                        Ok(sha512_file(&dest)? == *sha)
+                    } else {
+                        Ok(true)
+                    }
+                })
+                .await
+                .map_err(|e| LauncherError::Internal(format!("spawn_blocking (хэш кэша): {e}")))??;
+                if verified {
+                    return Ok(());
+                }
+                // A26: битый файл может быть придержан Defender/OneDrive —
+                // удаление с повторами вместо мгновенного отказа.
+                let _ = crate::util::fs::remove_file_with_retry(&task.dest);
             } else {
-                return Ok(());
-            };
-            if existing_ok {
+                // Хэшей нет, размер ок (или неизвестен) — кэш валиден.
                 return Ok(());
             }
-            // A26: битый файл может быть придержан Defender/OneDrive —
-            // удаление с повторами вместо мгновенного отказа.
-            let _ = crate::util::fs::remove_file_with_retry(&task.dest);
         }
         if let Some(parent) = task.dest.parent() {
             std::fs::create_dir_all(long_path(parent)).map_err(|e| {
@@ -743,8 +880,12 @@ impl DownloadEngine {
     /// worker'ом до взятия задачи — «no-op до первой задачи» здесь невозможен.)
     pub fn pause(&self) {
         self.rt.paused.store(true, Ordering::SeqCst);
-        for flag in self.rt.group_cancels.lock().unwrap().values() {
-            flag.store(true, Ordering::SeqCst);
+        // D64: пауза — производная прогона: её флаги всегда стираются
+        // следующим run() (иначе resume-прогон мгновенно «отменялся бы»),
+        // поэтому маркируем set_in_run безусловно.
+        for gf in self.rt.group_cancels.lock().unwrap().values_mut() {
+            gf.flag.store(true, Ordering::SeqCst);
+            gf.set_in_run = true;
         }
     }
 
@@ -752,17 +893,30 @@ impl DownloadEngine {
     /// P2-отмена: флаг создаётся немедленно и с `true` — раньше отмена до
     /// первой задачи группы была no-op (ленивый group_flag рождал свежий
     /// флаг с false и отмена терялась).
+    /// D64: флаг маркируется «поднят в прогоне» только если прогон активен —
+    /// cancel до старта прогона переживает reset_run_flags (см. GroupFlag).
     pub fn cancel_group(&self, group: &str) {
+        let in_run = self.rt.running.load(Ordering::SeqCst);
         let mut map = self.rt.group_cancels.lock().unwrap();
-        map.entry(group.to_string())
-            .or_insert_with(|| Arc::new(AtomicBool::new(true)))
-            .store(true, Ordering::SeqCst);
+        let gf = map
+            .entry(group.to_string())
+            .or_insert_with(|| GroupFlag {
+                flag: Arc::new(AtomicBool::new(true)),
+                set_in_run: in_run,
+            });
+        gf.flag.store(true, Ordering::SeqCst);
+        gf.set_in_run = in_run;
     }
 
+    /// D64: как cancel_group — cancel_all до старта прогона переживает его
+    /// старт (глобальный флаг маркируется аналогично group-флагов).
     pub fn cancel_all(&self) {
+        let in_run = self.rt.running.load(Ordering::SeqCst);
         self.rt.global_cancel.store(true, Ordering::SeqCst);
-        for flag in self.rt.group_cancels.lock().unwrap().values() {
-            flag.store(true, Ordering::SeqCst);
+        self.rt.global_cancel_in_run.store(in_run, Ordering::SeqCst);
+        for gf in self.rt.group_cancels.lock().unwrap().values_mut() {
+            gf.flag.store(true, Ordering::SeqCst);
+            gf.set_in_run = in_run;
         }
     }
 
@@ -770,12 +924,26 @@ impl DownloadEngine {
     pub fn retry_failed(&self) -> usize {
         let mut guard = self.rt.tasks.lock().unwrap();
         let mut n = 0;
-        for e in guard.iter_mut() {
+        let mut fresh: Vec<(u32, usize)> = Vec::new();
+        let mut retry_by_group: HashMap<String, u64> = HashMap::new();
+        for (idx, e) in guard.iter_mut().enumerate() {
             if e.state == TaskState::Failed {
                 e.state = TaskState::Pending;
                 e.error = None;
+                fresh.push((e.task.priority, idx));
+                *retry_by_group.entry(e.task.group.clone()).or_insert(0) += 1;
                 n += 1;
             }
+        }
+        drop(guard);
+        // D64: перезапущенные задачи обязаны попасть в heap кандидатов —
+        // иначе планировщик их больше не увидит (взятие идёт из heap).
+        self.rt.pending.lock().unwrap().extend(fresh);
+        let mut stats = self.rt.group_stats.lock().unwrap();
+        for (group, k) in retry_by_group {
+            let gs = stats.entry(group).or_insert((0, 0));
+            gs.0 += k;
+            gs.1 = gs.1.saturating_sub(k);
         }
         n
     }
@@ -899,27 +1067,74 @@ mod tests {
         let engine = DownloadEngine::new(Arc::new(HttpClient::new(None).unwrap()), 1, EventBus::default());
         engine.cancel_group("ghost");
         let map = engine.rt.group_cancels.lock().unwrap();
-        let flag = map.get("ghost").expect("флаг существует до первой задачи группы");
-        assert!(flag.load(Ordering::SeqCst), "предсозданный флаг обязан быть true");
+        let gf = map
+            .get("ghost")
+            .expect("флаг существует до первой задачи группы");
+        assert!(
+            gf.flag.load(Ordering::SeqCst),
+            "предсозданный флаг обязан быть true"
+        );
+        assert!(
+            !gf.set_in_run,
+            "движок простаивал — cancel обязан пережить reset_run_flags"
+        );
     }
 
-    /// P3: reset_run_flags (начало run()) сбрасывает paused, global_cancel
-    /// и ВСЕ group-флаги — после отмены движок не «кирпич».
+    /// P3/D64: флаги, поднятые ВО ВРЕМЯ прогона, стираются reset_run_flags —
+    /// после отмены/паузы движок не «кирпич», retry/resume работает.
     #[test]
-    fn reset_run_flags_clears_pause_and_group_flags() {
+    fn reset_run_flags_clears_flags_set_during_run() {
         let engine = DownloadEngine::new(Arc::new(HttpClient::new(None).unwrap()), 1, EventBus::default());
+        // Имитация активного run(): сеттеры маркируют флаги «поднят в прогоне».
+        engine.rt.running.store(true, Ordering::SeqCst);
         engine.cancel_group("g");
         engine.cancel_all();
         engine.pause();
         assert!(engine.rt.paused.load(Ordering::SeqCst));
+        engine.rt.running.store(false, Ordering::SeqCst);
 
         engine.reset_run_flags();
 
         assert!(!engine.rt.paused.load(Ordering::SeqCst));
-        assert!(!engine.rt.global_cancel.load(Ordering::SeqCst));
+        assert!(
+            !engine.rt.global_cancel.load(Ordering::SeqCst),
+            "cancel_all из прогона сброшен новым прогоном"
+        );
         let map = engine.rt.group_cancels.lock().unwrap();
-        let flag = map.get("g").expect("флаг группы жив после сброса");
-        assert!(!flag.load(Ordering::SeqCst), "group-флаг сброшен новым прогоном");
+        let gf = map.get("g").expect("флаг группы жив после сброса");
+        assert!(
+            !gf.flag.load(Ordering::SeqCst),
+            "group-флаг прогона сброшен новым прогоном"
+        );
+        assert!(!gf.set_in_run);
+    }
+
+    /// D64 (фикс потери «Стоп»): cancel, выставленный ДО старта прогона
+    /// (движок простаивал), переживает reset_run_flags в начале run() —
+    /// раньше он стирался: Stop в окне между add_tasks и стартом очереди
+    /// терялся, а движок, уже снятый с реестра, делал докачку неотменяемой.
+    /// paused при этом всегда стирается (resume-семантика паузы).
+    #[test]
+    fn reset_run_flags_keep_cancels_set_while_idle() {
+        let engine = DownloadEngine::new(Arc::new(HttpClient::new(None).unwrap()), 1, EventBus::default());
+        engine.pause();
+        engine.cancel_group("g");
+        engine.cancel_all();
+
+        engine.reset_run_flags();
+
+        assert!(!engine.rt.paused.load(Ordering::SeqCst), "пауза всегда сбрасывается");
+        assert!(
+            engine.rt.global_cancel.load(Ordering::SeqCst),
+            "глобальный cancel до старта прогона переживает старт"
+        );
+        let map = engine.rt.group_cancels.lock().unwrap();
+        let gf = map.get("g").expect("флаг группы жив после сброса");
+        assert!(
+            gf.flag.load(Ordering::SeqCst),
+            "group-cancel до старта прогона переживает старт"
+        );
+        assert!(!gf.set_in_run, "у пережившего флага маркер «в прогоне» снят");
     }
 
     /// P3: дедуп по (URL, dest): тот же URL в другой dest — РАЗНАЯ задача и
@@ -1078,6 +1293,199 @@ mod tests {
             engine.rt.groups.lock().unwrap().is_empty(),
             "завершённая группа убрана из реестра"
         );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ------------------------------------------------------------------ D64
+    // Планировщик очереди: heap кандидатов + счётчики групп вместо линейных
+    // сканов (O(n^2) → O(n log n) / O(1)).
+
+    /// D64: take_next_pending отдаёт задачи по убыванию приоритета; при равном
+    /// приоритете — последнюю добавленную (прежняя семантика max_by_key).
+    #[test]
+    fn take_next_pending_orders_by_priority_then_last_added() {
+        let engine =
+            DownloadEngine::new(Arc::new(HttpClient::new(None).unwrap()), 1, EventBus::default());
+        let mk = |id: &str, prio: u32| DownloadTask {
+            id: id.into(),
+            url: "http://127.0.0.1:1/x".into(),
+            dest: PathBuf::from(format!("C:/tmp/d64-order-{id}.bin")),
+            sha1: None,
+            sha512: None,
+            size: None,
+            group: "g".into(),
+            priority: prio,
+        };
+        engine.add_tasks(vec![mk("low", 1), mk("hi-a", 10), mk("mid", 5), mk("hi-b", 10)]);
+        for expected in ["hi-b", "hi-a", "mid", "low"] {
+            let (_, e) = engine.take_next_pending().expect("задача должна быть в очереди");
+            assert_eq!(e.task.id, expected, "порядок приоритетов нарушен");
+        }
+        assert!(engine.take_next_pending().is_none(), "очередь исчерпана");
+    }
+
+    /// D64: взятая (Downloading) задача не выдаётся дважды, а после
+    /// retry_failed снова доступна планировщику (вернулась в heap).
+    #[test]
+    fn retry_failed_returns_tasks_to_scheduler_heap() {
+        let engine =
+            DownloadEngine::new(Arc::new(HttpClient::new(None).unwrap()), 1, EventBus::default());
+        engine.add_tasks(vec![DownloadTask {
+            id: "x".into(),
+            url: "http://127.0.0.1:1/x".into(),
+            dest: PathBuf::from("C:/tmp/d64-retry-x.bin"),
+            sha1: None,
+            sha512: None,
+            size: None,
+            group: "g".into(),
+            priority: 0,
+        }]);
+        let (idx, taken) = engine.take_next_pending().expect("задача взята");
+        assert_eq!(taken.task.id, "x");
+        assert!(engine.take_next_pending().is_none(), "повторное взятие невозможно");
+        // Имитируем провал ровно как worker: состояние + счётчики группы.
+        {
+            let mut guard = engine.rt.tasks.lock().unwrap();
+            guard[idx].state = TaskState::Failed;
+            let mut stats = engine.rt.group_stats.lock().unwrap();
+            let gs = stats.get_mut("g").unwrap();
+            *gs = (gs.0 - 1, gs.1 + 1);
+        }
+        assert_eq!(engine.retry_failed(), 1);
+        let (_, again) = engine
+            .take_next_pending()
+            .expect("после retry_failed задача обязана вернуться в heap");
+        assert_eq!(again.task.id, "x");
+    }
+
+    /// D64: finish_group_if_complete решает по счётчикам (alive, failed):
+    /// живые (Pending/Downloading) держат группу, `failed` считают только
+    /// Failed-задачи (Cancelled нет) — семантика прежнего скана vec.
+    #[test]
+    fn finish_group_waits_for_alive_and_counts_failed_only() {
+        let engine =
+            DownloadEngine::new(Arc::new(HttpClient::new(None).unwrap()), 1, EventBus::default());
+        let mk = |id: &str| DownloadTask {
+            id: id.into(),
+            url: "http://127.0.0.1:1/x".into(),
+            dest: PathBuf::from(format!("C:/tmp/d64-fin-{id}.bin")),
+            sha1: None,
+            sha512: None,
+            size: None,
+            group: "g".into(),
+            priority: 0,
+        };
+        engine.add_tasks(vec![mk("a"), mk("b")]);
+        assert_eq!(
+            engine.rt.group_stats.lock().unwrap().get("g").copied(),
+            Some((2, 0)),
+            "add_tasks увеличил alive"
+        );
+        assert!(
+            engine.finish_group_if_complete("g").is_none(),
+            "живые задачи держат группу"
+        );
+        // Первая — Failed (как worker: alive-1, failed+1), вторая ещё Pending.
+        {
+            let mut guard = engine.rt.tasks.lock().unwrap();
+            guard[0].state = TaskState::Failed;
+        }
+        {
+            let mut stats = engine.rt.group_stats.lock().unwrap();
+            let gs = stats.get_mut("g").unwrap();
+            *gs = (gs.0 - 1, gs.1 + 1);
+        }
+        assert!(
+            engine.finish_group_if_complete("g").is_none(),
+            "вторая задача ещё жива"
+        );
+        // Вторая — Cancelled (alive-1, failed не трогаем) → Some(true).
+        {
+            let mut guard = engine.rt.tasks.lock().unwrap();
+            guard[1].state = TaskState::Cancelled;
+        }
+        {
+            let mut stats = engine.rt.group_stats.lock().unwrap();
+            let gs = stats.get_mut("g").unwrap();
+            *gs = (gs.0 - 1, gs.1);
+        }
+        assert_eq!(
+            engine.finish_group_if_complete("g"),
+            Some(true),
+            "Failed считаются, Cancelled — нет"
+        );
+        // Событие ровно один раз: группа убрана из реестра.
+        assert_eq!(engine.finish_group_if_complete("g"), None);
+    }
+
+    /// D64 PERF: fast-path по размеру. Размер из доверенного манифеста не
+    /// совпал → файл идёт в редownload БЕЗ чтения/хэширования (офлайн-клиент
+    /// даёт мгновенную ошибку — попытка качать была, а не «Ok из кэша», как
+    /// было бы без fast-path для задачи без хэшей).
+    #[tokio::test]
+    async fn size_mismatch_goes_to_redownload_without_hashing() {
+        let client = Arc::new(HttpClient::new(None).unwrap());
+        client.set_offline(true);
+        let engine = DownloadEngine::new(client, 1, EventBus::default());
+        let tmp = std::env::temp_dir().join("mcl-d64-size-fastpath");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let dest = tmp.join("f.bin");
+        std::fs::write(&dest, b"abc").unwrap(); // 3 байта на диске
+        let cancel = AtomicBool::new(false);
+        let task = |size: Option<u64>| DownloadTask {
+            id: "t".into(),
+            url: "http://127.0.0.1:1/f.bin".into(),
+            dest: dest.clone(),
+            sha1: None,
+            sha512: None,
+            size,
+            group: "g".into(),
+            priority: 0,
+        };
+        // Размер совпал, хэшей нет → кэш принят без сети (старое поведение).
+        engine.download_one(&task(Some(3)), &cancel).await.unwrap();
+        // Размер не совпал → редownload (офлайн → честная ошибка, не Ok).
+        let err = engine
+            .download_one(&task(Some(100)), &cancel)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LauncherError::OfflineMode(_)));
+        assert!(!dest.exists(), "файл неверного размера удалён перед перекачкой");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// D64 PERF: при совпавшем размере полная хэш-верификация обязательна
+    /// (правило проекта: файлы проверяются по хэшам доверенных манифестов) —
+    /// верный sha1 принимает файл из кэша, неверный уводит в редownload.
+    #[tokio::test]
+    async fn hash_verification_survives_size_fast_path() {
+        let client = Arc::new(HttpClient::new(None).unwrap());
+        client.set_offline(true);
+        let engine = DownloadEngine::new(client, 1, EventBus::default());
+        let tmp = std::env::temp_dir().join("mcl-d64-hash-after-size");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let dest = tmp.join("f.bin");
+        std::fs::write(&dest, b"abc").unwrap();
+        let cancel = AtomicBool::new(false);
+        let mut task = DownloadTask {
+            id: "t".into(),
+            url: "http://127.0.0.1:1/f.bin".into(),
+            dest: dest.clone(),
+            sha1: None,
+            sha512: None,
+            size: Some(3),
+            group: "g".into(),
+            priority: 0,
+        };
+        // Верный sha1 при совпавшем размере → Ok из кэша.
+        task.sha1 = Some(crate::util::fs::sha1_file(&dest).unwrap());
+        engine.download_one(&task, &cancel).await.unwrap();
+        // Неверный sha1 при ТОМ ЖЕ размере → редownload (офлайн-ошибка), не Ok.
+        task.sha1 = Some("0".repeat(40));
+        let err = engine.download_one(&task, &cancel).await.unwrap_err();
+        assert!(matches!(err, LauncherError::OfflineMode(_)));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -11,6 +11,8 @@ interface SettingsState {
   /** Ошибка начальной загрузки: App показывает экран с «Повторить» (D6). */
   error: string | null;
   load: () => Promise<void>;
+  /** F20/D64: импорт файла настроек — в отличие от load() применяет и язык. */
+  importFrom: (path: string) => Promise<void>;
   update: (patch: Partial<Settings>) => Promise<void>;
 }
 
@@ -123,6 +125,17 @@ export const useSettings = create<SettingsState>((set, get) => ({
         loaded: false,
       });
     }
+  },
+  importFrom: async (path) => {
+    await api.settingsImport(path);
+    await get().load();
+    // Импорт — явная команда «примени файл целиком», поэтому язык из файла
+    // применяем даже при сохранённом выборе в localStorage: обычный load()
+    // его намеренно не применяет (hasStoredLanguage), и селект языка показал
+    // бы импортированное значение, а интерфейс остался на прежнем языке.
+    // setLanguage сам игнорирует невалидный код — «если валиден» уже тут.
+    const lang = get().settings?.language;
+    if (lang) setLanguage(lang);
   },
   update: async (patch) => {
     const current = get().settings;

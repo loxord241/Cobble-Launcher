@@ -1,6 +1,6 @@
 # UI-CONTRACT
 
-Ревизия: 2026-10-07 (D62). Контракт «ядро ↔ UI» (спека §4.3). UI знает ТОЛЬКО
+Ревизия: 2026-10-07 (D64). Контракт «ядро ↔ UI» (спека §4.3). UI знает ТОЛЬКО
 этот список: имена команд, типы входа/выхода и события. Смена UI = переписать
 `src/ui` + `src/theme`, не трогая `src/api` и ядро.
 
@@ -21,8 +21,8 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 ## Команды (invoke)
 
-Все 91 команда `invoke_handler` (`src-tauri/src/lib.rs:211-303`; пересчитано по
-реестру, D62), обработчики — `src-tauri/src/commands/mod.rs` (кроме
+Все 93 команды `invoke_handler` (`src-tauri/src/lib.rs:211-305`; пересчитано по
+реестру, D64), обработчики — `src-tauri/src/commands/mod.rs` (кроме
 `shortcut_take_pending` — он в `lib.rs:61`).
 
 ### Инстансы и процессы
@@ -56,8 +56,9 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `content_remove` | `{instanceId, file}` | `null` (Rust `Result<()>`; файл + запись манифеста), запущено → invalid_input) | invalid_input, not_found, io |
 | `content_update_check` | `{instanceId}` | `UpdateCheck[]` | network, http, io, json |
 | `content_update_all` | `{instanceId}` | `number` (обновлено; группа `instance:{id}:update`; перед пакетом — авто-снапшот mods/ (F8); старый jar → `.trash/`) | network, hash_mismatch, io, json |
-| `mrpack_install` | `{path, name?}` | `Instance` (создаёт инстанс из dependencies; группа отмены `mrpack:<file_stem>`) | invalid_input, version_not_found, zip, zip_slip, java_not_found, network, hash_mismatch, cancelled, io, json |
-| `modpack_install` | `{projectId, name?}` | `Instance` (последняя версия проекта → `.mrpack` → тот же установщик) | invalid_input, version_not_found, zip, zip_slip, java_not_found, network, hash_mismatch, cancelled, io, json |
+| `mrpack_install` | `{path, name?}` | `ModpackInstallResult` {instance, group} (создаёт инстанс из dependencies; группа отмены `mrpack:<file_stem>:<uuid8>` — хвост от параллельных установок, D64) | invalid_input, version_not_found, zip, zip_slip, java_not_found, network, hash_mismatch, cancelled, io, json |
+| `modpack_install` | `{projectId, name?}` | `ModpackInstallResult` {instance, group} (последняя версия проекта → `.mrpack` → тот же установщик; группа `mrpack:<projectId>:<uuid8>`) | invalid_input, version_not_found, zip, zip_slip, java_not_found, network, hash_mismatch, cancelled, io, json |
+| `downloads_cancel_group` | `{group}` | `null` (Rust `Result<()>`; снимает движок группы с регистрации и гасит его задачи; для уже завершённой группы — no-op; D64: отмена установки модпака) | — |
 | `instance_backup` | `{id}` | `ArchiveResult` (zip в `backups/`; сейвы входят, `.lock`/`logs`/`crash-reports`/`cache` — нет) | not_found, io, zip, internal |
 | `instance_export` | `{id}` | `ArchiveResult` (`.mrpack` в `exports/`; сейвы НЕ входят, контент без url → `overrides/`) | not_found, io, json, zip, internal |
 | `instance_icon_set` | `{id, path}` | `Instance` (PNG/JPEG/WebP ≤ 300 КБ) | invalid_input, not_found, io, internal |
@@ -175,6 +176,9 @@ ContentEntry { kind: "mod"|"resourcepack"|"shader"|"datapack",
                     // datapack — F7: каталог minecraft/datapacks
 UpdateCheck { file, projectId, currentVersionId, latestVersionId, latestVersionNumber, changelog? }
 ArchiveResult { path, files, bytes }   // бэкап zip / экспорт .mrpack / бэкап мира
+ModpackInstallResult { instance, group }
+                    // mrpack_install / modpack_install (D64): инстанс + группа
+                    // загрузок для dl_progress и downloads_cancel_group
 RamGuide { totalMb, recommendedMb, warning? }
 Diagnosis { ruleId, title, advice }
 DeviceCodeStart { device_code, user_code, verification_uri, interval, expires_in }
@@ -198,10 +202,10 @@ LogoResult { ok, dataUrl }             // apply_logo (D38)
 
 | Событие | Payload |
 |---|---|
-| `dl_progress` | `{event:"dl_progress", group, instanceId?, doneFiles, totalFiles, doneBytes, totalBytes, bytesPerSec, etaSecs?}` — `group` = `instance:{id}` \| `mrpack:{...}` (D18); `instanceId` — владелец из группы, None в JSON не пишется (D60) |
-| `dl_group_done` | `{event:"dl_group_done", group, instanceId?, failed}` (D62: группа задач дошла до конца — успех/ошибка/отмена; фронт снимает виртуальный статус занятости инстанса по нему, а не watchdog-тишиной; `failed` = есть проваленные задачи; `instanceId` опционален как в dl_progress) |
+| `dl_progress` | `{event:"dl_progress", group, instanceId?, doneFiles, totalFiles, doneBytes, totalBytes, bytesPerSec, etaSecs?}` — `group` = `instance:{id}` \| `mrpack:{...}` (D18) \| `jre:{major}` (D64: тихая докачка Java при запуске, рантайм общий — без `instanceId`); `instanceId` — владелец из группы, None в JSON не пишется (D60) |
+| `dl_group_done` | `{event:"dl_group_done", group, instanceId?, failed}` (D62: группа задач дошла до конца — успех/ошибка/отмена; фронт снимает виртуальный статус занятости инстанса по нему, а не watchdog-тишиной; `failed` = есть проваленные задачи; `instanceId` опционален как в dl_progress; `jre:{major}` — как в dl_progress) |
 | `dl_queue_state` | `{event:"dl_queue_state", pending, downloading, done, failed, cancelled, failedItems}` |
-| `launch_state` | `{event:"launch_state", instanceId, phase:"preparing"\|"downloading"\|"launching"\|"running"\|"exited", exitCode?}` |
+| `launch_state` | `{event:"launch_state", instanceId, phase:"preparing"\|"downloading"\|"launching"\|"running"\|"exited", exitCode?, launchStartedAt?}` (`launchStartedAt` — unix-ms старта ЭТОГО запуска, только у событий живого супервизора; D64: фронт отличает устаревший `exited` старого процесса от свежего `preparing` после быстрого перезапуска) |
 | `game_log_line` | `{event:"game_log_line", instanceId, line, stream:"stdout"\|"stderr"}` |
 | `account_refresh_failed` | `{event:"account_refresh_failed", accountId, reason}` |
 | `shortcut_launch` | payload — `string` (id инстанса). НЕ событие шины ядра: эмитится плагином single-instance (`src-tauri/src/lib.rs:196`), когда второй процесс принёс аргументы ярлыка `instance-launch --id <id>`; слушается в `src/ui/layout/Shell.tsx:238`. Если окно ещё не создано, id ждёт в статике и забирается командой `shortcut_take_pending` |

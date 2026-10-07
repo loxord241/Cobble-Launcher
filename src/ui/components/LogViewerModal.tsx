@@ -28,6 +28,10 @@ type LevelFilter = "all" | "errors" | "warns";
 
 const FILTERS: LevelFilter[] = ["all", "errors", "warns"];
 
+// D64: архивный лог может быть на десятки МБ — рендерим только хвост,
+// иначе модалка фризит/ съедает память на построении DOM-узлов.
+const TAIL_LINES = 5000;
+
 export default function LogViewerModal({
   instance,
   onClose,
@@ -68,6 +72,14 @@ export default function LogViewerModal({
     return baseLines.filter((line) => line.includes(needle));
   }, [baseLines, filter]);
 
+  // Хвост вместо всей простыни: порядок строк сохранён, автоскролл и фильтр
+  // работают как раньше — внизу всегда самые свежие.
+  const visibleLines = useMemo(
+    () => (lines.length > TAIL_LINES ? lines.slice(-TAIL_LINES) : lines),
+    [lines],
+  );
+  const hiddenLines = lines.length - visibleLines.length;
+
   // История архивных логов (F23): грузим лениво, при первом раскрытии секции.
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<LogFileInfo[] | null>(null);
@@ -83,7 +95,7 @@ export default function LogViewerModal({
     if (autoScroll && containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [lines, autoScroll]);
+  }, [visibleLines, autoScroll]);
 
   // A56: таймер индикатора «Скопировано!» не должен жить после закрытия окна.
   useEffect(
@@ -95,7 +107,7 @@ export default function LogViewerModal({
 
   const copyLogs = async () => {
     try {
-      await navigator.clipboard.writeText(lines.join("\n"));
+      await navigator.clipboard.writeText(visibleLines.join("\n"));
       setCopied(true);
       if (copyTimer.current !== null) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => {
@@ -157,7 +169,10 @@ export default function LogViewerModal({
   };
 
   const openFolder = () => {
-    void api.instanceOpenDir(instance.id);
+    // D64: голый void без catch проглатывал ошибку IPC — показываем в статусе.
+    void api
+      .instanceOpenDir(instance.id)
+      .catch((e: unknown) => setError(apiErrorText(e)));
   };
 
   return (
@@ -297,14 +312,24 @@ export default function LogViewerModal({
         )}
 
         {/* Логи */}
+        {/* Пометка про хвост: всё, что выше отрезано, никуда не делось —
+            полный файл в каталоге логов (кнопка «Папка» ниже). */}
+        {hiddenLines > 0 && (
+          <p className="mt-2 text-xs text-text-muted" role="note">
+            {t("logs.tailNote", {
+              shown: visibleLines.length,
+              total: lines.length,
+            })}
+          </p>
+        )}
         <div
           ref={containerRef}
           className="mt-3 flex-1 overflow-y-auto rounded-md border border-border-app bg-bg p-3 font-mono text-xs leading-relaxed text-text selection:bg-accent selection:text-on-accent"
         >
-          {lines.length === 0 ? (
+          {visibleLines.length === 0 ? (
             <p className="text-text-muted">{t("instances.logs.empty")}</p>
           ) : (
-            lines.map((line, idx) => (
+            visibleLines.map((line, idx) => (
               <div key={idx} className="whitespace-pre-wrap break-all hover:bg-surface-2/40">
                 {line}
               </div>

@@ -447,6 +447,31 @@ pub(crate) fn validate_id_or_slug(id_or_slug: &str) -> Result<()> {
     }
 }
 
+/// Потолок имени файла из API в пути на диске: легальные Modrinth-имена —
+/// десятки символов, длиннющее — мусор (резерв под лимит пути Windows).
+const FILENAME_MAX_CHARS: usize = 180;
+
+/// D64: `filename` из ответа API попадает в пути на диске (join в install/
+/// updates/mrpack) — доверять строке нельзя (глюк API/подмена). Один
+/// санитайзер на всё ядро: сепараторы и control-символы вырезаются
+/// (разделителей нет — компонентов пути и `..` не остаётся), точки/пробелы
+/// по краям срезаются (Windows их всё равно съедает), длина ограничена,
+/// пусто → «download». Не ошибка, а приведение к безопасному имени: файл
+/// качается дальше по хэшу из доверенного API.
+pub fn sanitize_file_name(raw: &str) -> String {
+    let cut: String = raw
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+        .take(FILENAME_MAX_CHARS)
+        .collect();
+    let name = cut.trim().trim_matches(['.', ' ']);
+    if name.is_empty() {
+        "download".into()
+    } else {
+        name.to_string()
+    }
+}
+
 /// Страница проекта: `/project/{id|slug}` → wire-JSON → ProjectDetail.
 pub async fn project_detail(client: &HttpClient, id_or_slug: &str) -> Result<ProjectDetail> {
     // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
@@ -790,6 +815,33 @@ mod tests {
         assert!(validate_id_or_slug("../etc").is_err());
         assert!(validate_id_or_slug("a b").is_err());
         assert!(validate_id_or_slug("соль").is_err(), "не-ASCII — отказ");
+    }
+
+    /// D64: имя файла из API — один безопасный компонент: сепараторы и `..`
+    /// разваливаются, точки/пробелы по краям срезаются (нрав Windows),
+    /// control-символы вырезаются, длиннющее обрезается, пустое → дефолт.
+    #[test]
+    fn sanitizes_api_filename() {
+        assert_eq!(sanitize_file_name("../evil"), "evil");
+        assert_eq!(sanitize_file_name("a/b\\c.png"), "abc.png");
+        assert_eq!(
+            sanitize_file_name("имя с пробелами .png"),
+            "имя с пробелами .png",
+            "пробелы внутри не трогаем"
+        );
+        assert_eq!(sanitize_file_name(""), "download");
+        assert_eq!(sanitize_file_name("   "), "download");
+        assert_eq!(sanitize_file_name(".."), "download");
+        assert_eq!(sanitize_file_name("mod.jar..."), "mod.jar");
+        assert_eq!(
+            sanitize_file_name("mod\u{0}x.jar"),
+            "modx.jar",
+            "control-символы вырезаются"
+        );
+        let long = format!("{}.jar", "x".repeat(FILENAME_MAX_CHARS + 50));
+        let cut = sanitize_file_name(&long);
+        assert_eq!(cut.chars().count(), FILENAME_MAX_CHARS, "обрезка до потолка");
+        assert!(cut.starts_with("xxx"), "обрезка сохраняет начало имени");
     }
 }
 

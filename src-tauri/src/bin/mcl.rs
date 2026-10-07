@@ -21,7 +21,7 @@ use mc_launcher_v2_lib::paths::Paths;
 use mc_launcher_v2_lib::settings::Settings;
 use mc_launcher_v2_lib::util::win::hide_console;
 use std::collections::{BTreeMap, VecDeque};
-use std::io::{BufRead, Write};
+use std::io::{BufRead as _, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::RecvTimeoutError;
@@ -240,7 +240,7 @@ async fn run(cli: Cli) -> Result<()> {
             loader_version,
         } => cmd_loader_install(&paths, &settings, &id, &loader, loader_version.as_deref()).await,
         Cmd::MrpackInstall { file, name } => {
-            let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+            let client = std::sync::Arc::new(make_client(&settings)?);
             // У CLI шины нет — движок со своим EventBus (как в остальных командах mcl).
             let engine = DownloadEngine::new(
                 client.clone(),
@@ -273,7 +273,7 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Cmd::ModrinthSearch { query, mc, loader } => {
-            let client = HttpClient::new(settings.proxy_url.as_deref())?;
+            let client = make_client(&settings)?;
             let r = mc_launcher_v2_lib::modrinth::api::search(
                 &client,
                 &query,
@@ -316,7 +316,7 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Cmd::AuthMsaStart => {
-            let client = HttpClient::new(settings.proxy_url.as_deref())?;
+            let client = make_client(&settings)?;
             let client_id = settings.azure_client_id.clone().ok_or_else(|| {
                 LauncherError::InvalidInput(
                     "нет azureClientId в settings.json (инструкция в README, M8)".into(),
@@ -330,7 +330,7 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Cmd::AuthMsaPoll { device_code } => {
-            let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+            let client = std::sync::Arc::new(make_client(&settings)?);
             let client_id = settings.azure_client_id.clone().ok_or_else(|| {
                 LauncherError::InvalidInput("нет azureClientId в settings.json".into())
             })?;
@@ -340,7 +340,10 @@ async fn run(cli: Cli) -> Result<()> {
                         let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
                         mc_launcher_v2_lib::auth::keyring_set(&ref_name, &session.refresh_token)?;
                         let acc = mc_launcher_v2_lib::auth::Account {
-                            id: uuid::Uuid::new_v4().to_string(),
+                            // D64: id = uuid профиля из сессии — стабилен между
+                            // перелогинами (раньше каждый вход плодил новый
+                            // MSA-аккаунт: auth::add дедуплицирует по id).
+                            id: session.uuid.clone(),
                             kind: mc_launcher_v2_lib::auth::AccountKind::Msa,
                             name: session.player_name.clone(),
                             uuid: session.uuid.clone(),
@@ -360,7 +363,7 @@ async fn run(cli: Cli) -> Result<()> {
             std::process::exit(2);
         }
         Cmd::AuthMsaWeb => {
-            let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+            let client = std::sync::Arc::new(make_client(&settings)?);
             let client_id = settings.azure_client_id.clone().ok_or_else(|| {
                 LauncherError::InvalidInput("нет azureClientId в settings.json".into())
             })?;
@@ -399,7 +402,9 @@ async fn run(cli: Cli) -> Result<()> {
             let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
             mc_launcher_v2_lib::auth::keyring_set(&ref_name, &session.refresh_token)?;
             let acc = mc_launcher_v2_lib::auth::Account {
-                id: uuid::Uuid::new_v4().to_string(),
+                // D64: id = uuid профиля из сессии — стабилен между
+                // перелогинами (см. комментарий в auth-msa-poll).
+                id: session.uuid.clone(),
                 kind: mc_launcher_v2_lib::auth::AccountKind::Msa,
                 name: session.player_name.clone(),
                 uuid: session.uuid.clone(),
@@ -422,7 +427,7 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Cmd::InstanceImport { file, name } => {
-            let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+            let client = std::sync::Arc::new(make_client(&settings)?);
             let (inst, loader) = mc_launcher_v2_lib::import::import_archive(
                 &paths,
                 &settings,
@@ -433,16 +438,17 @@ async fn run(cli: Cli) -> Result<()> {
             .await?;
             println!("Импортирован: {} [{}] id={}", inst.name, inst.mc_version, inst.id);
             // D62: установку загрузчика теперь делает сам import_archive
-            // (внутри транзакции с откатом; в офлайн-режиме клиента — пропуск
-            // с warning и None). Дублирующий install_loader в CLI убран —
-            // оставлена только обработка результата.
+            // (внутри транзакции с откатом; D64: при офлайн-клиенте пак с
+            // загрузчиком — честный OfflineMode-отказ с откатом импорта).
+            // Дублирующий install_loader в CLI убран — оставлена только
+            // обработка результата.
             if let Some((kind, ver)) = loader {
                 println!("Загрузчик {kind} {ver} установлен");
             }
             Ok(())
         }
         Cmd::CrashAnalyze { log } => {
-            let text = std::fs::read_to_string(&log)?;
+            let text = crash_log_tail(&log)?;
             let d = mc_launcher_v2_lib::process::crash::analyze(&text);
             if d.is_empty() {
                 println!("Известных причин не найдено");
@@ -489,8 +495,7 @@ async fn cmd_launch(
 ) -> Result<()> {
     let t0 = Instant::now();
     paths.ensure_dirs()?;
-    let client = HttpClient::new(settings.proxy_url.as_deref())?;
-    let client = std::sync::Arc::new(client);
+    let client = std::sync::Arc::new(make_client(settings)?);
     let bus = EventBus::default();
     let engine = DownloadEngine::new(
         client.clone(),
@@ -736,6 +741,15 @@ fn crate_long(p: &Path) -> PathBuf {
     mc_launcher_v2_lib::util::fs::long_path(p)
 }
 
+/// D64: CLI уважает work_offline из settings.json — тумблер применяется при
+/// старте к каждому клиенту (как AppState::new в GUI, commands/mod.rs).
+/// Прежде CLI ходил в сеть даже при включённом «Работать офлайн».
+fn make_client(settings: &Settings) -> Result<HttpClient> {
+    let client = HttpClient::new(settings.proxy_url.as_deref())?;
+    client.set_offline(settings.work_offline);
+    Ok(client)
+}
+
 /// D62: простая эвристика для ЧЕЛОВЕЧЕСКОГО показа команды (не для исполнения):
 /// аргумент с пробелом или кавычкой берём в кавычки, внутренние кавычки
 /// экранируем. Пустой аргумент тоже квотируем, иначе он теряется в показе.
@@ -748,7 +762,7 @@ fn quote_for_display(arg: &str) -> String {
 }
 
 async fn cmd_java_install(paths: &Paths, settings: &Settings, major: u32) -> Result<()> {
-    let client = HttpClient::new(settings.proxy_url.as_deref())?;
+    let client = make_client(settings)?;
     println!("Скачиваю JRE {major} с Adoptium…");
     let java = mc_launcher_v2_lib::java::adoptium::install_jre(&client, &paths.runtime_dir(), major, |done, total| {
         if total > 0 {
@@ -795,7 +809,7 @@ async fn cmd_instance_create(
     name: &str,
     ram: u32,
 ) -> Result<()> {
-    let client = HttpClient::new(settings.proxy_url.as_deref())?;
+    let client = make_client(settings)?;
     // Проверяем, что версия существует в манифесте (сеть нужна один раз).
     let manifest = mc_launcher_v2_lib::mojang::manifest::fetch_manifest(&client, &paths.manifests_cache()).await?;
     mc_launcher_v2_lib::mojang::manifest::resolve_entry(&manifest, mc)?;
@@ -807,7 +821,7 @@ async fn cmd_instance_create(
 }
 
 async fn cmd_loader_versions(_paths: &Paths, settings: &Settings, loader: &str) -> Result<()> {
-    let client = HttpClient::new(settings.proxy_url.as_deref())?;
+    let client = make_client(settings)?;
     match loader {
         "fabric" => {
             for l in mc_launcher_v2_lib::loaders::fabric::loader_versions(&client)
@@ -849,7 +863,7 @@ async fn cmd_loader_install(
     loader_version: Option<&str>,
 ) -> Result<()> {
     let inst = find_instance(paths, id)?;
-    let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+    let client = std::sync::Arc::new(make_client(settings)?);
     let updated = mc_launcher_v2_lib::instances::run::install_loader(
         paths,
         settings,
@@ -916,7 +930,7 @@ async fn cmd_instance_launch(
 ) -> Result<()> {
     let t0 = Instant::now();
     let inst = find_instance(paths, id)?;
-    let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
+    let client = std::sync::Arc::new(make_client(settings)?);
     let bus = EventBus::default();
     let engine = DownloadEngine::new(
         client.clone(),
@@ -1020,6 +1034,18 @@ async fn cmd_instance_launch(
 
 
 
+/// D64: декод строки из потока игры — по образцу `lossy_line` в
+/// instances/run.rs (не копируем из libcrate — там он приватный): не-UTF-8
+/// байты → U+FFFD вместо обрыва чтения, хвостовой \r от CRLF отрезается
+/// (split(b'\n') его оставляет).
+fn lossy_line(buf: &[u8]) -> String {
+    let mut line = String::from_utf8_lossy(buf).into_owned();
+    while line.ends_with('\r') || line.ends_with('\n') {
+        line.pop();
+    }
+    line
+}
+
 /// Спавн игры: stdout/stderr → лог-файл, ожидание маркера главного меню.
 /// Игра запускается С окном (без CREATE_NO_WINDOW — это не вспомогательный процесс).
 fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> Result<bool> {
@@ -1051,9 +1077,13 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
     for stream in streams {
         let tx = tx.clone();
         std::thread::spawn(move || {
+            // D64: `lines().map_while(Result::ok)` обрывал поток на первом
+            // не-UTF-8 байте — нить умирала молча, хвост лога терялся.
+            // Построчное чтение байтов с lossy-декодом (см. lossy_line).
             let reader = std::io::BufReader::new(stream);
-            for line in reader.lines().map_while(std::result::Result::ok) {
-                if tx.send(line).is_err() {
+            for buf in reader.split(b'\n') {
+                let Ok(buf) = buf else { break };
+                if tx.send(lossy_line(&buf)).is_err() {
                     break;
                 }
             }
@@ -1110,15 +1140,19 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
     let found = found_at.is_some();
 
     // Завершаем дерево процессов игры (мы — супервизор приёмки).
-    // D62: taskkill/kill по уже завершённому PID опасен — в окне
-    // переиспользования PID под ним может оказаться чужой процесс.
-    // Дерево трогаем только если ребёнок ещё жив (try_wait() → None);
-    // если он уже завершился, try_wait заодно забрал его статус (нет zombie).
+    // D64: порядок критичен — дерево убивается ДО выяснения смерти/kill/wait
+    // ребёнка и всегда по завершении супервизии. Прежде kill_tree шёл ПОСЛЕ
+    // child.kill()+wait(): родитель к тому моменту был мёртв, taskkill /T
+    // не находил дерево — и дети java переживали супервизию. Пока хэндл
+    // ребёнка открыт, ОС не переиспользует его PID, так что taskkill по PID
+    // не может попасть в чужой процесс (страх D62 снят порядком операций);
+    // на уже завершившегося ребёнка taskkill просто не находит процесс.
+    // child.kill()+wait() остаются как страховка и для репы (нет zombie).
     let pid = child.id();
+    kill_tree(pid);
     if child.try_wait()?.is_none() {
         let _ = child.kill();
         let _ = child.wait();
-        kill_tree(pid);
     }
 
     // D62: «полный лог» для диагностики — latest.log, который писала сама
@@ -1156,6 +1190,25 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
         }
     }
     Ok(found)
+}
+
+/// D64: лог для crash-analyze читаем с капом — только ХВОСТ (последние ~2 МБ):
+/// стектрейс и секция причин краша всегда в конце, а гигабайтный latest.log
+/// целиком в память тянуть не зачем (seek к len-капу, память тоже ограничена).
+/// Декод lossy: прежде read_to_string падал на первом не-UTF-8 байте («поток
+/// содержит не UTF-8»), теперь мусорные байты (и разрезанный на границе хвоста
+/// UTF-8-символ) дают U+FFFD — анализатор работает по строкам, для него это
+/// безразлично.
+const CRASH_LOG_TAIL_BYTES: u64 = 2 * 1024 * 1024;
+
+fn crash_log_tail(path: &str) -> Result<String> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(CRASH_LOG_TAIL_BYTES)))?;
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw)?;
+    Ok(String::from_utf8_lossy(&raw).into_owned())
 }
 
 /// Завершение дерева процессов (child java мог породить детей).

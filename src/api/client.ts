@@ -37,6 +37,7 @@ import type {
   JavaTestInfo,
   LogFileInfo,
   ModMetadata,
+  ModpackInstallResult,
   PackArtInfo,
   RepairReport,
   ShotInfo,
@@ -125,10 +126,16 @@ export const api = {
   contentUpdateAll: (instanceId: string) => invoke<number>("content_update_all", { instanceId }),
   contentBackfillProjects: (instanceId: string) =>
     invoke<number>("content_backfill_projects", { instanceId }),
+  // Установка модпака: группа загрузок приходит в ответе — по ней фильтруются
+  // события dl_progress/dl_group_done и адресуется downloads_cancel_group.
   mrpackInstall: (path: string, name?: string) =>
-    invoke<Instance>("mrpack_install", { path, name }),
+    invoke<ModpackInstallResult>("mrpack_install", { path, name }),
   modpackInstall: (projectId: string, name?: string) =>
-    invoke<Instance>("modpack_install", { projectId, name }),
+    invoke<ModpackInstallResult>("modpack_install", { projectId, name }),
+  // Отменить активную группу загрузок (установка модпака/ремонт); для
+  // завершённой группы — no-op.
+  downloadsCancelGroup: (group: string) =>
+    invoke<void>("downloads_cancel_group", { group }),
 
   instanceBackup: (id: string) => invoke<ArchiveResult>("instance_backup", { id }),
   instanceExport: (id: string) => invoke<ArchiveResult>("instance_export", { id }),

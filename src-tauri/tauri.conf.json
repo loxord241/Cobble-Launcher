@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data: https://cdn.modrinth.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; base-uri 'none'; object-src 'none'; form-action 'none'"
+      "csp": "default-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; base-uri 'none'; object-src 'none'; form-action 'none'"
     }
   },
   "bundle": {

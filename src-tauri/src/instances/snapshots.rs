@@ -2,10 +2,11 @@
 //!
 //! Каталог `instance_dir/snapshots/`, файл `mods-<unixts>.zip` — файлы
 //! верхнего уровня mods/ (включая `.disabled`, без подкаталогов). Хранятся
-//! 3 новейших (ротация после create). Restore удаляет файлы, указанные
-//! в манифесте контента (в обоих состояниях имени), и распаковывает zip
-//! в mods/; сам манифест не трогает — файлы из снапшота, которых в
-//! манифесте нет, остаются как есть.
+//! 3 новейших (ротация после create). Restore переносит файлы, указанные
+//! в манифесте контента (в обоих состояниях имени), в `<minecraft>/.trash/`
+//! (D64: восстановимо, а не delete) и распаковывает zip в mods/;
+//! сам манифест не трогает — файлы из снапшота, которых в манифесте нет,
+//! остаются как есть.
 
 use crate::errors::{LauncherError, Result};
 use crate::instances::{instance_dir, load_content_manifest, minecraft_dir};
@@ -72,11 +73,17 @@ pub fn create(paths: &Paths, instance_id: &str) -> Result<String> {
         .unwrap_or(0);
     let name = format!("mods-{ts}.zip");
     let dest = dir.join(&name);
-    // P3: сбой посреди записи (io::copy/start_file) оставлял бы частичный zip,
-    // который проходит is_snapshot_name и выглядит «восстановимым» мусором —
-    // guard удаляет его при любом Err (паттерн PrepareCleanup в run.rs).
-    let mut cleanup = PartialSnapshotCleanup::new(dest.clone());
-    let file = std::fs::File::create(crate::util::fs::long_path(&dest))?;
+    // D64: пишем в соседний `.part` и переименовываем атомарно. Прежний
+    // File::create(dest) при коллизии «та же секунда» усекал бы ГОТОВЫЙ архив,
+    // а крах посреди записи оставлял бы вместо него дыру. `atomic_write` тут
+    // не годится (архив собирается потоком, не в памяти) — tmp+rename вручную.
+    let part = crate::util::fs::part_path(&dest);
+    // P3: сбой посреди записи (io::copy/start_file) оставлял бы частичный
+    // `.part`; после rename он прошёл бы is_snapshot_name и выглядел
+    // «восстановимым» мусором — guard удаляет его при любом Err
+    // (паттерн PrepareCleanup в run.rs).
+    let mut cleanup = PartialSnapshotCleanup::new(part.clone());
+    let file = std::fs::File::create(crate::util::fs::long_path(&part))?;
     let mut zip = zip::ZipWriter::new(file);
     let opts: zip::write::SimpleFileOptions = Default::default();
     let mods = minecraft_dir(&instance_dir(paths, instance_id)).join("mods");
@@ -98,8 +105,13 @@ pub fn create(paths: &Paths, instance_id: &str) -> Result<String> {
             count += 1;
         }
     }
-    zip.finish()
+    let finished = zip
+        .finish()
         .map_err(|e| LauncherError::Zip(format!("finish: {e}")))?;
+    // Закрыть хэндл до rename: Windows не переименует файл, открытый без
+    // share-delete (антивирус мог бы и придержать — повторы в rename_with_retry).
+    drop(finished);
+    crate::util::fs::rename_with_retry(&part, &dest)?;
     cleanup.disarm();
     rotate(&dir)?;
     tracing::info!("снапшот mods/: {name} ({count} файлов)");
@@ -107,6 +119,8 @@ pub fn create(paths: &Paths, instance_id: &str) -> Result<String> {
 }
 
 /// Частичный zip снапшота при ошибке посреди create — удалить (best-effort).
+/// D64: под guard'ом теперь `.part`-файл (запись идёт во временное имя,
+/// готовый архив той же секунды не усекается).
 struct PartialSnapshotCleanup {
     dest: PathBuf,
     armed: bool,
@@ -194,6 +208,32 @@ fn move_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Перенести файл в инстансовую корзину `<minecraft>/.trash/` — та же, что
+/// у обновлений модов (updates.rs). Имя сохраняется с меткой секунды
+/// (`<unixts>-<filename>`, как у swap_updated_file); при коллизии — суффикс
+/// `-2`, `-3`… Возвращает путь, куда уехал файл.
+fn move_to_trash(base: &std::path::Path, file: &std::path::Path) -> Result<PathBuf> {
+    let trash = base.join(".trash");
+    std::fs::create_dir_all(crate::util::fs::long_path(&trash))?;
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut candidate = trash.join(format!("{ts}-{name}"));
+    let mut n = 2;
+    while crate::util::fs::long_path(&candidate).exists() {
+        candidate = trash.join(format!("{ts}-{name}-{n}"));
+        n += 1;
+    }
+    // A26: повтор при придержании файла антивирусом.
+    crate::util::fs::rename_with_retry(file, &candidate)?;
+    Ok(candidate)
+}
+
 /// Откатить mods/ к снапшоту. Транзакционно (P2): сначала распаковываем архив
 /// во временный каталог РЯДОМ с mods/ (тот же том), и только при полном успехе
 /// удаляем манифестные записи и переносим файлы из временного на место. Раньше
@@ -232,8 +272,11 @@ pub fn restore(paths: &Paths, instance_id: &str, name: &str) -> Result<()> {
     let f = std::fs::File::open(crate::util::fs::long_path(&zip_path))?;
     crate::util::zip::extract_zip(f, &tmp.path, |_p| {})?;
 
-    // 2) Распаковка удалась целиком — теперь можно удалять старые записи:
-    //    манифестные mods/-файлы в обоих состояниях имени.
+    // 2) Распаковка удалась целиком — теперь можно убирать старые записи:
+    //    манифестные mods/-файлы в обоих состояниях имени. D64: вместо
+    //    безвозвратного удаления файл уезжает в инстансовый `.trash/` (та же
+    //    корзина, что у обновлений модов) — «вернуться к снапшоту» больше не
+    //    теряет молча моды, установленные после снапшота.
     for e in load_content_manifest(paths, instance_id)
         .iter()
         .filter(|e| e.file.starts_with("mods/"))
@@ -245,7 +288,15 @@ pub fn restore(paths: &Paths, instance_id: &str, name: &str) -> Result<()> {
                 &base.join(crate::instances::content::disk_path(&e.file, enabled)),
             );
             if p.exists() {
-                std::fs::remove_file(p)?;
+                if let Err(err) = move_to_trash(&base, &p) {
+                    // Файл не уехал (придержан и после повторов) — старое
+                    // поведение: удалить; restore не срываем из-за корзины.
+                    tracing::warn!(
+                        "restore: {} не уехал в .trash ({err}), удаляю насовсем",
+                        p.display()
+                    );
+                    std::fs::remove_file(&p)?;
+                }
             }
         }
     }
@@ -405,6 +456,63 @@ mod tests {
         std::fs::write(dir.join(".lock"), std::process::id().to_string()).unwrap();
         let err = restore(&paths, &inst.id, &name).unwrap_err();
         assert_eq!(err.code(), "instance_running");
+    }
+
+    /// D64: restore переносит вытесненные манифестные файлы в
+    /// `<minecraft>/.trash/` (восстановимо), а не удаляет насовсем; имя файла
+    /// в корзине сохраняется.
+    #[test]
+    fn restore_moves_displaced_mods_to_trash() {
+        let (_d, paths, inst) = setup();
+        save_content_manifest(&paths, &inst.id, &[entry("mods/a.jar")]).unwrap();
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        let name = create(&paths, &inst.id).unwrap();
+        // «Мод, установленный после снапшота»: манифестный a.jar перезаписан.
+        std::fs::write(long(&mc.join("mods/a.jar")), b"AFTER-SNAPSHOT").unwrap();
+
+        restore(&paths, &inst.id, &name).unwrap();
+        assert_eq!(
+            std::fs::read(long(&mc.join("mods/a.jar"))).unwrap(),
+            b"AAA",
+            "снапшот восстановлен на место"
+        );
+        let trash = mc.join(".trash");
+        let trashed: Vec<String> = std::fs::read_dir(long(&trash))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(trashed.len(), 1, "в корзине ровно вытесненный файл: {trashed:?}");
+        assert!(trashed[0].ends_with("a.jar"), "имя сохранено: {trashed:?}");
+        assert_eq!(
+            std::fs::read(long(&trash.join(&trashed[0]))).unwrap(),
+            b"AFTER-SNAPSHOT",
+            "содержимое вытесненного мода восстановимо из корзины"
+        );
+    }
+
+    /// D64: create пишет через `.part` — после успеха временных файлов нет,
+    /// повторный create (та же секунда) атомарно замещает готовый архив.
+    #[test]
+    fn create_leaves_no_part_and_replaces_existing() {
+        let (_d, paths, inst) = setup();
+        let _first = create(&paths, &inst.id).unwrap();
+        let dir = snapshots_dir(&paths, &inst.id);
+        let no_part = |dir: &std::path::Path| {
+            std::fs::read_dir(long(dir))
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .all(|e| !e.file_name().to_string_lossy().ends_with(".part"))
+        };
+        assert!(no_part(&dir), "после create `.part` не остаётся");
+        // Второй create (обычно — та же секунда, dest уже существует):
+        // атомарный rename замещает готовый архив, он остаётся валидным.
+        let name2 = create(&paths, &inst.id).unwrap();
+        assert!(is_snapshot_name(&name2));
+        assert!(no_part(&dir), "после второго create `.part` не остаётся");
+        let f = std::fs::File::open(long(&dir.join(&name2))).unwrap();
+        let mut z = zip::ZipArchive::new(f).unwrap();
+        assert!(zip_names(&mut z).contains(&"a.jar".to_string()), "архив валиден");
     }
 
     /// create отсутствующего инстанса — NotFound, traversal-id отклоняется.

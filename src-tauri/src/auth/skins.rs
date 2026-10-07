@@ -24,10 +24,20 @@ pub enum SkinModel {
 }
 
 impl SkinModel {
-    /// Значение `variant` для API Mojang/ely.by («classic» | «slim»).
+    /// Значение `model`/`variant` для API ely.by («classic» | «slim»).
     pub fn variant(self) -> &'static str {
         match self {
             SkinModel::Classic => "classic",
+            SkinModel::Slim => "slim",
+        }
+    }
+
+    /// Значение `variant` для Mojang skins API («wide» | «slim»). Mojang
+    /// называет classic «wide» — «classic» он не знает и отвергает запрос
+    /// (D64: смена скина MSA всегда падала с HTTP 400).
+    pub fn mojang_variant(self) -> &'static str {
+        match self {
+            SkinModel::Classic => "wide",
             SkinModel::Slim => "slim",
         }
     }
@@ -685,6 +695,25 @@ fn ely_skin_form(png: &[u8]) -> reqwest::multipart::Form {
     reqwest::multipart::Form::new().part("file", part)
 }
 
+/// multipart-тело смены скина Mojang: `variant` — текстовое поле (значения
+/// Mojang: «wide»|«slim», см. SkinModel::mojang_variant), PNG — файловая
+/// часть «file» (skin.png, image/png). JSON Mojang не принимает (HTTP 400).
+/// Чистая функция — тестируется без сети.
+fn msa_skin_form(png: &[u8], variant: &str) -> reqwest::multipart::Form {
+    // «image/png» корректен по построению, но mime_str возвращает Result —
+    // без unwrap() откатываемся к части без Content-Type.
+    let part = reqwest::multipart::Part::bytes(png.to_vec())
+        .file_name("skin.png")
+        .mime_str("image/png")
+        .unwrap_or_else(|_| {
+            reqwest::multipart::Part::bytes(png.to_vec()).file_name("skin.png")
+        });
+    reqwest::multipart::Form::new()
+        // text() требует 'static — превращаем &str в owned.
+        .text("variant", variant.to_string())
+        .part("file", part)
+}
+
 /// PUT скина на ely.by; возвращает HTTP-статус (разбор кодов — у вызова,
 /// там же ретрай после refresh). Токен уходит только в заголовок.
 async fn put_ely_skin(
@@ -751,7 +780,6 @@ pub async fn apply_skin(
                     "у MSA-аккаунта нет refresh-токена".into(),
                 ));
             };
-            let refresh = crate::auth::keyring_get(rr)?;
             let settings = crate::settings::Settings::load(&paths.settings_file())?;
             let cid = settings.azure_client_id.ok_or_else(|| {
                 LauncherError::InvalidInput(
@@ -761,15 +789,23 @@ pub async fn apply_skin(
             // Свежий access_token (как в launch_identity): скины требуют
             // валидный токен. Single-flight на refresh_ref (аудит 2026-10-06):
             // параллельный launch не гонит второй refresh с тем же токеном.
-            let session = {
+            // D64: чтение refresh-токена — ПОД захваченным gate, иначе
+            // параллельный потребитель успевает ротацию, и сюда уезжает
+            // уже протухший токен. Запись ротации — вне блока, как было.
+            let (session, refresh) = {
                 let gate = crate::auth::refresh_gate(rr);
                 let _held = gate.lock().await;
-                crate::auth::msa::refresh_session(client, &refresh, &cid).await?
+                let refresh = crate::auth::keyring_get(rr)?;
+                let session = crate::auth::msa::refresh_session(client, &refresh, &cid).await?;
+                (session, refresh)
             };
             // Ротация refresh-токена — новый сохраняем (иначе следующий
             // refresh пойдёт по протухшему).
             persist_rotated_msa_refresh(rr, &refresh, &session)?;
-            // D62: PUT скина — «сырой» запрос под предохранителем (30 с TTFB):
+            // D64: PUT скина — multipart/form-data с полями variant («wide»|
+            // «slim», не ely-«classic») и файловой частью «file»; JSON-тело
+            // Mojang отвергает (HTTP 400 на каждый запрос).
+            // D62: «сырой» запрос под предохранителем (30 с TTFB):
             // дальше нужен только статус, тело не читается.
             let resp = client
                 .send_timed(
@@ -777,10 +813,7 @@ pub async fn apply_skin(
                         .raw()
                         .put(MSA_SKINS_URL)
                         .bearer_auth(&session.access_token)
-                        .json(&serde_json::json!({
-                            "variant": model.variant(),
-                            "file": STANDARD.encode(&png),
-                        })),
+                        .multipart(msa_skin_form(&png, model.mojang_variant())),
                 )
                 .await?;
             let status = resp.status();
@@ -1256,6 +1289,25 @@ mod tests {
     #[test]
     fn ely_skin_form_builds_multipart() {
         let form = ely_skin_form(b"\x89PNG\r\n\x1a\nskin-bytes");
+        assert!(!form.boundary().is_empty(), "boundary должен быть сгенерирован");
+    }
+
+    /// D64: Mojang ждёт «wide»/«slim», а не ely-«classic» — значения вариант()
+    /// для Mojang берутся из mojang_variant().
+    #[test]
+    fn mojang_variant_uses_wide_slim() {
+        assert_eq!(SkinModel::Classic.mojang_variant(), "wide");
+        assert_eq!(SkinModel::Slim.mojang_variant(), "slim");
+        // ely-контракт не изменился.
+        assert_eq!(SkinModel::Classic.variant(), "classic");
+        assert_eq!(SkinModel::Slim.variant(), "slim");
+    }
+
+    /// D64: multipart-форма Mojang собирается без сети: boundary сгенерирован,
+    /// форма из двух полей (variant + файловая «file»).
+    #[test]
+    fn msa_skin_form_builds_multipart() {
+        let form = msa_skin_form(b"\x89PNG\r\n\x1a\nskin-bytes", "wide");
         assert!(!form.boundary().is_empty(), "boundary должен быть сгенерирован");
     }
 

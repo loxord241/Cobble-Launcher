@@ -94,7 +94,10 @@ export default function CrashReportModal({
   };
 
   const openFolder = () => {
-    void api.instanceOpenDir(report.instanceId);
+    // D64: голый void без catch проглатывал ошибку IPC — показываем в статусе.
+    void api
+      .instanceOpenDir(report.instanceId)
+      .catch((e: unknown) => setShareError(apiErrorText(e)));
   };
 
   const share = async () => {

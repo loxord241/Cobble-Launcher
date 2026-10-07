@@ -2,16 +2,17 @@
 // категорий, статистика и табы «Обзор / Журнал / Галерея / Версии». Тело
 // проекта грузим при открытии, версии — лениво при первом открытии табов
 // «Журнал»/«Версии» (кэш в состоянии на всё время жизни модалки).
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Clock, Download, ExternalLink, HardDrive, Heart, LoaderCircle, Scale, X } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { api } from "../../api/client";
+import { api, onCoreEvent } from "../../api/client";
 import { formatSize } from "../format";
 import { apiErrorText, currentLanguage, plural, t } from "../../i18n";
 import { useInstances } from "../../state/instances";
 import { useModalA11y } from "../hooks/useModalA11y";
 import { Markdown } from "./markdown";
 import type {
+  CoreEvent,
   GalleryImage,
   Instance,
   ModrinthVersion,
@@ -84,6 +85,12 @@ export default function ProjectDetailModal({
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(null);
   const [zoom, setZoom] = useState<GalleryImage | null>(null);
+  // Установка модпака (D64): группа загрузок приходит в событиях — точное имя
+  // ядро генерирует со случайным хвостом, до ответа команды его знает только
+  // ядро. Ловим dl_progress/dl_group_done по префиксу `mrpack:{projectId}:`
+  // и запоминаем точную группу для «Отменить» (downloads_cancel_group).
+  const [packProgress, setPackProgress] = useState<{ done: number; total: number } | null>(null);
+  const packGroupRef = useRef<string | null>(null);
 
   const isPack = hit.project_type === "modpack";
   const isMod = hit.project_type === "mod";
@@ -104,23 +111,34 @@ export default function ProjectDetailModal({
   }, [zoom]);
   const { containerRef: dialogRef, requestClose } = useModalA11y(onClose);
 
-  // Установка идёт — окно не закрываем (✕/Escape/клик по подложке): результат
-  // пользователь ждёт в диалоге, потерять баннер успеха/ошибки обидно.
-  const requestCloseSafe = () => {
-    if (busy) return;
-    requestClose();
-  };
-  // Escape ловим в window-capture: событие срабатывает раньше слушателя хука
-  // (document-capture), stopPropagation не даёт модалке начать закрытие.
+  // D64: установку модпака больше не держим в заложниках окна — ✕/Escape
+  // закрывают модалку, установка честно идёт в фоне (ядро дочитает группу),
+  // а подписка ниже снимается при размонтировании без утечек.
   useEffect(() => {
-    if (!busy) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.stopPropagation();
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    const prefix = `mrpack:${hit.project_id}:`;
+    const onEvent = (ev: CoreEvent) => {
+      if (ev.event === "dl_progress" && ev.group.startsWith(prefix)) {
+        // Точная группа (со случайным хвостом) — единственный адресат отмены.
+        packGroupRef.current = ev.group;
+        setPackProgress({ done: ev.doneBytes, total: ev.totalBytes });
+      } else if (ev.event === "dl_group_done" && ev.group.startsWith(prefix)) {
+        // Конец группы: полоска больше не нужна; успех/ошибку показывает
+        // баннер от самого вызова установки.
+        setPackProgress(null);
+      }
     };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [busy]);
+    void onCoreEvent(onEvent).then((u) => {
+      if (cancelled) u();
+      else unlisten = u;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      packGroupRef.current = null;
+    };
+  }, [hit.project_id]);
 
   const loadDetail = useCallback(async () => {
     setDetailBusy(true);
@@ -172,10 +190,12 @@ export default function ProjectDetailModal({
   const install = async (versionId?: string) => {
     setBusy(true);
     setBanner(null);
+    packGroupRef.current = null;
+    setPackProgress(null);
     try {
       if (isPack) {
-        // Модпак всегда ставится в НОВЫЙ инстанс (само ядро).
-        const inst = await api.modpackInstall(hit.project_id);
+        // Модпак всегда ставится в НОВЫЙ инстанс (само ядро): { instance, group }.
+        const { instance: inst } = await api.modpackInstall(hit.project_id);
         // F1: обновляем глобальный стор инстансов, иначе новая сборка —
         // «фантом»: в ядре есть, а на странице «Сборки» появится только
         // после перезапуска (стор уже загружен и сам не перечитывается).
@@ -191,7 +211,19 @@ export default function ProjectDetailModal({
       setBanner({ ok: false, text: apiErrorText(e) });
     } finally {
       setBusy(false);
+      setPackProgress(null);
+      packGroupRef.current = null;
     }
+  };
+
+  /** D64: «Отменить» — гасим группу загрузок модпака; сама установка после
+   * этого завершится ошибкой отмены, её покажет существующий баннер. */
+  const cancelPack = () => {
+    const group = packGroupRef.current;
+    if (!group) return;
+    void api
+      .downloadsCancelGroup(group)
+      .catch((e) => setBanner({ ok: false, text: apiErrorText(e) }));
   };
 
   // Размер последней primary-версии (Modrinth отдаёт новые первыми); пока
@@ -231,7 +263,7 @@ export default function ProjectDetailModal({
     <div
       className="anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => {
-        if (e.target === e.currentTarget) requestCloseSafe();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
       <div
@@ -280,6 +312,36 @@ export default function ProjectDetailModal({
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {/* D64: прогресс скачивания модпака — проценты + полоска рядом
+                с кнопкой; totalBytes ещё неизвестен ядру — показываем без %. */}
+            {isPack && busy && packProgress && (
+              <div className="flex w-36 flex-col gap-1" role="status">
+                <span className="flex justify-between font-mono text-[11px] text-text-muted">
+                  <span>
+                    {packProgress.total > 0
+                      ? `${Math.min(Math.floor((packProgress.done / packProgress.total) * 100), 100)}%`
+                      : formatSize(packProgress.done)}
+                  </span>
+                  {packProgress.total > 0 && (
+                    <span>
+                      {formatSize(packProgress.done)} / {formatSize(packProgress.total)}
+                    </span>
+                  )}
+                </span>
+                <div className="h-1 w-full overflow-hidden rounded-full bg-surface-2">
+                  <div
+                    className="h-full rounded-full bg-accent anim-progress-fill"
+                    style={{
+                      transform: `scaleX(${
+                        packProgress.total > 0
+                          ? Math.min(packProgress.done / packProgress.total, 1)
+                          : 0
+                      })`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
             {!isPack && (
               <select
                 value={targetId}
@@ -308,11 +370,23 @@ export default function ProjectDetailModal({
               )}
               {busy ? t("project.installing") : t("project.install")}
             </button>
+            {/* D64: «Отменить» видна сразу, но активна, только когда известна
+                точная группа (пришло событие dl_progress): отменять нечего,
+                пока группа не зарегистрирована ядром. */}
+            {isPack && busy && (
+              <button
+                onClick={cancelPack}
+                disabled={!packGroupRef.current}
+                aria-label={t("common.cancel")}
+                className="btn-ghost h-9 px-3 text-sm"
+              >
+                {t("common.cancel")}
+              </button>
+            )}
             <button
-              onClick={requestCloseSafe}
+              onClick={requestClose}
               aria-label={t("common.close")}
-              disabled={busy}
-              className="icon-btn text-text-muted hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+              className="icon-btn text-text-muted hover:text-text"
             >
               <X size={18} aria-hidden />
             </button>

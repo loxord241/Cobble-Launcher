@@ -235,6 +235,7 @@ pub fn run() -> tauri::Result<()> {
             commands::content_backfill_projects,
             commands::mrpack_install,
             commands::modpack_install,
+            commands::downloads_cancel_group,
             commands::instance_backup,
             commands::instance_export,
             commands::instance_icon_set,
@@ -313,6 +314,36 @@ pub fn run() -> tauri::Result<()> {
             let logo = state.settings.blocking_read().logo.clone();
             let paths = state.paths.clone();
             crate::branding::apply_window_icon(app.handle(), &logo, &paths);
+            // D64: фоновый refresh активного аккаунта на старте — протухший
+            // токен раньше был виден только при нажатии «Играть». Best-effort:
+            // ошибки (нет сети и т.п.) не роняют старт — warn + событие в UI.
+            // State достаётся из AppHandle внутри задачи: RwLock http не Clone,
+            // а State<AppState> не переживает выход из setup.
+            let bg_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use crate::auth::AccountKind;
+                let state = bg_handle.state::<commands::AppState>();
+                let Some(acc) = crate::auth::active(&state.paths) else {
+                    return;
+                };
+                // Только token-based (Msa/Ely/Authlib): у офлайн-профиля сессия
+                // не «истекает» — refresh/событие вводили бы в заблуждение
+                // (тот же критерий, что в instance_launch).
+                if !matches!(
+                    acc.kind,
+                    AccountKind::Msa | AccountKind::Ely | AccountKind::Authlib
+                ) {
+                    return;
+                }
+                let http = state.http().await;
+                if let Err(e) = crate::auth::launch_identity(&state.paths, &http).await {
+                    tracing::warn!("стартовый refresh аккаунта {} не удался: {e}", acc.id);
+                    state.bus.emit(crate::events::LauncherEvent::AccountRefreshFailed {
+                        account_id: acc.id,
+                        reason: e.to_string(),
+                    });
+                }
+            });
             Ok(())
         })
         .run(tauri::generate_context!())

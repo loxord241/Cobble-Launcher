@@ -253,22 +253,79 @@ pub fn test_java(java_exe: &str) -> Result<JavaTestInfo> {
     })
 }
 
+/// Дедлайн одной пробы java (D64): раньше `output()` ждал без лимита —
+/// зависшая java вешала пробу (а scan_all шёл последовательно — всех).
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Синхронный прогон команды с дедлайном (D64): вышла — собираем вывод;
+/// молчит дольше лимита — kill и честный Timeout. `java -version` печатает
+/// ~200 байт — пайп не переполнится, пока поллим try_wait.
+fn run_with_deadline(
+    mut cmd: Command,
+    limit: std::time::Duration,
+    what: &str,
+) -> Result<std::process::Output> {
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    hide_console(&mut cmd);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| LauncherError::JavaNotFound(format!("не удалось запустить {what}: {e}")))?;
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                {
+                    use std::io::Read as _;
+                    if let Some(mut s) = child.stdout.take() {
+                        let _ = s.read_to_end(&mut stdout);
+                    }
+                    if let Some(mut s) = child.stderr.take() {
+                        let _ = s.read_to_end(&mut stderr);
+                    }
+                }
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(LauncherError::Timeout(format!(
+                        "{what} не ответил за {limit:?} — процесс остановлен"
+                    )));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(LauncherError::Internal(format!("try_wait {what}: {e}")));
+            }
+        }
+    }
+}
+
 /// Определить версию и битность конкретной java (запуск процессов, скрытая консоль).
+/// D64: обе пробы под PROBE_TIMEOUT с убийством зависшего ребёнка.
 pub async fn inspect(java_exe: &Path, origin: &str) -> Result<JavaInstall> {
     let exe = crate::util::fs::long_path(java_exe);
-    let mut vcmd = Command::new(&exe);
-    vcmd.arg("-version");
-    hide_console(&mut vcmd);
-    let vout = tokio::task::spawn_blocking(move || {
-        let out = vcmd.output().map_err(|e| {
-            LauncherError::JavaNotFound(format!("не удалось запустить java: {e}"))
-        })?;
-        Ok::<std::process::Output, LauncherError>(out)
+    let out = tokio::task::spawn_blocking({
+        let exe = exe.clone();
+        move || {
+            let mut vcmd = Command::new(&exe);
+            vcmd.arg("-version");
+            run_with_deadline(vcmd, PROBE_TIMEOUT, "java -version")
+        }
     })
     .await
     .map_err(|e| LauncherError::Internal(format!("join java -version: {e}")))??;
 
-    let text = String::from_utf8_lossy(&vout.stderr).into_owned();
+    let text = String::from_utf8_lossy(&out.stderr).into_owned();
     let major = parse_java_version(&text).ok_or_else(|| {
         LauncherError::JavaNotFound(format!(
             "не удалось разобрать версию java: {}",
@@ -280,12 +337,13 @@ pub async fn inspect(java_exe: &Path, origin: &str) -> Result<JavaInstall> {
     let arch_bits = match parse_arch_bits_from_version(&text) {
         Some(bits) => bits,
         None => {
-            let mut scmd = Command::new(&exe);
-            scmd.args(["-XshowSettings:properties", "-version"]);
-            hide_console(&mut scmd);
-            let sout = tokio::task::spawn_blocking(move || scmd.output())
-                .await
-                .map_err(|e| LauncherError::Internal(format!("join showSettings: {e}")))??;
+            let sout = tokio::task::spawn_blocking(move || {
+                let mut scmd = Command::new(&exe);
+                scmd.args(["-XshowSettings:properties", "-version"]);
+                run_with_deadline(scmd, PROBE_TIMEOUT, "java -XshowSettings")
+            })
+            .await
+            .map_err(|e| LauncherError::Internal(format!("join showSettings: {e}")))??;
             let stext = format!(
                 "{}{}",
                 String::from_utf8_lossy(&sout.stdout),
@@ -304,15 +362,22 @@ pub async fn inspect(java_exe: &Path, origin: &str) -> Result<JavaInstall> {
 }
 
 /// Просканировать все кандидаты и вернуть найденные Java.
+/// D64: пробы идут параллельно (futures::join_all) — суммарное время ≈ самой
+/// долгой пробы (≤ PROBE_TIMEOUT), а не сумме; порядок результатов прежний
+/// (порядок find_java_exes — join_all его сохраняет).
 pub async fn scan_all(runtime_dir: &Path, extra: &[String]) -> Vec<JavaInstall> {
-    let mut installs = Vec::new();
-    for (exe, origin) in find_java_exes(runtime_dir, extra) {
+    let probes = find_java_exes(runtime_dir, extra);
+    let results = futures::future::join_all(probes.into_iter().map(|(exe, origin)| async move {
         match inspect(&exe, &origin).await {
-            Ok(i) => installs.push(i),
-            Err(e) => tracing::debug!("java {exe:?} не разобрана: {e}"),
+            Ok(i) => Some(i),
+            Err(e) => {
+                tracing::debug!("java {exe:?} не разобрана: {e}");
+                None
+            }
         }
-    }
-    installs
+    }))
+    .await;
+    results.into_iter().flatten().collect()
 }
 
 /// Выбрать подходящую Java: точный major, затем ближайший больший.

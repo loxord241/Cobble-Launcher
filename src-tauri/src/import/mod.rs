@@ -124,6 +124,44 @@ pub struct CfModloader {
     pub id: String,
 }
 
+/// Разбор `modLoaders[].id` из CF manifest.json (D64). Реальные форматы id
+/// (сверено с packwiz и Prism): «fabric-0.15.11», «quilt-0.21.0» (в т.ч.
+/// беты «quilt-0.26.1-beta.2»), «forge-47.3.0», но также «forge-1.16.5-36.2.39»
+/// и «neoforge-1.20.1-47.1.106» — CF вклеивает версию MC в середину, и её
+/// надо срезать (то же делает packwiz), иначе в установку уезжает мусорная
+/// версия. Вид загрузчика — сегмент до первого дефиса, строго из известного
+/// списка; числовая версия — хвост после дефиса. Прежний разбор через
+/// `split_once` без среза MC-префикса ломал forge/neoforge-паки, а quilt
+/// проходил лишь пока версия не содержала дефисов. Неизвестный вид — честная
+/// ошибка вместо тихого прохода в install_loader.
+fn parse_cf_modloader(id: &str) -> Result<(String, String)> {
+    let (kind, ver) = id
+        .split_once('-')
+        .ok_or_else(|| LauncherError::InvalidInput(format!("битый modloader id: {id}")))?;
+    if !matches!(kind, "fabric" | "quilt" | "forge" | "neoforge") {
+        return Err(LauncherError::InvalidInput(format!(
+            "неизвестный загрузчик в manifest.json: {kind} (ожидали fabric|quilt|forge|neoforge)"
+        )));
+    }
+    // forge-семейство кладёт версию MC в середину id (forge-1.16.5-36.2.39):
+    // реальная версия загрузчика — хвост после сегмента, похожего на версию MC
+    // (начинается с «1.»; сами версии forge/neoforge так не начинаются).
+    let ver = if matches!(kind, "forge" | "neoforge") {
+        match ver.split_once('-') {
+            Some((head, rest)) if head.starts_with("1.") && !rest.is_empty() => rest,
+            _ => ver,
+        }
+    } else {
+        ver
+    };
+    if ver.is_empty() {
+        return Err(LauncherError::InvalidInput(format!(
+            "битый modloader id (пустая версия): {id}"
+        )));
+    }
+    Ok((kind.to_string(), ver.to_string()))
+}
+
 #[derive(Deserialize)]
 #[derive(Debug)]
 pub struct CfFileRef {
@@ -180,8 +218,9 @@ fn loader_from_uid(uid: &str, version: Option<&str>) -> Option<(String, String)>
 
 /// Импорт архива в новый инстанс: создаёт Instance, распаковывает игровое
 /// содержимое и ставит распознанный загрузчик — D62: установка загрузчика
-/// живёт ВНУТРИ этой транзакции (сбой откатывает импорт целиком; офлайн —
-/// warn и пропуск). Возвращает (инстанс, подсказка по загрузчику).
+/// живёт ВНУТРИ этой транзакции (сбой откатывает импорт целиком; офлайн при
+/// требуемом загрузчике — честный OfflineMode-отказ с тем же откатом, D64).
+/// Возвращает (инстанс, подсказка по загрузчику).
 ///
 /// Тяжёлая синхронная часть (zip на тысячи файлов) уезжает в blocking-пул:
 /// в async-контексте она фризила бы рантайм IPC вместе с окном (D14). Сеть
@@ -219,9 +258,16 @@ pub async fn import_archive(
     // с копией контента.
     if let Some((kind, ver)) = &loader {
         if client.offline() {
-            // F16: офлайн — сеть недоступна, установку пропускаем, инстанс
-            // возвращаем как есть (доустановить загрузчик можно при сети).
-            tracing::warn!("офлайн: загрузчик не установлен, доустановите при сети");
+            // D64: офлайн + пак требует загрузчика — честный отказ с полным
+            // откатом (A29), а не «частичная установка под видом успеха»:
+            // прежде инстанс без загрузчика уходил наружу как успех, и
+            // пользователь получал молча нерабочий сбор. Установщика из кэша
+            // нет: install_loader всегда ходит в сеть (manifest/meta/инсталлятор).
+            let err = LauncherError::OfflineMode(format!(
+                "для импорта «{}» нужен установчик {kind} — включи сеть и повтори импорт",
+                inst.name
+            ));
+            return rollback_on_err(&save_paths, &inst, Err(err));
         } else {
             // paths уже уехал в spawn_blocking — жив только его клон save_paths.
             let installed = crate::instances::run::install_loader(
@@ -298,13 +344,11 @@ fn import_archive_blocking(
                 )?;
                 tracing::info!("CF-zip: {} файлов overrides", extracted.len());
 
-                // Загрузчик из manifest (id = "forge-47.3.0" / "fabric-0.15.11").
+                // Загрузчик из manifest — вида "fabric-0.15.11", "quilt-0.21.0",
+                // "forge-1.16.5-36.2.39" и т.д. (см. parse_cf_modloader).
                 let mut loader = None;
                 for ml in &manifest.minecraft.modloaders {
-                    let (kind, ver) = ml.id.split_once('-').ok_or_else(|| {
-                        LauncherError::InvalidInput(format!("битый modloader id: {}", ml.id))
-                    })?;
-                    loader = Some((kind.to_string(), ver.to_string()));
+                    loader = Some(parse_cf_modloader(&ml.id)?);
                 }
                 // Список файлов модпака — наружу: ссылки собирает async-часть.
                 Ok((loader, manifest.files))
@@ -647,11 +691,11 @@ mod tests {
         assert!(read_named(&mc, "a.jar").is_some(), "{:?}", mc);
     }
 
-    /// D62: офлайн-импорт CF-пака с загрузчиком — установка загрузчика
-    /// пропускается с warn (сети нет, ходить в неё нельзя), инстанс
-    /// возвращается как есть; импорт не падает, overrides на месте.
+    /// D64: офлайн-импорт CF-пака с загрузчиком — честный OfflineMode-отказ
+    /// с полным откатом (A29), а не «частичная установка под видом успеха»
+    /// (прежде: warn и инстанс без загрузчика, возвращённый как успех).
     #[tokio::test]
-    async fn offline_import_skips_loader_install() {
+    async fn offline_import_with_loader_fails_and_rolls_back() {
         let dir = tempfile::tempdir().unwrap();
         let paths = test_paths(&dir);
         let manifest = r#"{"name":"CF офлайн","minecraft":{"version":"1.20.1",
@@ -668,7 +712,7 @@ mod tests {
 
         let client = std::sync::Arc::new(crate::net::http::HttpClient::new(None).unwrap());
         client.set_offline(true);
-        let (inst, loader) = import_archive(
+        let err = import_archive(
             &paths,
             &crate::settings::Settings::default(),
             client,
@@ -676,17 +720,83 @@ mod tests {
             None,
         )
         .await
-        .unwrap();
-        assert_eq!(
-            loader,
-            Some(("fabric".to_string(), "0.15.11".to_string())),
-            "подсказка по загрузчику возвращается как раньше"
-        );
-        assert_eq!(inst.loader, None, "офлайн: загрузчик не установлен");
-        assert_eq!(inst.loader_version, None);
+        .unwrap_err();
+        assert_eq!(err.code(), "offline_mode", "{err}");
+        let msg = err.to_string();
+        assert!(msg.contains("CF офлайн"), "{msg}");
+        assert!(msg.contains("установчик fabric"), "{msg}");
         assert!(
-            read_named(&crate::instances::instance_dir(&paths, &inst.id), "a.jar").is_some(),
-            "overrides распакованы и без установки загрузчика"
+            crate::instances::list(&paths).is_empty(),
+            "инстанс-«призрак» должен быть откатан"
         );
+        assert!(
+            instance_dirs(&paths).is_empty(),
+            "каталог несостоявшегося импорта обязан быть удалён"
+        );
+    }
+
+    /// D64: разбор modLoaders[].id — quilt/fabric/forge/neoforge, включая
+    /// реальные варианты с версией MC в середине (packwiz issue #366) и
+    /// беты quilt; неизвестный вид и мусор — ошибка.
+    #[test]
+    fn cf_modloader_ids_parse_to_known_kinds() {
+        for (id, kind, ver) in [
+            ("quilt-0.21.0", "quilt", "0.21.0"),
+            ("quilt-0.26.1-beta.2", "quilt", "0.26.1-beta.2"),
+            ("fabric-0.15.11", "fabric", "0.15.11"),
+            ("forge-47.3.0", "forge", "47.3.0"),
+            ("forge-1.16.5-36.2.39", "forge", "36.2.39"),
+            ("neoforge-20.4.237", "neoforge", "20.4.237"),
+            ("neoforge-1.20.1-47.1.106", "neoforge", "47.1.106"),
+        ] {
+            let parsed = parse_cf_modloader(id).unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert_eq!(parsed, (kind.to_string(), ver.to_string()), "{id}");
+        }
+        for bad in ["quilt", "rift-1.13", "forge-", ""] {
+            assert!(
+                parse_cf_modloader(bad).is_err(),
+                "{bad:?} должен быть отклонён"
+            );
+        }
+    }
+
+    /// D64: CF-zip с quilt-загрузчиком — вид определяется как quilt (прежде
+    /// quilt-паки с beta-версиями и forge/neoforge-паки с версией MC в id
+    /// импортировались с битой версией), подсказка возвращается с чистым id.
+    #[test]
+    fn cf_zip_imports_quilt_and_mc_prefixed_loader_ids() {
+        for (manifest, kind, ver) in [
+            (
+                r#"{"name":"Q","minecraft":{"version":"1.20.1","modLoaders":[{"id":"quilt-0.21.0"}]},"files":[]}"#,
+                "quilt",
+                "0.21.0",
+            ),
+            (
+                r#"{"name":"F","minecraft":{"version":"1.20.1","modLoaders":[{"id":"forge-1.20.1-47.3.0"}]},"files":[]}"#,
+                "forge",
+                "47.3.0",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = test_paths(&dir);
+            let zip_path = dir.path().join("cf-loader.zip");
+            std::fs::write(
+                &zip_path,
+                build_zip(&[
+                    ("manifest.json", manifest.as_bytes()),
+                    ("overrides/mods/a.jar", b"A"),
+                ]),
+            )
+            .unwrap();
+            let (inst, loader, cf_files) =
+                import_archive_blocking(&paths, &zip_path, None).unwrap();
+            assert!(cf_files.is_empty());
+            assert_eq!(
+                loader,
+                Some((kind.to_string(), ver.to_string())),
+                "пак {}: {inst:?}",
+                inst.name
+            );
+        }
     }
 }

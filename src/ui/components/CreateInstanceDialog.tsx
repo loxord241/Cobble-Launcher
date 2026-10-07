@@ -1,5 +1,5 @@
 // Диалог создания инстанса: версия (манифест) + загрузчик (спека §8).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../../api/client";
 import { apiErrorText, t } from "../../i18n";
@@ -49,18 +49,26 @@ export default function CreateInstanceDialog({
       .catch((e) => setError(apiErrorText(e)));
   }, [showSnapshots, showOld]);
 
+  // D64: гонка версий загрузчика — при быстрой смене loader'а приходит ответ
+  // прошлого запроса; применяем только самый свежий (seq-guard).
+  const loaderSeqRef = useRef(0);
   useEffect(() => {
     if (loader === "none") {
       setLoaderVersions([]);
       return;
     }
+    const seq = ++loaderSeqRef.current;
     api
       .loaderVersions(loader)
       .then((ls) => {
+        if (seq !== loaderSeqRef.current) return;
         setLoaderVersions(ls);
         setLoaderVersion(ls[0]?.version ?? "");
       })
-      .catch(() => setLoaderVersions([]));
+      .catch(() => {
+        if (seq !== loaderSeqRef.current) return;
+        setLoaderVersions([]);
+      });
   }, [loader]);
 
   const submit = async () => {

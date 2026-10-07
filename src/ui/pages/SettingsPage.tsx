@@ -14,6 +14,12 @@ import UpdatesSection from "../components/UpdatesSection";
 /** D20: пауза перед записью в ядро — поля не пишутся на каждый keystroke. */
 const SAVE_DEBOUNCE_MS = 400;
 
+/** Кламп числового поля в границы HTML min/max: пустое/нечисловое — фолбэк. */
+function clampBounded(raw: string, min: number, max: number, fallback: number): number {
+  const value = Number(raw) || fallback;
+  return Math.min(Math.max(value, min), max);
+}
+
 
 /** Пресеты акцентного цвета (первый — сланцевый синий по умолчанию). */
 const ACCENT_PRESETS = ["#7FB2F0", "#6FBF8F", "#E8A25C", "#E06C6C", "#A78BE0"];
@@ -33,9 +39,10 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
   const [javaMsg, setJavaMsg] = useState<string | null>(null);
   const [proxyInput, setProxyInput] = useState("");
   const [azureInput, setAzureInput] = useState("");
-  // D20: числовые поля держим локально, в ядро уходит отложенная пачка.
-  const [ramInput, setRamInput] = useState(settings?.defaultRamMb ?? 2048);
-  const [parInput, setParInput] = useState(settings?.downloadParallelism ?? 16);
+  // D20: числовые поля держим локально (в поле — сырой ввод, кламп на blur
+  // и при записи в ядро), в ядро уходит отложенная пачка.
+  const [ramInput, setRamInput] = useState(String(settings?.defaultRamMb ?? 2048));
+  const [parInput, setParInput] = useState(String(settings?.downloadParallelism ?? 16));
   const [saveError, setSaveError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingPatch = useRef<Partial<Settings>>({});
@@ -43,6 +50,10 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
   // сравнивает с ними и не затирает незакоммиченный ввод (отложенный коммит
   // возвращает настройки — эффект не должен переписывать поле посреди ввода).
   const lastSent = useRef<{ ram?: number; par?: number }>({});
+  // Текстовые поля, правленные вручную: эффект синхронизации их не перетирает
+  // при фоновом обновлении настроек (импорт, правка из второго окна).
+  // Метка снимается при сохранении — поле снова живёт из стора.
+  const dirtyInputs = useRef<Set<"proxy" | "azure">>(new Set());
   // F18: статистика диска + сообщение (результат уборки или ошибка).
   const [stats, setStats] = useState<StorageStats | null>(null);
   const [storageMsg, setStorageMsg] = useState<string | null>(null);
@@ -96,14 +107,17 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
 
   useEffect(() => {
     if (settings) {
-      setProxyInput(settings.proxyUrl ?? "");
-      setAzureInput(settings.azureClientId ?? "");
+      // Поля с ручным вводом не затираем: догоняем стор, только пока
+      // пользователь их не трогал (иначе несохранённый ввод терялся).
+      if (!dirtyInputs.current.has("proxy")) setProxyInput(settings.proxyUrl ?? "");
+      if (!dirtyInputs.current.has("azure")) setAzureInput(settings.azureClientId ?? "");
       // Числовые поля: синхронизируем из стора только внешние изменения
       // (импорт настроек, правка из другого окна) — своё отправленное
       // значение эффекта не интересует, иначе ввод затирается.
-      if (settings.defaultRamMb !== lastSent.current.ram) setRamInput(settings.defaultRamMb);
+      if (settings.defaultRamMb !== lastSent.current.ram)
+        setRamInput(String(settings.defaultRamMb));
       if (settings.downloadParallelism !== lastSent.current.par)
-        setParInput(settings.downloadParallelism);
+        setParInput(String(settings.downloadParallelism));
     }
   }, [settings]);
 
@@ -119,7 +133,8 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
       setJavaMsg(t("settings.javaInstalled", { major, path: installed.javaExe }));
       loadJava();
     } catch (e) {
-      setJavaMsg(t("settings.javaInstallFailed", { error: String((e as { message?: string })?.message ?? e) }));
+      // Через apiErrorText: коды ядра локализуются (en/uk/pl), сырой message — фолбэк.
+      setJavaMsg(t("settings.javaInstallFailed", { error: apiErrorText(e) }));
     } finally {
       setInstallingJava(null);
     }
@@ -127,11 +142,13 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
 
   const saveProxy = () => {
     const val = proxyInput.trim() || undefined;
+    dirtyInputs.current.delete("proxy"); // сохранено — поле снова живёт из стора
     commit({ proxyUrl: val });
   };
 
   const saveAzure = () => {
     const val = azureInput.trim() || undefined;
+    dirtyInputs.current.delete("azure"); // сохранено — поле снова живёт из стора
     commit({ azureClientId: val });
   };
 
@@ -186,10 +203,18 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
     try {
       const path = await pickJsonPath();
       if (!path) return;
-      await api.settingsImport(path);
-      // Как после коммита: ядро — источник истины, load применит и сайд-эффекты
-      // (тема/шрифт/акцент/язык/масштаб) на свежих настройках.
-      await useSettings.getState().load();
+      // Импорт применяем последним: отменяем ожидающий debounce-пуш, иначе
+      // накопленный патч после load() откатил бы импортированные числа.
+      if (saveTimer.current !== null) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      pendingPatch.current = {};
+      // Импортированные прокси/Azure тоже показываем: поля снова из стора.
+      dirtyInputs.current.clear();
+      // importFrom = settingsImport + load + принудительная смена языка:
+      // селект языка больше не врёт после импорта (D64).
+      await useSettings.getState().importFrom(path);
       setSettingsIoMsg(t("settings.import.done"));
     } catch (e) {
       setSettingsIoMsg(apiErrorText(e));
@@ -313,11 +338,20 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               step={512}
               value={ramInput}
               onChange={(e) => {
-                // Кламп в границы HTML min/max: браузер не мешает вводить
-                // руками что угодно — нормализуем до записи в ядро.
-                const value = Math.min(Math.max(Number(e.target.value) || 2048, 1024), 32768);
+                // В поле — сырой ввод: кламп на каждый keystroke ломал набор
+                // («1024096» превращался в «10240»). В ядро уходит уже
+                // клампнутое значение — кламп живёт здесь и на blur, не в поле.
+                const raw = e.target.value;
+                setRamInput(raw);
+                const value = clampBounded(raw, 1024, 32768, 2048);
                 lastSent.current.ram = value;
-                setRamInput(value);
+                commitDebounced({ defaultRamMb: value });
+              }}
+              onBlur={() => {
+                // Кламп в границы HTML min/max — при выходе из поля.
+                const value = clampBounded(ramInput, 1024, 32768, 2048);
+                lastSent.current.ram = value;
+                setRamInput(String(value));
                 commitDebounced({ defaultRamMb: value });
               }}
               className="h-10 w-44 rounded-lg border border-border-strong bg-bg px-3 text-text"
@@ -331,10 +365,18 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               max={64}
               value={parInput}
               onChange={(e) => {
-                // Кламп в границы HTML min/max — как у поля RAM.
-                const value = Math.min(Math.max(Number(e.target.value) || 16, 1), 64);
+                // Сырой ввод, как у поля RAM: кламп на keystroke ломал набор.
+                const raw = e.target.value;
+                setParInput(raw);
+                const value = clampBounded(raw, 1, 64, 16);
                 lastSent.current.par = value;
-                setParInput(value);
+                commitDebounced({ downloadParallelism: value });
+              }}
+              onBlur={() => {
+                // Кламп в границы HTML min/max — при выходе из поля.
+                const value = clampBounded(parInput, 1, 64, 16);
+                lastSent.current.par = value;
+                setParInput(String(value));
                 commitDebounced({ downloadParallelism: value });
               }}
               className="h-10 w-44 rounded-lg border border-border-strong bg-bg px-3 text-text"
@@ -472,7 +514,10 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               <input
                 type="text"
                 value={proxyInput}
-                onChange={(e) => setProxyInput(e.target.value)}
+                onChange={(e) => {
+                  dirtyInputs.current.add("proxy");
+                  setProxyInput(e.target.value);
+                }}
                 placeholder="http://127.0.0.1:7890"
                 className="h-10 w-64 rounded-lg border border-border-strong bg-bg px-3 text-sm text-text"
               />
@@ -488,7 +533,10 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               <input
                 type="text"
                 value={azureInput}
-                onChange={(e) => setAzureInput(e.target.value)}
+                onChange={(e) => {
+                  dirtyInputs.current.add("azure");
+                  setAzureInput(e.target.value);
+                }}
                 placeholder="00000000-0000-0000-0000-000000000000"
                 className="h-10 w-64 rounded-lg border border-border-strong bg-bg px-3 text-sm text-text font-mono text-xs"
               />
@@ -549,7 +597,15 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               >
                 {dataDir}
               </code>
-              <button onClick={() => void api.dirOpen()} className="btn-ghost btn-sm">
+              <button
+                onClick={() =>
+                  void api
+                    .dirOpen()
+                    .then(() => setSaveError(null))
+                    .catch((e) => setSaveError(apiErrorText(e)))
+                }
+                className="btn-ghost btn-sm"
+              >
                 {t("settings.open")}
               </button>
             </div>

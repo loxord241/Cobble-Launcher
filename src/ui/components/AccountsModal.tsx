@@ -19,8 +19,12 @@ import { apiErrorText, t } from "../../i18n";
 
 type Tab = "msa" | "ely" | "offline" | "custom";
 
+// F12/D64: ник офлайн-профиля — латиница/цифры/подчёркивание, 3–16 символов;
+// те же правила, что в онбординге и Shell (раньше модалка пропускала что угодно).
+const NICK_RE = /^[A-Za-z0-9_]{3,16}$/;
+
 export default function AccountsModal({ onClose }: { onClose: () => void }) {
-  const { list: accounts, setActive, remove, addOffline, addMsaBrowser, addEly, load } =
+  const { list: accounts, setActive, remove, addOffline, addMsaBrowser, addEly, addAuthlib, load } =
     useAccounts();
   const { settings } = useSettings();
   const [activeTab, setActiveTab] = useState<Tab>("offline");
@@ -38,6 +42,8 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
 
   // Офлайн форма
   const [offlineNick, setOfflineNick] = useState("");
+  // D64: та же маска, что в онбординге; пустое поле — «нет ника» (кнопка выключена).
+  const nickInvalid = offlineNick.trim() !== "" && !NICK_RE.test(offlineNick.trim());
 
   // Ely.by форма
   const [elyUser, setElyUser] = useState("");
@@ -60,6 +66,18 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
   // Сортировка профиля (D53): активный первый, дальше по имени/добавлению.
   const [sortMode, setSortMode] = useState<AccountSort>(accountSortPref);
   const visibleAccounts = sortAccounts(accounts, sortMode, activeId);
+  // D64: одинаковые ники двух офлайн-аккаунтов неразличимы. Повторяющиеся
+  // офлайн-ники помечаем порядковым номером (#1, #2 — без нового словаря),
+  // точный id профиля — в title имени (hover). Номер стабилен: считаем по
+  // порядку ядра, сортировка его не меняет.
+  const offlineDupNo = new Map<string, number>();
+  const offlineDupTotal = new Map<string, number>();
+  for (const a of accounts) {
+    if (a.kind !== "offline") continue;
+    const n = (offlineDupTotal.get(a.name) ?? 0) + 1;
+    offlineDupTotal.set(a.name, n);
+    offlineDupNo.set(a.id, n);
+  }
   // Фейд на верхней кромке середины: показывает, что список уехал вверх
   // (замечание судьи — срезанная строка без затухания читалась сыро).
   const [scrolled, setScrolled] = useState(false);
@@ -72,7 +90,8 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
   const handleAddOffline = async (e: React.FormEvent) => {
     e.preventDefault();
     const nick = offlineNick.trim();
-    if (!nick) return;
+    // D64: серверную маску дублируем на клиенте (та же, что в онбординге).
+    if (!nick || !NICK_RE.test(nick)) return;
     setBusy(true);
     setError(null);
     try {
@@ -132,7 +151,8 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
     try {
       const info = await api.authlibServerInfo(url);
       setCustomServerName(info.serverName ?? info.serverUrl);
-      const acc = await api.accountAddAuthlib(info.serverUrl, customUser.trim(), customPass);
+      // Обёртка стора: после входа снимает метку деградации (стабильный uuid-id, D64).
+      const acc = await addAuthlib(info.serverUrl, customUser.trim(), customPass);
       await load();
       await setActive(acc.id);
       setCustomUrl("");
@@ -238,6 +258,9 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
             ) : (
               visibleAccounts.map((acc) => {
                 const isActive = acc.id === activeId;
+                // D64: номер показываем только у повторяющихся офлайн-ников.
+                const dupNo = acc.kind === "offline" ? (offlineDupNo.get(acc.id) ?? 0) : 0;
+                const dupTotal = acc.kind === "offline" ? (offlineDupTotal.get(acc.name) ?? 0) : 0;
                 return (
                   <div
                     key={acc.id}
@@ -251,7 +274,9 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
                       <SkinHead name={acc.name} skin={skinsById[acc.id]} size={32} />
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold text-text">{acc.name}</span>
+                          <span className="text-sm font-semibold text-text" title={acc.id}>
+                            {acc.name}
+                          </span>
                           {isActive && (
                             <span className="rounded bg-accent px-1.5 py-0.5 text-[11px] font-bold text-on-accent">
                               {t("accounts.active")}
@@ -266,6 +291,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
                               ? accountKindLabelKey[acc.kind]
                               : "accounts.customAuth",
                           )}
+                          {dupTotal > 1 && <span className="font-mono"> · #{dupNo}</span>}
                         </span>
                       </div>
                     </div>
@@ -273,7 +299,11 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
                     <div className="flex items-center gap-1">
                       {!isActive && (
                         <button
-                          onClick={() => void setActive(acc.id)}
+                          onClick={() =>
+                            void setActive(acc.id).catch((err: unknown) =>
+                              setError(apiErrorText(err)),
+                            )
+                          }
                           className="btn-ghost h-8 px-2.5 text-xs"
                         >
                           {t("accounts.select")}
@@ -433,22 +463,35 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
           <div key={activeTab} className="anim-fade-up mt-3">
             {/* Офлайн форма */}
             {activeTab === "offline" && (
-              <form onSubmit={handleAddOffline} className="flex gap-2">
-                <input
-                  type="text"
-                  value={offlineNick}
-                  onChange={(e) => setOfflineNick(e.target.value)}
-                  placeholder={t("accounts.nickPlaceholder")}
-                  className="h-10 flex-1 rounded-md border border-border-app bg-bg px-3 text-sm text-text outline-none focus:border-accent"
-                />
-                <button
-                  type="submit"
-                  disabled={busy || !offlineNick.trim()}
-                  className="btn-primary flex h-10 items-center gap-2 px-4 text-sm"
-                >
-                  <Plus size={16} />
-                  {t("accounts.add")}
-                </button>
+              <form onSubmit={handleAddOffline} className="flex flex-col gap-1">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={offlineNick}
+                    onChange={(e) => setOfflineNick(e.target.value)}
+                    placeholder={t("accounts.nickPlaceholder")}
+                    maxLength={16}
+                    aria-invalid={nickInvalid || undefined}
+                    className={`h-10 flex-1 rounded-md border bg-bg px-3 text-sm text-text outline-none focus:border-accent ${
+                      nickInvalid ? "border-error/60" : "border-border-app"
+                    }`}
+                  />
+                  <button
+                    type="submit"
+                    disabled={busy || !offlineNick.trim() || nickInvalid}
+                    className="btn-primary flex h-10 items-center gap-2 px-4 text-sm"
+                  >
+                    <Plus size={16} />
+                    {t("accounts.add")}
+                  </button>
+                </div>
+                {/* Инлайн-ошибка маски — как в онбординге, без словарных ключей. */}
+                {nickInvalid && (
+                  <p role="alert" className="flex items-center gap-2 text-[13px] text-error">
+                    <code className="rounded bg-bg px-1 font-mono">A-Z a-z 0-9 _</code>
+                    <span className="font-mono">3–16</span>
+                  </p>
+                )}
               </form>
             )}
 

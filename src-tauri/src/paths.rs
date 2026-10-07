@@ -86,20 +86,12 @@ impl Paths {
         self.root.join("runtime")
     }
 
-    pub fn java_runtime(&self, major: u32) -> PathBuf {
-        self.runtime_dir().join(format!("jdk{major}"))
-    }
-
     pub fn logs_dir(&self) -> PathBuf {
         self.root.join("logs")
     }
 
     pub fn settings_file(&self) -> PathBuf {
         self.root.join("settings.json")
-    }
-
-    pub fn accounts_file(&self) -> PathBuf {
-        self.root.join("accounts.json")
     }
 
     /// Пользовательские скины (D59): `skins/` в данных лаунчера.

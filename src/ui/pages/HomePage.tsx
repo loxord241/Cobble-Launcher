@@ -6,6 +6,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Dices, Download, Search, SearchX } from "lucide-react"
 import { api } from "../../api/client"
 import { apiErrorText, currentLanguage, plural, t } from "../../i18n"
+import { prettySlug } from "../format"
 import type { SearchHit } from "../../api/types"
 
 // Самый тяжёлый лист каталога (4 таба + галерея + markdown) грузится только
@@ -100,7 +101,7 @@ function CatalogRow({ hit, idx, onOpen }: { hit: SearchHit, idx: number, onOpen:
               <>
                 {cats.slice(0, 3).map((c) => (
                   <span key={c} className="badge-soft">
-                    {c}
+                    {prettySlug(c)}
                   </span>
                 ))}
                 {cats.length > 3 && <span className="chip-mono">+{cats.length - 3}</span>}
@@ -317,7 +318,7 @@ export default function HomePage({ query }: { query: string }) {
         )}
       </div>
 
-      {/* Переключатель типа каталога (стиль табов ModsPage). */}
+      {/* Переключатель типа каталога. */}
       <div role="tablist" className="flex gap-1">
         {(["modpack", "mod"] as CatalogType[]).map((x) => (
           <button
@@ -381,7 +382,7 @@ export default function HomePage({ query }: { query: string }) {
           <option value="">{t("home.filter.any")}</option>
           {LOADERS.map((l) => (
             <option key={l} value={l}>
-              {l}
+              {prettySlug(l)}
             </option>
           ))}
         </select>
@@ -395,8 +396,8 @@ export default function HomePage({ query }: { query: string }) {
           <option value="">{t("home.filter.categoryAny")}</option>
           {categories.map((c) => (
             <option key={c} value={c}>
-              {/* Slug → читаемый лейбл: «adventure-rpg» → «Adventure rpg». */}
-              {c.charAt(0).toUpperCase() + c.slice(1).replace(/-/g, " ")}
+              {/* Slug → читаемый лейбл: t("slug.*"), фолбэк — «Adventure rpg». */}
+              {prettySlug(c)}
             </option>
           ))}
         </select>

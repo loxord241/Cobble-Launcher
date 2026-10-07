@@ -3,8 +3,8 @@
 // ней — табы «Обзор / Миры / Моды (N) / Логи». Табов «Версии» и «Журнал
 // изменений» нет намеренно: у ядра нет для них источника данных — пустышку
 // не рисуем.
-// Действия и данные — те же API, что у страниц Инстансов и Модов (логика
-// панели «Установленные» переиспользуется, сама панель там остаётся).
+// Действия и данные — те же API, что у страницы Инстансов (логика панели
+// «Установленные» переиспользуется).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
@@ -133,7 +133,7 @@ export default function InstanceDetailPage({
   // Битая иконка в шапке → процедурный арт (как на карточках).
   const [heroIconBroken, setHeroIconBroken] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  // Поиск/установка модов в модалке прямо здесь, без перехода на страницу Модов.
+  // Поиск/установка модов — в модалке прямо на этой странице.
   const [addOpen, setAddOpen] = useState(false);
   const [installed, setInstalled] = useState<ContentEntry[] | null>(null);
   /** Метаданные Modrinth по projectId: название/иконка строки (CF-стиль). */
@@ -272,6 +272,25 @@ export default function InstanceDetailPage({
   const closeMenu = (refocus = false) => {
     setMenuOpen(false);
     if (refocus) kebabRef.current?.focus();
+  };
+
+  /** Смена таба с guard-ом несохранённых конфигов (F6: confirm в Tauri
+      асинхронен — ждём ответа). Общий для табов и кебаб-меню («Логи»),
+      чтобы обхода подтверждения не было. */
+  const switchTab = (next: Tab) => {
+    void (async () => {
+      if (
+        tab === "configs" &&
+        next !== "configs" &&
+        configsDirty &&
+        !(await askConfirm(t("instance.configs.unsaved")))
+      ) {
+        return;
+      }
+      // Таб «Конфиги» размонтируется — dirty-флаг начинаем с чистого.
+      if (tab === "configs" || next === "configs") setConfigsDirty(false);
+      setTab(next);
+    })();
   };
 
   const toggleEntry = async (file: string) => {
@@ -513,7 +532,9 @@ export default function InstanceDetailPage({
                     label={t("instances.logs.menu")}
                     onClick={() => {
                       closeMenu();
-                      setTab("logs");
+                      // Тот же guard несохранённых конфигов, что у табов:
+                      // кебаб не должен обходить подтверждение.
+                      switchTab("logs");
                     }}
                   />
                   {/* Выравниваем кебаб страницы с меню списка (InstanceKebabMenu). */}
@@ -673,7 +694,7 @@ export default function InstanceDetailPage({
         </div>
       </section>
 
-      {/* Табы страницы инстанса (стиль вкладок типов на странице Модов). */}
+      {/* Табы страницы инстанса. */}
       <div role="tablist" aria-label={t("instance.tabs.label")} className="flex flex-wrap gap-1">
         {TABS.map((id) => (
           <button
@@ -683,23 +704,7 @@ export default function InstanceDetailPage({
             aria-selected={tab === id}
             // Панель в DOM одна (текущая): ссылаемся только на существующий id.
             aria-controls={tab === id ? `inst-panel-${id}` : undefined}
-            onClick={() => {
-              // F6: уход с таба «Конфиги» с несохранёнными правками — подтверждаем
-              // (D49: confirm в Tauri асинхронен, ждём ответа пользователя).
-              void (async () => {
-                if (
-                  tab === "configs" &&
-                  id !== "configs" &&
-                  configsDirty &&
-                  !(await askConfirm(t("instance.configs.unsaved")))
-                ) {
-                  return;
-                }
-                // Таб «Конфиги» размонтируется — dirty-флаг начинаем с чистого.
-                if (tab === "configs" || id === "configs") setConfigsDirty(false);
-                setTab(id);
-              })();
-            }}
+            onClick={() => switchTab(id)}
             className={`h-9 rounded-lg px-3 text-sm font-medium transition-colors ${
               tab === id
                 ? "bg-accent text-on-accent"

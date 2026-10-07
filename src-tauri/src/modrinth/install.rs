@@ -72,10 +72,16 @@ pub async fn install_project(
         .unwrap_or("mod")
         .to_string();
     let kind = kind_for_project_type(&project_type)?;
+    // D64: мод в ванильный инстанс раньше «ставился» молча — jar ложился в
+    // mods/, но игра без загрузчика его не грузит. Честный отказ вместо тихо
+    // неработающего мода (ресурспаки/шейдеры загрузчика не требуют).
     let loader = if kind == ContentKind::Mod {
-        // Vanilla-инстанс (без загрузчика): предпочитаем fabric-сборку —
-        // большинство модов публикует fabric первыми; иначе любая сборка.
-        Some(inst.loader.clone().unwrap_or_else(|| "fabric".into()))
+        Some(inst.loader.clone().ok_or_else(|| {
+            LauncherError::InvalidInput(
+                "это мод — для него нужен Fabric/Forge/NeoForge/Quilt; создай инстанс с загрузчиком или выбери ресурс-пак/шейдер"
+                    .into(),
+            )
+        })?)
     } else {
         None
     };
@@ -201,9 +207,14 @@ async fn download_and_record(
     installed: &mut Vec<ContentEntry>,
 ) -> Result<()> {
     let dir = dir_for_kind(kind);
+    // D64: filename из API — не доверенный путь: тот же санитайзер, что в
+    // updates/mrpack (join с «именем» вида `../../x` не должен писать мимо
+    // каталога контента). Поле `file` в манифесте — из того же имени, иначе
+    // обновления не найдут файл на диске.
+    let name = api::sanitize_file_name(&file.filename);
     let dest = crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id))
         .join(dir)
-        .join(&file.filename);
+        .join(&name);
     // Железное правило: файл без хэша из доверенного манифеста не качаем
     // (Modrinth отдаёт sha1 и/или sha512 — берём оба, сверяется движок).
     let sha1 = file.hashes.get("sha1").cloned();
@@ -245,7 +256,7 @@ async fn download_and_record(
     // Манифест: заменить записи этого проекта (переустановка), добавить новую.
     let entry = ContentEntry {
         kind,
-        file: format!("{dir}/{}", file.filename),
+        file: format!("{dir}/{name}"),
         source: ContentSource::Modrinth,
         project_id: Some(project_id.to_string()),
         version_id: Some(version_id.to_string()),

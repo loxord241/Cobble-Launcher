@@ -73,7 +73,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   // в стиле CurseForge (запрос владельца). Навигация слева закрывает её.
   const [openInstanceId, setOpenInstanceId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [version, setVersion] = useState("0.1.0");
+  const [version, setVersion] = useState("");
   const [accountOpen, setAccountOpen] = useState(false);
   // F12: черновик быстрого офлайн-ника в открытом меню профиля.
   const [quickNick, setQuickNick] = useState("");
@@ -104,16 +104,27 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
       launch: s.launch,
     })),
   );
-  const { settings, loaded: loadedSettings, update: updateSettings, load: loadSettings } = useSettings();
+  // D64: узкие селекторы вместо подписки на сторы целиком — тик слайдера
+  // (update кладёт новый объект settings) больше не перерисовывает каркас:
+  // читаем ровно те поля, что использует Shell.
+  const loadedSettings = useSettings((s) => s.loaded);
+  const updateSettings = useSettings((s) => s.update);
+  const loadSettings = useSettings((s) => s.load);
+  const accountsActiveId = useSettings((s) => s.settings?.accountsActiveId);
+  const workOffline = useSettings((s) => !!s.settings?.workOffline);
+  const logo = useSettings((s) => s.settings?.logo ?? "");
   // D62: degradedIds — профили с упавшим фоновым refresh токена ядра
   // (account_refresh_failed); непустой набор включает плашку «перелогин».
-  const {
-    list: accounts,
-    degradedIds,
-    load: loadAccounts,
-    setActive,
-    addOffline,
-  } = useAccounts();
+  const accounts = useAccounts((s) => s.list);
+  const degradedIds = useAccounts((s) => s.degradedIds);
+  const loadAccounts = useAccounts((s) => s.load);
+  const setActive = useAccounts((s) => s.setActive);
+  const addOffline = useAccounts((s) => s.addOffline);
+  // D64: готовность сторов — ярлычный запуск ждёт её (см. launchFromShortcut).
+  const instancesLoaded = useInstances((s) => s.loaded);
+  const accountsLoaded = useAccounts((s) => s.loaded);
+  // D64: активные загрузки ядра (чип в титлбаре); null — ничего не качается.
+  const dlQueue = useInstances((s) => s.dlQueue);
 
   const showNotice = useCallback((kind: "ok" | "error", text: string) => {
     setNotice({ kind, text });
@@ -131,16 +142,30 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   // D5b: .mrpack, брошенный на окно, ставится тем же ядерным вызовом, что и из
   // каталога. Файловые drop'ы нативно принимает Tauri (dragDropEnabled=true),
   // поэтому пути берём из onDragDropEvent — HTML5-события их не содержат.
+  // D64: файлов в drop'е может быть несколько — обрабатываем ВСЕ последовательно
+  // (очередь одного drop'а); drop во время незавершённой установки больше не
+  // молчит — показываем баннер shell.drop.busy.
   const installDroppedMrpack = useCallback(
-    async (path: string) => {
-      if (dropBusy.current) return;
+    async (paths: string[]) => {
+      if (dropBusy.current) {
+        showNotice("error", t("shell.drop.busy"));
+        return;
+      }
       dropBusy.current = true;
       try {
-        const inst = await api.mrpackInstall(path);
-        showNotice("ok", t("shell.drop.installed", { name: inst.name, version: inst.mcVersion }));
-        void load(); // новый инстанс — обновляем счётчик в навигации и страницы
-      } catch (e) {
-        showNotice("error", t("shell.drop.error", { message: apiErrorText(e) }));
+        for (const path of paths) {
+          try {
+            // Контракт D64: ядро возвращает { instance, group }.
+            const { instance: inst } = await api.mrpackInstall(path);
+            showNotice(
+              "ok",
+              t("shell.drop.installed", { name: inst.name, version: inst.mcVersion }),
+            );
+            void load(); // новый инстанс — обновляем счётчик в навигации и страницы
+          } catch (e) {
+            showNotice("error", t("shell.drop.error", { message: apiErrorText(e) }));
+          }
+        }
       } finally {
         dropBusy.current = false;
       }
@@ -155,9 +180,10 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
       .onDragDropEvent((event) => {
         if (event.payload.type !== "drop") return;
         // Не наш drop (нет .mrpack) — не перехватываем: файл просто игнорируется.
-        const path = event.payload.paths.find((p) => p.toLowerCase().endsWith(".mrpack"));
-        if (!path) return;
-        void installDroppedMrpack(path);
+        // D64: собираем ВСЕ .mrpack одного drop'а, а не только первый.
+        const paths = event.payload.paths.filter((p) => p.toLowerCase().endsWith(".mrpack"));
+        if (paths.length === 0) return;
+        void installDroppedMrpack(paths);
       })
       .then((un) => {
         if (disposed) un();
@@ -174,7 +200,9 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     void loadSettings().then(() => void load());
     void subscribeEvents();
     void loadAccounts();
-    getVersion().then(setVersion).catch(() => setVersion("0.2.0"));
+    // D64: при сбое getVersion версии в футере просто нет — выдумывать
+    // «0.2.0» нечестно.
+    getVersion().then(setVersion).catch(() => setVersion(""));
     // D46: тихая проверка обновлений — один раз за сессию (задержка внутри
     // стора); результат — бейдж в футере и раздел в Настройках, без тостов.
     silentUpdateCheck();
@@ -182,25 +210,35 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     return () => unsubscribeEvents();
   }, [load, loadSettings, subscribeEvents, loadAccounts, silentUpdateCheck]);
 
+  // D64: «открыта модалка» — известные модальные флаги каркаса (модалка
+  // аккаунтов + crash-репорт). Палитру поверх открытой модалки не открываем:
+  // две ловушки Tab сражались за фокус (ping-pong). Сама палитра закрывается
+  // по Esc как раньше.
+  const anyModalOpen = accountsModalOpen || crashReport !== null;
+
   // Ctrl+K — фокус в поиск (спека фазы B); Esc чистит внутри инпута.
   // F19: палитра команд живёт на Ctrl+P, а не на Ctrl+K — приёмка
   // scripts/ui_checks.cjs (#4) ждёт, что Ctrl+K ставит фокус в поле поиска,
   // поэтому перехватывать его палитрой нельзя.
+  // D64: сверяем e.code (физическая клавиша), а не e.key — на русской
+  // раскладке K/P дают «л»/«з», и оба хоткея были мертвы. Модификатор —
+  // как раньше, Ctrl.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const key = e.key.toLowerCase();
-      if (e.ctrlKey && key === "k") {
+      if (!e.ctrlKey) return;
+      if (e.code === "KeyK") {
         e.preventDefault();
         searchRef.current?.focus();
-      } else if (e.ctrlKey && key === "p") {
+      } else if (e.code === "KeyP") {
         // preventDefault гасит нативную «печать» вебвью.
         e.preventDefault();
+        if (anyModalOpen) return;
         setPaletteOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [anyModalOpen]);
 
   const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Escape") {
@@ -216,12 +254,16 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   };
 
   const active =
-    accounts.find((a) => a.id === settings?.accountsActiveId) ?? accounts[0] ?? null;
+    accounts.find((a) => a.id === accountsActiveId) ?? accounts[0] ?? null;
 
   // D48: ярлык рабочего стола — single-instance пересылает `--id` вторым
   // процессом: либо событием shortcut_launch, либо через shortcut_take_pending
   // (окно открылось позже колбэка). Запуск — тем же потоком, что и кнопка:
   // статусы и прогресс придут через launch_state как обычно.
+  // D64: ярлычный запуск откладывается до загрузки сторов (instances+accounts):
+  // resolveLaunchTarget резолвит привязку профиля по их спискам, и до загрузки
+  // запуск молча игнорировал её. Механизм shortcut_take_pending сохранён —
+  // «pending» просто держится в ref, пока сторы не готовы.
   const launchFromShortcut = useCallback(
     async (id: string) => {
       try {
@@ -235,17 +277,38 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     [launch],
   );
 
+  const pendingShortcutRef = useRef<string | null>(null);
+  // Готовность читаем по getState(): колбэк стабилен, слушатели ниже не
+  // переподписываются при каждом флипе loaded.
+  const queueShortcutLaunch = useCallback(
+    (id: string) => {
+      const ready = useInstances.getState().loaded && useAccounts.getState().loaded;
+      if (ready) void launchFromShortcut(id);
+      else pendingShortcutRef.current = id;
+    },
+    [launchFromShortcut],
+  );
+
+  // Флеш отложенного ярлычного запуска: оба стора дозагрузились — запускаем.
+  useEffect(() => {
+    if (!instancesLoaded || !accountsLoaded) return;
+    const id = pendingShortcutRef.current;
+    if (id === null) return;
+    pendingShortcutRef.current = null;
+    void launchFromShortcut(id);
+  }, [instancesLoaded, accountsLoaded, launchFromShortcut]);
+
   useEffect(() => {
     let un: UnlistenFn | null = null;
     let disposed = false;
     void api
       .shortcutTakePending()
       .then((id) => {
-        if (id) void launchFromShortcut(id);
+        if (id) queueShortcutLaunch(id);
       })
       .catch(() => undefined);
     void listen<string>("shortcut_launch", (e) => {
-      void launchFromShortcut(String(e.payload));
+      queueShortcutLaunch(String(e.payload));
     })
       .then((u) => {
         if (disposed) u();
@@ -256,7 +319,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
       disposed = true;
       un?.();
     };
-  }, [launchFromShortcut]);
+  }, [queueShortcutLaunch]);
 
 
   // Скины профилей (D34): голова персонажа в чипе титлбара и в меню профилей.
@@ -268,7 +331,6 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
 
   // D38: логотип (иконка окна применяет ядро; data-URL — для бренд-чипа).
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
-  const logo = settings?.logo ?? "";
   useEffect(() => {
     if (!loadedSettings) return;
     let alive = true;
@@ -363,22 +425,37 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
             Обычная кнопка в flex-ряду — под drag-region не попадает. */}
         <button
           role="switch"
-          aria-checked={!!settings?.workOffline}
+          aria-checked={workOffline}
           aria-label={t("shell.offline")}
           title={t("shell.offline.hint")}
           onClick={() =>
-            void updateSettings({ workOffline: !settings?.workOffline }).catch((e) =>
+            void updateSettings({ workOffline: !workOffline }).catch((e) =>
               showNotice("error", apiErrorText(e)),
             )
           }
           className="icon-btn"
         >
-          {settings?.workOffline ? (
+          {workOffline ? (
             <WifiOff key="off" size={16} aria-hidden className="anim-fade-in" />
           ) : (
             <Wifi key="on" size={16} aria-hidden className="anim-fade-in" />
           )}
         </button>
+
+        {/* D64: активные загрузки ядра — маленький чип «иконка + сколько»
+            (pending+downloading из dlQueue стора инстансов), без кликов и
+            переходов. Нечего качать (dlQueue null) — элемента нет вовсе. */}
+        {dlQueue && (
+          <div
+            role="status"
+            title={t("shell.dl.active", { count: dlQueue.pending + dlQueue.downloading })}
+            aria-label={t("shell.dl.active", { count: dlQueue.pending + dlQueue.downloading })}
+            className="flex h-8 items-center gap-1.5 rounded-lg border border-border-app bg-card px-2 text-xs text-text-muted"
+          >
+            <Download size={13} aria-hidden className="text-accent" />
+            <span className="font-mono">{dlQueue.pending + dlQueue.downloading}</span>
+          </div>
+        )}
 
         {/* Чип аккаунта: реальный активный профиль из ядра (M8) */}
         {active ? (
@@ -665,7 +742,11 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
                 )}
               </div>
             )}
-            {t("shell.footer.version")} <span className="font-mono">{version}</span>
+            {version && (
+              <span>
+                {t("shell.footer.version")} <span className="font-mono">{version}</span>
+              </span>
+            )}
             {/* A14: обязательный дисклеймер Mojang об неофициальном статусе. */}
             <div className="mt-1 text-balance">{t("shell.disclaimer")}</div>
           </div>

@@ -59,9 +59,24 @@ pub async fn fetch_manifest(client: &HttpClient, cache_dir: &Path) -> Result<Ver
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
                 if now.saturating_sub(fetched_at) < MANIFEST_TTL.as_secs() {
-                    let data = std::fs::read(cache_data_path(cache_dir))?;
-                    if let Ok(m) = serde_json::from_slice::<VersionManifest>(&data) {
-                        return Ok(m);
+                    // D64: свежая TTL-метка, но data-файл удалён/не читается/бит
+                    // — прежде `?` на чтении пробрасывал ошибку наверх: час
+                    // падений до истечения TTL без отката к сети. Сбрасываем
+                    // метку (успешная загрузка из сети перезапишет её) и идём
+                    // в сеть за свежим манифестом.
+                    let fresh = std::fs::read(cache_data_path(cache_dir))
+                        .ok()
+                        .and_then(|data| {
+                            serde_json::from_slice::<VersionManifest>(&data).ok()
+                        });
+                    match fresh {
+                        Some(m) => return Ok(m),
+                        None => {
+                            tracing::warn!(
+                                "кэш манифеста не читается при свежей TTL-метке — метка сброшена, идём в сеть"
+                            );
+                            let _ = std::fs::remove_file(&meta_path);
+                        }
                     }
                 }
             }
@@ -218,6 +233,62 @@ mod tests {
         let client = HttpClient::new(Some("http://127.0.0.1:54321")).unwrap();
         let m = fetch_manifest(&client, cache_dir).await.expect("должен вернуть stale-кэш при ошибке сети");
         assert_eq!(m.latest.release, "1.20.1");
+    }
+
+    /// D64: свежая TTL-метка + валидный data-файл — кэш отдаётся и офлайн.
+    #[tokio::test]
+    async fn fresh_ttl_serves_cache_even_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path();
+        let now: u64 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        std::fs::write(cache_meta_path(cache_dir), serde_json::to_vec(&now).unwrap()).unwrap();
+        std::fs::write(
+            cache_data_path(cache_dir),
+            include_str!("../../tests/fixtures/version_manifest_sample.json"),
+        )
+        .unwrap();
+
+        let client = HttpClient::new(None).unwrap();
+        client.set_offline(true);
+        let m = fetch_manifest(&client, cache_dir)
+            .await
+            .expect("свежий кэш должен отдаваться без сети");
+        assert_eq!(m.latest.release, "1.20.1");
+        // Метка не тронута — кэш в силе.
+        assert!(cache_meta_path(cache_dir).exists());
+    }
+
+    /// D64-регресс: свежая TTL-метка + удалённый/битый data-файл — раньше
+    /// `?` на чтении давал час падений без отката к сети. Теперь метка
+    /// сбрасывается и вызов идёт в сеть (здесь — офлайн, честная ошибка).
+    #[tokio::test]
+    async fn fresh_ttl_with_broken_data_resets_meta() {
+        let broken_data: &[u8] = b"{ not a json }";
+        for broken in [None, Some(broken_data)] {
+            let dir = tempfile::tempdir().unwrap();
+            let cache_dir = dir.path();
+            let now: u64 = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            std::fs::write(cache_meta_path(cache_dir), serde_json::to_vec(&now).unwrap()).unwrap();
+            if let Some(data) = broken {
+                std::fs::write(cache_data_path(cache_dir), data).unwrap();
+            } // None — data-файл удалён
+
+            let client = HttpClient::new(None).unwrap();
+            client.set_offline(true); // сеть недоступна — мгновенный отказ
+            let r = fetch_manifest(&client, cache_dir).await;
+            assert!(r.is_err(), "сети нет и кэш нечитаем — должна быть ошибка");
+            assert!(
+                !cache_meta_path(cache_dir).exists(),
+                "TTL-метка обязана быть сброшена (broken={})",
+                broken.is_some()
+            );
+        }
     }
 
     /// Аудит 2026-10-06: id из удалённого манифеста с разделителями пути —

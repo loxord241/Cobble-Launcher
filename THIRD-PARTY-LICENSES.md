@@ -21,6 +21,9 @@
 | `tauri-build` (build-dep) | 2.7.0 | Apache-2.0 OR MIT |
 | `tauri-plugin-opener` | 2.5.5 | Apache-2.0 OR MIT |
 | `tauri-plugin-dialog` | 2.8.0 | Apache-2.0 OR MIT |
+| `tauri-plugin-updater` | 2.13.1 | Apache-2.0 OR MIT |
+| `tauri-plugin-process` | 2.4.0 | Apache-2.0 OR MIT |
+| `tauri-plugin-single-instance` | 2.5.2 | Apache-2.0 OR MIT |
 | `serde` | 1.0.229 | MIT OR Apache-2.0 |
 | `serde_json` | 1.0.151 | MIT OR Apache-2.0 |
 | `tokio` | 1.53.1 | MIT |
@@ -38,14 +41,17 @@
 | `regex` | 1.13.1 | MIT OR Apache-2.0 |
 | `futures` | 0.3.34 | MIT OR Apache-2.0 |
 | `zip` | 8.6.0 | MIT |
+| `flate2` | 1.1.10 | MIT OR Apache-2.0 |
 | `rand` | 0.10.3 | MIT OR Apache-2.0 |
 | `clap` | 4.6.7 | MIT OR Apache-2.0 |
-| `opener` | 0.8.5 | MIT OR Apache-2.0 |
 | `sysinfo` | 0.39.6 | MIT |
 | `base64` | 0.23.1 | MIT OR Apache-2.0 |
 | `keyring` | 4.2.0 | MIT OR Apache-2.0 |
 | `axum` (dev-dep) | 0.8.9 | MIT |
 | `tempfile` (dev-dep) | 3.27.0 | MIT OR Apache-2.0 |
+
+Примечание: крейт `opener` снят (D29) — открытие путей/ссылок выполняет
+`tauri-plugin-opener` (см. строки плагина и `@tauri-apps/plugin-opener` выше).
 
 ## npm: прямые зависимости (`package.json`)
 
@@ -54,11 +60,12 @@
 | `react` | 19.3.0 | MIT |
 | `react-dom` | 19.3.0 | MIT |
 | `zustand` | 5.0.15 | MIT |
-| `@tanstack/react-virtual` | 3.14.13 | MIT |
 | `lucide-react` | 1.48.0 | ISC |
 | `@tauri-apps/api` | 2.12.0 | Apache-2.0 OR MIT |
 | `@tauri-apps/plugin-dialog` | 2.8.0 | MIT OR Apache-2.0 |
 | `@tauri-apps/plugin-opener` | 2.5.5 | MIT OR Apache-2.0 |
+| `@tauri-apps/plugin-updater` | 2.13.1 | MIT OR Apache-2.0 |
+| `@tauri-apps/plugin-process` | 2.4.0 | MIT OR Apache-2.0 |
 | `tailwindcss` (dev) | 4.3.3 | MIT |
 | `@tailwindcss/vite` (dev) | 4.3.3 | MIT |
 | `vite` (dev) | 8.3.1 | MIT |

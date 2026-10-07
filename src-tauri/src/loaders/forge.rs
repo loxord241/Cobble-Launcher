@@ -37,6 +37,20 @@ fn installer_path(cache_dir: &Path, mc: &str, version: &str) -> PathBuf {
         .join(format!("forge-{mc}-{version}-installer.jar"))
 }
 
+/// Ожидаемый sha1 из maven (`.sha1` рядом с jar). None — недоступен.
+async fn expected_sha1(client: &HttpClient, sha_url: &str) -> Option<String> {
+    let resp = client.send_timed(client.raw().get(sha_url)).await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body = client.body_timed(resp).await.ok()?;
+    let sha = String::from_utf8_lossy(&body)
+        .split_whitespace()
+        .next()?
+        .to_lowercase();
+    (!sha.is_empty()).then_some(sha)
+}
+
 /// Скачать installer.jar с обязательной сверкой `.sha1` (спека §3, §6.3).
 pub async fn download_installer(
     client: &HttpClient,
@@ -46,8 +60,31 @@ pub async fn download_installer(
 ) -> Result<PathBuf> {
     let dest = installer_path(cache_dir, mc, version);
     let dest_long = crate::util::fs::long_path(&dest);
+    let full = format!("{mc}-{version}");
+    let jar_url =
+        format!("{MAVEN_BASE}/net/minecraftforge/forge/{full}/forge-{full}-installer.jar");
+    let sha_url = format!("{jar_url}.sha1");
+
     if dest_long.exists() {
-        return Ok(dest);
+        // F16: офлайн — кэш единственный источник, проверять нечем.
+        if client.offline() {
+            return Ok(dest);
+        }
+        // D64: кэш переиспользуем только после сверки с .sha1 maven —
+        // побитый на диске jar иначе жил бы в кэше вечно (как в neoforge).
+        match expected_sha1(client, &sha_url).await {
+            Some(expected) => {
+                let actual = crate::util::fs::sha1_file(&dest_long).unwrap_or_default();
+                if actual == expected {
+                    return Ok(dest);
+                }
+                tracing::warn!("кэш installer {version} расходится с .sha1 — перекачиваю");
+            }
+            None => {
+                tracing::warn!(".sha1 для installer {version} недоступен — использую кэш без сверки");
+                return Ok(dest);
+            }
+        }
     }
     // D62: у «сырых» GET ниже (installer.jar + .sha1) своего таймаута нет —
     // общий у клиента снят, поэтому send и чтение тела страхуем локально.
@@ -55,10 +92,6 @@ pub async fn download_installer(
     if client.offline() {
         return Err(LauncherError::OfflineMode("загрузчик Forge".into()));
     }
-    let full = format!("{mc}-{version}");
-    let jar_url =
-        format!("{MAVEN_BASE}/net/minecraftforge/forge/{full}/forge-{full}-installer.jar");
-    let sha_url = format!("{jar_url}.sha1");
 
     // D62: TTFB-предохранитель на send (30 с)…
     let resp = client.send_timed(client.raw().get(&jar_url)).await?;
@@ -73,19 +106,13 @@ pub async fn download_installer(
     let bytes = client.body_timed_big(resp).await?;
 
     // D62: .sha1 — крошечный текст, обычные 60 с на тело достаточны.
-    let sha_resp = client.send_timed(client.raw().get(&sha_url)).await?;
-    if !sha_resp.status().is_success() {
-        return Err(LauncherError::network(format!(
+    let expected = expected_sha1(client, &sha_url).await.ok_or_else(|| {
+        LauncherError::network(format!(
             "нет .sha1 для installer {version} — скачивание запрещено (спека §3)"
-        )));
-    }
-    let expected = String::from_utf8_lossy(&client.body_timed(sha_resp).await?)
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_lowercase();
+        ))
+    })?;
     let actual = crate::util::fs::sha1_bytes(&bytes);
-    if expected.is_empty() || actual != expected {
+    if actual != expected {
         return Err(LauncherError::HashMismatch {
             path: jar_url,
             expected,
@@ -113,14 +140,18 @@ pub async fn install(
     let installer = download_installer(client, cache_dir, mc, version).await?;
     // Аудит 2026-10-06: инсталлятор — синхронный процесс на минуты; в
     // spawn_blocking (как в neoforge::install), иначе блокируется tokio-воркер.
-    let id = tokio::task::spawn_blocking({
-        let installer = installer.clone();
-        let java_exe = java_exe.to_path_buf();
-        let game_dir = game_dir.to_path_buf();
-        move || crate::loaders::run_headless_installer(&java_exe, &installer, &game_dir)
-    })
-    .await
-    .map_err(|e| LauncherError::Internal(format!("join инсталлятора: {e}")))??;
+    // D64: сверх того — общий guard (см. run_installer_guarded) и прокси из
+    // настроек в -D-флагах JVM инсталлятора.
+    let jvm_extra = crate::loaders::installer_jvm_args(cache_dir);
+    let id = crate::loaders::run_installer_guarded(
+        java_exe.to_path_buf(),
+        installer,
+        game_dir.to_path_buf(),
+        "forge",
+        version.to_string(),
+        jvm_extra,
+    )
+    .await?;
 
     let json = game_dir.join("versions").join(&id).join(format!("{id}.json"));
     if json.exists() {

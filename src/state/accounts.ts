@@ -19,7 +19,11 @@ interface AccountsState {
   setActive: (id: string) => Promise<void>;
   addOffline: (name: string) => Promise<Account>;
   addMsaBrowser: () => Promise<Account>;
+  /** D64: device-code MSA вход (poll). null — код ещё не подтверждён. */
+  addMsaPoll: (deviceCode: string) => Promise<Account | null>;
   addEly: (username: string, password: string) => Promise<Account>;
+  /** D64: вход на свой authlib-сервер — как addEly, но с clearDegraded. */
+  addAuthlib: (serverUrl: string, username: string, password: string) => Promise<Account>;
   remove: (id: string) => Promise<void>;
   /** F9: пометить профиль деградировавшим (обработчик account_refresh_failed). */
   setDegraded: (id: string) => void;
@@ -73,10 +77,29 @@ export const useAccounts = create<AccountsState>((set, get) => ({
     get().clearDegraded(acc.id);
     return acc;
   },
+  addMsaPoll: async (deviceCode: string) => {
+    // null — пользователь ещё не подтвердил код: ни load, ни метки не трогаем.
+    const acc = await api.accountAddMsaPoll(deviceCode);
+    if (acc) {
+      await get().load();
+      // D64: ядро отдаёт стабильный id (uuid профиля) и в poll-флоу — успешный
+      // вход тем же профилем снимает метку деградации (как в addMsaBrowser).
+      get().clearDegraded(acc.id);
+    }
+    return acc;
+  },
   addEly: async (username: string, password: string) => {
     const acc = await api.accountAddEly(username, password);
     await get().load();
     // D62: как в addMsaBrowser — успешный перелогин снимает метку деградации.
+    get().clearDegraded(acc.id);
+    return acc;
+  },
+  addAuthlib: async (serverUrl: string, username: string, password: string) => {
+    const acc = await api.accountAddAuthlib(serverUrl, username, password);
+    await get().load();
+    // D64: authlib-вход повторно тем же профилем (id = uuid) тоже снимает
+    // метку деградации — симметрично addEly.
     get().clearDegraded(acc.id);
     return acc;
   },

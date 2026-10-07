@@ -443,8 +443,7 @@ pub const UNIQUE_SUBDIRS: &[&str] = &[
     "snapshots",
     "screenshots",
     "config",
-    "logs",
-    ".trash",
+    // .trash и logs не здесь: дубликат их не наследует вовсе (store.rs, D64)
 ];
 
 pub const UNIQUE_FILES: &[&str] = &["options.txt", "servers.dat", "usercache.json"];
@@ -612,15 +611,29 @@ fn recycle_dir(dir: &Path) -> Result<()> {
     // Вне Windows корзину эмулируем переносом в .trash рядом с инстансами.
     let root = dir.parent().unwrap_or(Path::new(".")).join(".trash");
     std::fs::create_dir_all(long_path(&root))?;
-    let name = format!(
-        "{}-{}",
-        dir.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        now_secs()
-    );
+    let base_name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // D64: два удаления за одну секунду получали одинаковое имя `name-ts`,
+    // и второй rename падал с AlreadyExists. При занятом пути — суффикс.
+    let name = unique_dated_name(&base_name, now_secs(), |n| root.join(n).exists());
     std::fs::rename(long_path(dir), long_path(&root.join(name)))?;
     Ok(())
+}
+
+/// D64: свободное имя `<base>-<ts>`; если путь занят — `<base>-<ts>-2`,
+/// `-3`… Занятость проверяет `taken` (файл ИЛИ каталог) — функция чистая,
+/// коллизия «та же секунда» в recycle_dir больше не роняет удаление.
+#[cfg_attr(windows, allow(dead_code))] // Windows-корзина идёт через PowerShell
+fn unique_dated_name(base: &str, ts: u64, taken: impl Fn(&str) -> bool) -> String {
+    let mut candidate = format!("{base}-{ts}");
+    let mut n = 2;
+    while taken(&candidate) {
+        candidate = format!("{base}-{ts}-{n}");
+        n += 1;
+    }
+    candidate
 }
 
 /// Содержимое `.lock` (D62): JSON одной строкой `{"pid":123,"startTime":456789}`
@@ -1471,6 +1484,54 @@ mod tests {
             "лок с PID ≠ expected другим drop'ом не снимается"
         );
         let _ = std::fs::remove_file(dir.join(".lock"));
+    }
+
+    /// D64: коллизия имени корзины в ту же секунду — суффикс `-2`, `-3`,
+    /// а не падение rename с AlreadyExists.
+    #[test]
+    fn unique_dated_name_avoids_same_second_collision() {
+        // Заняты «w1-100» и «w1-100-2» — следующее свободное «w1-100-3».
+        let taken = |n: &str| n == "w1-100" || n == "w1-100-2";
+        assert_eq!(unique_dated_name("w1", 100, taken), "w1-100-3");
+        assert_eq!(unique_dated_name("w1", 100, |_| false), "w1-100");
+        assert_eq!(
+            unique_dated_name("w1", 100, |n| n == "w1-100"),
+            "w1-100-2",
+            "занят первый кандидат — берётся суффикс -2"
+        );
+    }
+
+    /// D64: `.trash` (корзина обновлений/restore) и `logs` не наследуются
+    /// дубликатом — копия не тащит чужой мусор и не раздувает диск.
+    #[test]
+    fn duplicate_skips_trash_and_logs() {
+        let (_d, paths) = test_paths();
+        let inst = Instance::new("src", "1.20.1");
+        save(&paths, &inst).unwrap();
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        for rel in [".trash/1717000000-old.jar", "logs/latest.log"] {
+            let p = mc.join(rel);
+            std::fs::create_dir_all(long_path(p.parent().unwrap())).unwrap();
+            std::fs::write(&p, b"junk").unwrap();
+        }
+
+        let copy = duplicate(&paths, &inst.id).unwrap();
+        let mc2 = minecraft_dir(&instance_dir(&paths, &copy.id));
+        assert!(!mc2.join(".trash").exists(), ".trash не копируется");
+        assert!(!mc2.join("logs").exists(), "logs не копируется");
+        // Обычный контент при этом дублируется как раньше.
+        let mod_file = mc.join("mods/a.jar");
+        std::fs::create_dir_all(long_path(mod_file.parent().unwrap())).unwrap();
+        std::fs::write(&mod_file, b"m").unwrap();
+        let copy2 = duplicate(&paths, &inst.id).unwrap();
+        assert!(
+            minecraft_dir(&instance_dir(&paths, &copy2.id))
+                .join("mods/a.jar")
+                .exists(),
+            "уникальный контент копируется"
+        );
+        // Исходник не тронут.
+        assert!(mc.join(".trash").exists() && mc.join("logs").exists());
     }
 
     /// P2-JVM: JMX-удалённое управление, подмена bootclasspath и патч модулей

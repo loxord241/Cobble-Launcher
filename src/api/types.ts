@@ -209,6 +209,12 @@ export interface LaunchStateEvent {
   instanceId: string;
   phase: LaunchPhase;
   exitCode?: number;
+  /**
+   * D64: unix-ms старта запуска (есть у exited/running от живого супервизора).
+   * Позволяет отличить событие старого запуска от свежего: «Стоп» → «Играть»
+   * быстрее, чем доходит exited прежнего процесса.
+   */
+  launchStartedAt?: number;
 }
 
 export interface GameLogLineEvent {
@@ -362,6 +368,14 @@ export interface ArchiveResult {
   path: string;
   files: number;
   bytes: number;
+}
+
+/** Результат установки модпака (зеркало commands::ModpackInstallResult):
+ * инстанс + группа загрузок — по ней фильтруются dl_progress/dl_group_done
+ * и адресуется downloads_cancel_group. */
+export interface ModpackInstallResult {
+  instance: Instance;
+  group: string;
 }
 
 export interface UpdateCheck {

@@ -108,8 +108,21 @@ export default function InstanceSettingsModal({
   // D41: requestClose — закрытие с анимацией (для ✕ и подложки).
   const { containerRef: dialogRef, requestClose } = useModalA11y(onClose);
 
+  // D64: сохранённая RAM может лежать вне нового диапазона ползунка (максимум
+  // зависит от машины: ramGuide.totalMb) — клампим и при открытии (показываем
+  // фактическое), и при сохранении, иначе ползунок молча хранит старое.
+  const totalRam = ramGuide?.totalMb ?? 16384;
+  const maxRam = Math.min(totalRam, 32768);
+  const clampRam = (v: number) => Math.min(Math.max(v, 1024), maxRam);
+
   useEffect(() => {
-    api.ramGuide().then(setRamGuide).catch(() => setRamGuide(null));
+    api
+      .ramGuide()
+      .then((g) => {
+        setRamGuide(g);
+        setRamMb((cur) => Math.min(Math.max(cur, 1024), Math.min(g.totalMb, 32768)));
+      })
+      .catch(() => setRamGuide(null));
     api.javaList().then(setJavaList).catch(() => setJavaList([]));
     // F14: подсказка грузится один раз при открытии; это не данные — при ошибке
     // чип просто не появляется.
@@ -149,8 +162,6 @@ export default function InstanceSettingsModal({
     setJavaTestError(null);
   };
 
-  const totalRam = ramGuide?.totalMb ?? 16384;
-  const maxRam = Math.min(totalRam, 32768);
   // Честная статистика из instance.json (пишется ядром при запусках).
   const hours = Math.floor((instance.playSeconds ?? 0) / 3600);
   const minutes = Math.round(((instance.playSeconds ?? 0) % 3600) / 60);
@@ -168,7 +179,8 @@ export default function InstanceSettingsModal({
       const fresh = await api.instanceSettingsGet(instance.id);
       const updated: Instance = {
         ...fresh,
-        ramMb,
+        // D64: RAM вне ползунка (машина сменилась, max меньше) — кламп при записи.
+        ramMb: clampRam(ramMb),
         javaPath: javaPath.trim() || undefined,
         // splitArgs, а не сплит по пробелам: -Dcustom.path="C:\Games\My Pack"
         // — один токен, иначе JVM получает обрезанный флаг и не стартует.

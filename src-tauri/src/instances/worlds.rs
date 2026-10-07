@@ -147,24 +147,42 @@ pub fn backup_world(paths: &Paths, instance_id: &str, world: &str) -> Result<Arc
     std::fs::create_dir_all(long_path(&dest_dir))?;
     let dest = dest_dir.join(format!("{world}-{}.zip", now_secs()));
 
-    let file = std::fs::File::create(long_path(&dest))?;
-    let mut zip = zip::ZipWriter::new(file);
-    // Префикс — имя каталога мира: распаковка архива прямо в saves/
-    // восстанавливает мир под своим именем.
-    let count = crate::util::zip::write_zip_dir(
-        &world_dir,
-        &mut zip,
-        &format!("{world}/"),
-        &|_| false,
-    )?;
-    zip.finish()
-        .map_err(|e| LauncherError::Zip(format!("finish: {e}")))?;
-    let bytes = std::fs::metadata(long_path(&dest))?.len();
-    Ok(ArchiveResult {
-        path: dest.to_string_lossy().into(),
-        files: count,
-        bytes,
-    })
+    // D64: пишем в соседний `.part` и переименовываем атомарно. Прежний
+    // File::create(dest) при коллизии «та же секунда» усекал бы готовый архив
+    // того же мира; крах посреди записи не трогает уже существующий бэкап.
+    let part = crate::util::fs::part_path(&dest);
+    let zipped = (|| -> Result<usize> {
+        let file = std::fs::File::create(long_path(&part))?;
+        let mut zip = zip::ZipWriter::new(file);
+        // Префикс — имя каталога мира: распаковка архива прямо в saves/
+        // восстанавливает мир под своим именем.
+        let count = crate::util::zip::write_zip_dir(
+            &world_dir,
+            &mut zip,
+            &format!("{world}/"),
+            &|_| false,
+        )?;
+        zip.finish()
+            .map_err(|e| LauncherError::Zip(format!("finish: {e}")))?;
+        Ok(count)
+    })();
+    match zipped {
+        Ok(count) => {
+            // A26: rename с повторами на случай придержания архива антивирусом.
+            crate::util::fs::rename_with_retry(&part, &dest)?;
+            let bytes = std::fs::metadata(long_path(&dest))?.len();
+            Ok(ArchiveResult {
+                path: dest.to_string_lossy().into(),
+                files: count,
+                bytes,
+            })
+        }
+        Err(e) => {
+            // Недописанный `.part` не оставляем рядом с бэкапами (best-effort).
+            crate::util::fs::remove_file_ignore(&part);
+            Err(e)
+        }
+    }
 }
 
 /// Удаление данных мира (F24): All — весь каталог мира, Nether — только
@@ -340,6 +358,27 @@ mod tests {
         assert!(names.iter().any(|n| n == "w1/level.dat"));
         assert!(names.iter().any(|n| n == "w1/DIM-1/regions/r.0"));
         assert!(names.iter().any(|n| n == "w1/DIM1/regions/r.0"));
+    }
+
+    /// D64: запись архива идёт через `.part` + атомарный rename — два бэкапа
+    /// одного мира за одну секунду не усекают готовый архив, временных файлов
+    /// рядом с бэкапами не остаётся.
+    #[test]
+    fn backup_twice_leaves_no_part_and_valid_zips() {
+        let (_d, paths, inst) = setup();
+        make_world(&paths, &inst.id, "w1", true, false);
+        let r1 = backup_world(&paths, &inst.id, "w1").unwrap();
+        let r2 = backup_world(&paths, &inst.id, "w1").unwrap();
+
+        let dest_dir = paths.backups_dir().join("worlds");
+        let no_part = std::fs::read_dir(long(&dest_dir))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .all(|e| !e.file_name().to_string_lossy().ends_with(".part"));
+        assert!(no_part, "`.part` не остаётся рядом с бэкапами");
+        // Оба архива валидны (ZipArchive проверяет центральный каталог).
+        assert!(!zip_names(&r1).is_empty());
+        assert!(!zip_names(&r2).is_empty());
     }
 
     #[test]

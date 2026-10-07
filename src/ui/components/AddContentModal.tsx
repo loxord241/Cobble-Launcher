@@ -51,7 +51,13 @@ export default function AddContentModal({
   // D41: requestClose — закрытие с анимацией (для ✕ и подложки).
   const { containerRef: dialogRef, requestClose } = useModalA11y(onClose);
 
+  // D64: гонка поиска — при быстрой смене вкладки/запроса приходит ответ
+  // прошлого запроса, и под вкладкой оказывается чужой список. Общий
+  // seq-guard для поиска и дозагрузки: применяем только свежий ответ.
+  const searchSeqRef = useRef(0);
+
   const doSearch = async () => {
+    const seq = ++searchSeqRef.current;
     setBusy(true);
     setError(null);
     try {
@@ -64,13 +70,15 @@ export default function AddContentModal({
         PAGE_SIZE,
         0,
       );
+      if (seq !== searchSeqRef.current) return;
       setHits(r.hits);
       setTotal(r.total_hits);
       setSearched(true);
     } catch (e) {
+      if (seq !== searchSeqRef.current) return;
       setError(apiErrorText(e));
     } finally {
-      setBusy(false);
+      if (seq === searchSeqRef.current) setBusy(false);
     }
   };
 
@@ -89,6 +97,7 @@ export default function AddContentModal({
   // Дозагрузка следующей страницы (offset = сколько уже загрузили).
   const loadMore = useCallback(async () => {
     if (loadingMore || busy || !searched || hits.length >= total) return;
+    const seq = ++searchSeqRef.current;
     setLoadingMore(true);
     setError(null);
     try {
@@ -101,14 +110,16 @@ export default function AddContentModal({
         PAGE_SIZE,
         hits.length,
       );
+      if (seq !== searchSeqRef.current) return;
       // Дедуп по project_id: Modrinth может вернуть уже показанную строку.
       const known = new Set(hits.map((h) => h.project_id));
       setHits((prev) => [...prev, ...r.hits.filter((h) => !known.has(h.project_id))]);
       setTotal(r.total_hits);
     } catch (e) {
+      if (seq !== searchSeqRef.current) return;
       setError(apiErrorText(e));
     } finally {
-      setLoadingMore(false);
+      if (seq === searchSeqRef.current) setLoadingMore(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadingMore, busy, searched, hits, total, query, tab]);

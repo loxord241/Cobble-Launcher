@@ -71,6 +71,22 @@ fn installer_path(cache_dir: &Path, version: &str) -> PathBuf {
     cache_dir.join("installers").join(format!("neoforge-{version}-installer.jar"))
 }
 
+/// Ожидаемый sha1 из maven (`.sha1` рядом с jar — крошечный текст, обычные
+/// 60 с на тело). None — недоступен (сеть/статус): вызывающий решает,
+/// запретить ли скачивание или использовать кэш без сверки.
+async fn expected_sha1(client: &HttpClient, sha_url: &str) -> Option<String> {
+    let resp = client.send_timed(client.raw().get(sha_url)).await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body = client.body_timed(resp).await.ok()?;
+    let sha = String::from_utf8_lossy(&body)
+        .split_whitespace()
+        .next()?
+        .to_lowercase();
+    (!sha.is_empty()).then_some(sha)
+}
+
 /// Скачать installer.jar с обязательной сверкой `.sha1` (спека §3, §6.3).
 pub async fn download_installer(
     client: &HttpClient,
@@ -79,14 +95,32 @@ pub async fn download_installer(
 ) -> Result<PathBuf> {
     let dest = installer_path(cache_dir, version);
     let dest_long = crate::util::fs::long_path(&dest);
-    if dest_long.exists() {
-        // Уже скачан — хэш проверен при первой загрузке.
-        return Ok(dest);
-    }
     let jar_url = format!(
         "{MAVEN_BASE}/releases/net/neoforged/neoforge/{version}/neoforge-{version}-installer.jar"
     );
     let sha_url = format!("{jar_url}.sha1");
+
+    if dest_long.exists() {
+        // F16: офлайн — кэш единственный источник, проверять нечем.
+        if client.offline() {
+            return Ok(dest);
+        }
+        // D64: кэш переиспользуем только после сверки с .sha1 maven —
+        // побитый на диске jar иначе жил бы в кэше вечно.
+        match expected_sha1(client, &sha_url).await {
+            Some(expected) => {
+                let actual = crate::util::fs::sha1_file(&dest_long).unwrap_or_default();
+                if actual == expected {
+                    return Ok(dest);
+                }
+                tracing::warn!("кэш installer {version} расходится с .sha1 — перекачиваю");
+            }
+            None => {
+                tracing::warn!(".sha1 для installer {version} недоступен — использую кэш без сверки");
+                return Ok(dest);
+            }
+        }
+    }
 
     // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
     if client.offline() {
@@ -107,19 +141,15 @@ pub async fn download_installer(
     let bytes = client.body_timed_big(resp).await?;
 
     // D62: .sha1 — крошечный текст, обычные 60 с на тело достаточны.
-    let sha_resp = client.send_timed(client.raw().get(&sha_url)).await?;
-    if !sha_resp.status().is_success() {
-        return Err(LauncherError::network(format!(
-            "нет .sha1 для installer {version} — скачивание запрещено (спека §3)"
-        )));
-    }
-    let expected = String::from_utf8_lossy(&client.body_timed(sha_resp).await?)
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_lowercase();
+    let expected = expected_sha1(client, &sha_url)
+        .await
+        .ok_or_else(|| {
+            LauncherError::network(format!(
+                "нет .sha1 для installer {version} — скачивание запрещено (спека §3)"
+            ))
+        })?;
     let actual = crate::util::fs::sha1_bytes(&bytes);
-    if expected.is_empty() || actual != expected {
+    if actual != expected {
         return Err(LauncherError::HashMismatch {
             path: jar_url,
             expected,
@@ -131,15 +161,34 @@ pub async fn download_installer(
     Ok(dest)
 }
 
+/// D64: выбрать id появившейся версии: новая (нет в `before`) ИЛИ — при
+/// повторной установке — последняя по mtime СУЩЕСТВУЮЩАЯ, но обязательно
+/// содержащая требуемую версию инсталлятора. Прежний fallback «последняя
+/// вообще» мог отдать чужую версию (например, свежий ванильный JSON).
+/// `after` отсортирован по mtime по возрастанию → последняя подходящая самая свежая.
+fn pick_installed_version(before: &[String], after: &[String], expected: &str) -> Option<String> {
+    after
+        .iter()
+        .find(|v| !before.contains(v) && v.contains(expected))
+        .or_else(|| after.iter().rev().find(|v| v.contains(expected)))
+        .cloned()
+}
+
 /// Headless-установка: `java -jar installer.jar --installClient <game_dir>`,
 /// cwd = каталог игры, stdout/stderr собираются (спека §6.3).
 /// Инсталлятор отказывается работать без `launcher_profiles.json` (проверка
 /// «вы запускали ванильный лаунчер») — создаём минимальный профиль.
-/// Возвращает id появившейся версии (новейший JSON в `versions/`).
+/// Возвращает id появившейся версии — только из версий, соответствующих
+/// требуемой версии инсталлятора (`expected_version`).
+/// D64: у выполнения стоит дедлайн INSTALLER_TIMEOUT — зависший инсталлятор
+/// убивается по дереву процессов, установка падает с честной ошибкой.
 pub fn run_installer(
     installer: &Path,
     java_exe: &Path,
     game_dir: &Path,
+    loader: &str,
+    expected_version: &str,
+    jvm_extra: &[String],
 ) -> Result<String> {
     let profiles = game_dir.join("launcher_profiles.json");
     if !profiles.exists() {
@@ -151,37 +200,89 @@ pub fn run_installer(
     }
     let before = list_versions(game_dir);
     let mut cmd = Command::new(java_exe);
+    for arg in jvm_extra {
+        cmd.arg(arg);
+    }
     cmd.arg("-jar")
         .arg(crate::util::fs::long_path(installer))
         .arg("--installClient")
         .arg(crate::util::fs::long_path(game_dir))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         // ENV-6: рабочий каталог получает Win32 (SetCurrentDirectoryW), `\\?\`-пути
         // он не принимает (см. spawn_dir в run.rs) — префикс снимаем. Аргументы
         // выше идут файловыми API и остаются расширенными.
         .current_dir(crate::util::fs::strip_long_prefix(game_dir));
     hide_console(&mut cmd);
-    let out = cmd
-        .output()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| LauncherError::Internal(format!("запуск инсталлятора: {e}")))?;
+
+    // Пайпы читаем в потоках: инсталлятор болтлив, без дренирования пайп
+    // (~64 КБ) переполнился бы и ребёнок завис на записи до нашего дедлайна.
+    use std::io::Read as _;
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(s) = stdout_pipe.as_mut() {
+            let _ = s.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(s) = stderr_pipe.as_mut() {
+            let _ = s.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    // D64: дедлайн с поллимогом try_wait (как test_java в java/detect.rs) —
+    // по истечении убиваем дерево процессов и падаем с честной ошибкой.
+    let deadline = std::time::Instant::now() + crate::loaders::INSTALLER_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    crate::loaders::kill_tree(child.id());
+                    let _ = child.wait();
+                    return Err(LauncherError::Timeout(format!(
+                        "установка {loader}: инсталлятор завис и остановлен \
+                         (нет завершения за {:?})",
+                        crate::loaders::INSTALLER_TIMEOUT
+                    )));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                crate::loaders::kill_tree(child.id());
+                let _ = child.wait();
+                return Err(LauncherError::Internal(format!("ожидание инсталлятора: {e}")));
+            }
+        }
+    };
+    let out_stdout = stdout_reader.join().unwrap_or_default();
+    let out_stderr = stderr_reader.join().unwrap_or_default();
     let log = format!(
         "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        String::from_utf8_lossy(&out_stdout),
+        String::from_utf8_lossy(&out_stderr)
     );
-    if !out.status.success() {
+    if !status.success() {
         let tail: String = log.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
         return Err(LauncherError::Internal(format!(
-            "инсталлятор NeoForge завершился с {}: \n{tail}",
-            out.status
+            "инсталлятор {loader} завершился с {}: \n{tail}",
+            status
         )));
     }
     let after = list_versions(game_dir);
-    let added = after.iter().find(|v| !before.contains(v));
-    let id = added
-        .or(after.last())
-        .cloned()
-        .ok_or_else(|| LauncherError::Internal("инсталлятор не создал версию".into()))?;
-    Ok(id)
+    pick_installed_version(&before, &after, expected_version).ok_or_else(|| {
+        LauncherError::Internal(format!(
+            "инсталлятор {loader} не создал версию для {expected_version}"
+        ))
+    })
 }
 
 fn list_versions(game_dir: &Path) -> Vec<String> {
@@ -212,15 +313,18 @@ pub async fn install(
     instance_versions_dir: &Path,
     version: &str,
 ) -> Result<String> {
+    // D64: прокси из настроек → -D-флаги JVM инсталлятора.
+    let jvm_extra = crate::loaders::installer_jvm_args(cache_dir);
     let installer = download_installer(client, cache_dir, version).await?;
-    let id = tokio::task::spawn_blocking({
-        let installer = installer.clone();
-        let java_exe = java_exe.to_path_buf();
-        let game_dir = game_dir.to_path_buf();
-        move || run_installer(&installer, &java_exe, &game_dir)
-    })
-    .await
-    .map_err(|e| LauncherError::Internal(format!("join инсталлятора: {e}")))??;
+    let id = crate::loaders::run_installer_guarded(
+        java_exe.to_path_buf(),
+        installer,
+        game_dir.to_path_buf(),
+        "neoforge",
+        version.to_string(),
+        jvm_extra,
+    )
+    .await?;
 
     // JSON версии инсталлятор пишет в game_dir/versions/<id>/ — копируем
     // в versions/ инстанса для единой схемы резолвинга.
@@ -299,5 +403,41 @@ mod tests {
         assert_eq!(parse_version("21.1"), None);
         assert_eq!(parse_version("21.1.2.3"), None);
         assert_eq!(parse_version("21.1.251"), Some((21, 1, 251)));
+    }
+
+    /// D64: выбор id после инсталлятора фильтруется по требуемой версии —
+    /// прежний fallback «последняя по mtime вообще» мог отдать чужую версию.
+    /// `after` отсортирован по mtime по возрастанию (как list_versions).
+    #[test]
+    fn pick_installed_filters_by_expected_version() {
+        let before: Vec<String> = ["1.20.1".to_string(), "neoforge-21.0.40".to_string()].to_vec();
+        // Инсталлятор создал новую версию — она и возвращается.
+        let after = [
+            "1.20.1".to_string(),
+            "neoforge-21.0.40".to_string(),
+            "neoforge-21.1.251".to_string(),
+        ]
+        .to_vec();
+        assert_eq!(
+            pick_installed_version(&before, &after, "21.1.251").as_deref(),
+            Some("neoforge-21.1.251")
+        );
+        // Повторная установка (новых нет) — последняя по mtime, но только
+        // среди версий требуемой версии.
+        let after = ["1.20.1".to_string(), "neoforge-21.1.251".to_string()].to_vec();
+        assert_eq!(
+            pick_installed_version(&before, &after, "21.1.251").as_deref(),
+            Some("neoforge-21.1.251")
+        );
+        // Требуемой версии нет вовсе — None (честная ошибка), а не чужая
+        // свежая версия (прежний fallback отдавал бы «1.20.1»/«21.0.40»).
+        let after = ["1.20.1".to_string(), "neoforge-21.0.40".to_string()].to_vec();
+        assert_eq!(pick_installed_version(&before, &after, "21.1.251"), None);
+        // Формат Forge («1.20.1-forge-47.4.10» содержит «47.4.10») тоже матчится.
+        let after = ["1.20.1-forge-47.4.10".to_string()].to_vec();
+        assert_eq!(
+            pick_installed_version(&[], &after, "47.4.10").as_deref(),
+            Some("1.20.1-forge-47.4.10")
+        );
     }
 }

@@ -59,7 +59,12 @@ pub fn panorama_data_url(paths: &Paths, instance_id: &str) -> Result<Option<Stri
         return Ok(None);
     };
 
-    let object_path = paths.assets_objects().join(&hash[..2]).join(hash);
+    // Битый assets-индекс может отдать короткий или не-ASCII хэш — `get(..2)`
+    // вместо среза: без паники, такой объект честно пропускаем (как missing).
+    let Some(prefix) = hash.get(..2) else {
+        return Ok(None);
+    };
+    let object_path = paths.assets_objects().join(prefix).join(hash);
     let data = match std::fs::read(long_path(&object_path)) {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

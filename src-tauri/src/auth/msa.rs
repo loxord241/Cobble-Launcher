@@ -5,6 +5,8 @@
 use crate::errors::{LauncherError, Result};
 use crate::net::http::HttpClient;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 const AUTH_BASE: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
 const XBL_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
@@ -107,6 +109,8 @@ pub async fn device_code_poll(
         let session = xbox_chain(client, &token.access_token, refresh).await?;
         crate::util::redact::register_secret(&session.access_token);
         crate::util::redact::register_secret(&session.refresh_token);
+        // Вход завершён — состояние slow_down больше не нужно.
+        slow_down_clear(device_code);
         return Ok(Some(session));
     }
     // D62: тело ошибки тоже под таймаутом; сбой чтения — прежний запасной
@@ -115,12 +119,68 @@ pub async fn device_code_poll(
         error: "unknown".into(),
     });
     match err.error.as_str() {
-        "authorization_pending" => Ok(None),
-        "slow_down" => Ok(None),
-        other => Err(LauncherError::InvalidInput(format!(
-            "MSA device code: {other}"
-        ))),
+        "authorization_pending" => {
+            // D64 (RFC 8628 §3.5): после slow_down увеличенный интервал
+            // сохраняется и на последующих опросах.
+            if let Some(extra) = slow_down_extra(device_code) {
+                tokio::time::sleep(std::time::Duration::from_secs(extra)).await;
+            }
+            Ok(None)
+        }
+        "slow_down" => {
+            // D64 (RFC 8628 §3.5): при slow_down интервал растёт (+5 с за
+            // каждый, кап 180 с). Цикл опроса живёт у вызывающих (GUI-фронт,
+            // CLI), поэтому пауза выдерживается здесь — в общем примитиве
+            // poll, оба вызывающих её наследуют.
+            let extra = slow_down_bump(device_code);
+            tokio::time::sleep(std::time::Duration::from_secs(extra)).await;
+            Ok(None)
+        }
+        other => {
+            // Конечная ошибка — состояние slow_down больше не нужно.
+            slow_down_clear(device_code);
+            Err(LauncherError::InvalidInput(format!(
+                "MSA device code: {other}"
+            )))
+        }
     }
+}
+
+const SLOW_DOWN_STEP: u64 = 5;
+const SLOW_DOWN_CAP: u64 = 180;
+
+/// Накопленная пауза slow_down per device_code (сек). Состояние переживает
+/// отдельные вызовы poll: записи снимаются при успехе/конечной ошибке;
+/// брошенный посреди вход оставляет запись (~десятки байт) до конца
+/// процесса — приемлемая цена.
+fn slow_down_state() -> &'static Mutex<HashMap<String, u64>> {
+    static EXTRA: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    EXTRA.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn slow_down_extra(device_code: &str) -> Option<u64> {
+    slow_down_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(device_code)
+        .copied()
+}
+
+/// Увеличить паузу на SLOW_DOWN_STEP (кап SLOW_DOWN_CAP), вернуть новую.
+fn slow_down_bump(device_code: &str) -> u64 {
+    let mut guard = slow_down_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let next = (guard.get(device_code).copied().unwrap_or(0) + SLOW_DOWN_STEP).min(SLOW_DOWN_CAP);
+    guard.insert(device_code.to_string(), next);
+    next
+}
+
+fn slow_down_clear(device_code: &str) {
+    slow_down_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(device_code);
 }
 
 /// Обновить сессию по refresh-токену (авто-refresh при старте, спека §6.8).
@@ -303,13 +363,19 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
                 .bearer_auth(&mc.access_token)
                 .header("Accept", "application/json"),
         )
-        .await?
-        .error_for_status()
-        .map_err(|_| {
-            LauncherError::InvalidInput(
-                "у этого Microsoft-аккаунта нет профиля Minecraft (лицензия не куплена)".into(),
-            )
-        })?;
+        .await?;
+    // D64: 429 — rate limit, а не «нет Minecraft»: раньше попадал в маппинг
+    // ниже и обманывал («лицензия не куплена»).
+    if resp.status().as_u16() == 429 {
+        return Err(LauncherError::network(
+            "слишком много запросов к серверу — подожди немного и повтори",
+        ));
+    }
+    let resp = resp.error_for_status().map_err(|_| {
+        LauncherError::InvalidInput(
+            "у этого Microsoft-аккаунта нет профиля Minecraft (лицензия не куплена)".into(),
+        )
+    })?;
     let profile: Profile = client.json_timed(resp).await?;
 
     Ok(Session {
@@ -571,6 +637,25 @@ pub async fn finish_web_login(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// D64 (RFC 8628): пауза slow_down растёт по +5 с и упирается в кап 180 с;
+    /// сброс (успех/конечная ошибка) возвращает её к нулю.
+    #[test]
+    fn slow_down_bump_grows_with_cap_and_resets() {
+        let key = "test-slow-down-key-d64";
+        slow_down_clear(key);
+        assert_eq!(slow_down_bump(key), 5, "первый slow_down: +5 с");
+        assert_eq!(slow_down_bump(key), 10, "второй: ещё +5 с");
+        assert_eq!(slow_down_extra(key), Some(10), "текущее состояние читается");
+        for _ in 0..40 {
+            slow_down_bump(key);
+        }
+        assert_eq!(slow_down_bump(key), 180, "кап 180 с");
+        slow_down_clear(key);
+        assert_eq!(slow_down_extra(key), None, "сброс удаляет запись");
+        assert_eq!(slow_down_bump(key), 5, "после сброса отсчёт заново");
+        slow_down_clear(key);
+    }
 
     /// A5: listener принимает реальный redirect браузера и разбирает `?code=`
     /// при совпадении state.

@@ -50,7 +50,19 @@ fn redirect_allowed(next: &reqwest::Url) -> bool {
                     v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
                 }
                 std::net::IpAddr::V6(v6) => {
-                    v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local()
+                    // D64: IPv4-mapped IPv6 (::ffff:a.b.c.d) — замаскированный
+                    // IPv4: без прогонa через V4-правила «::ffff:10.0.0.1»
+                    // проходил барьер как «глобальный» v6. Маппированные —
+                    // те же проверки, что у настоящего IPv4; прочий v6 —
+                    // прежние v6-проверки.
+                    if let Some(v4) = v6.to_ipv4_mapped() {
+                        v4.is_loopback()
+                            || v4.is_private()
+                            || v4.is_link_local()
+                            || v4.is_unspecified()
+                    } else {
+                        v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local()
+                    }
                 }
             };
             if private {
@@ -337,6 +349,27 @@ mod tests {
             "http://93.184.216.34/x",
             "https://api.adoptium.net/v3/assets",
         ] {
+            let url: reqwest::Url = allowed.parse().unwrap();
+            assert!(redirect_allowed(&url), "{allowed} должен быть разрешён");
+        }
+    }
+
+    /// D64: IPv4-mapped IPv6 (::ffff:a.b.c.d) — замаскированный IPv4:
+    /// приватные/loopback-значения блокируются теми же V4-правилами,
+    /// публичные и обычный глобальный IPv6 проходят.
+    #[test]
+    fn redirect_blocks_ipv4_mapped_private_v6() {
+        for blocked in [
+            "http://[::ffff:127.0.0.1]/x",
+            "http://[::ffff:10.0.0.1]/x",
+            "http://[::ffff:192.168.1.1]/x",
+            "http://[::ffff:169.254.1.1]/x",
+            "http://[::ffff:0.0.0.0]/x",
+        ] {
+            let url: reqwest::Url = blocked.parse().unwrap();
+            assert!(!redirect_allowed(&url), "{blocked} должен быть заблокирован");
+        }
+        for allowed in ["http://[::ffff:8.8.8.8]/x", "http://[2001:db8::1]/x"] {
             let url: reqwest::Url = allowed.parse().unwrap();
             assert!(redirect_allowed(&url), "{allowed} должен быть разрешён");
         }

@@ -20,7 +20,8 @@ interface UpdateState {
   /** null — прогресс не определён (ContentLength не пришёл), иначе 0–100. */
   progress: number | null;
   installError: string | null;
-  check: () => Promise<void>;
+  /** silent — тихий старт-чек: ошибка (напр. offline_mode) глотается молча. */
+  check: (opts?: { silent?: boolean }) => Promise<void>;
   silentCheck: () => void;
   install: () => Promise<void>;
 }
@@ -35,14 +36,17 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   installing: false,
   progress: null,
   installError: null,
-  check: async () => {
+  check: async (opts) => {
     set({ busy: true, error: null });
     try {
       const info = await api.updateCheck();
       set({ info, checked: true });
     } catch (e) {
       // B11: текст ошибки локализуется по языку UI, а не сырой из ядра.
-      set({ info: null, checked: true, error: apiErrorText(e) });
+      // D64: ядро в офлайн-режиме отвечает кодом offline_mode; тихий старт-чек
+      // ошибку глотает (старт офлайн — не повод для плашки обновлений), ручной
+      // чек показывает честный локализованный текст.
+      set({ info: null, checked: true, error: opts?.silent ? null : apiErrorText(e) });
     } finally {
       set({ busy: false });
     }
@@ -53,7 +57,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       () => {
         silentTimer = null;
         // Пока таймер тикал, мог пройти ручной чек (кнопка/бейдж) — не дублируем.
-        if (!get().checked) void get().check();
+        if (!get().checked) void get().check({ silent: true });
       },
       8000,
     );
@@ -87,8 +91,16 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       });
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
-    } catch {
-      set({ installError: t("updates.installerUnavailable") });
+    } catch (e) {
+      // D64: любая ошибка установки маскировалась под «установщик не готов» —
+      // теперь берём локализованный текст кода ядра (офлайн скажет про офлайн,
+      // битая подпись — про подпись). Пустой ответ или сырой код без словарной
+      // статьи — прежний нейтральный фолбэк.
+      const text = apiErrorText(e);
+      const code = (e as { code?: unknown } | null)?.code;
+      const unresolved =
+        !text || (typeof code === "string" && code !== "" && text === code);
+      set({ installError: unresolved ? t("updates.installerUnavailable") : text });
     } finally {
       set({ installing: false });
     }

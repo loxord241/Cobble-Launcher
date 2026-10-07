@@ -141,6 +141,16 @@ pub fn copy_tree_mixed(src_root: &Path, dst_root: &Path) -> Result<()> {
         let rel = file_cmp.strip_prefix(&base).unwrap_or(&file_cmp);
         let dst = dst_root.join(rel);
         let rel_lossy = rel.to_string_lossy().replace('\\', "/");
+        // D64: дубликат не наследует корзину обновлений (.trash) и протухшие
+        // логи — мусор исходника, тащить его в копию незачем (в отличие от
+        // UNIQUE_SUBDIRS, которые копируются целиком, эти пропускаются).
+        if rel_lossy == ".trash"
+            || rel_lossy.starts_with(".trash/")
+            || rel_lossy == "logs"
+            || rel_lossy.starts_with("logs/")
+        {
+            continue;
+        }
         let is_unique = super::UNIQUE_SUBDIRS
             .iter()
             .any(|d| rel_lossy.starts_with(&format!("{d}/")))

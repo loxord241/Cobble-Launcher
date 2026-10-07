@@ -81,7 +81,21 @@ pub fn save(paths: &crate::paths::Paths, accounts: &[Account]) -> Result<()> {
     atomic_write(&accounts_path(paths), &data)
 }
 
+/// D64: сериализация read-modify-write accounts.json (пары list→retain/push→save):
+/// без замка параллельные add/remove читали список одновременно и затирали
+/// записи друг друга последним save. Синхронный Mutex: под замком только
+/// файловый IO, без await — секции короткие.
+static ACCOUNTS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn accounts_lock() -> std::sync::MutexGuard<'static, ()> {
+    ACCOUNTS_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub fn add(paths: &crate::paths::Paths, account: Account) -> Result<Account> {
+    let _lock = accounts_lock();
     let mut list = list(paths);
     list.retain(|a| a.id != account.id);
     list.push(account.clone());
@@ -90,6 +104,7 @@ pub fn add(paths: &crate::paths::Paths, account: Account) -> Result<Account> {
 }
 
 pub fn remove(paths: &crate::paths::Paths, id: &str) -> Result<()> {
+    let _lock = accounts_lock();
     let mut list = list(paths);
     let removed = list.iter().find(|a| a.id == id).cloned();
     // Активный id читаем только при реальном удалении: иначе remove стал бы
@@ -116,7 +131,9 @@ pub fn remove(paths: &crate::paths::Paths, id: &str) -> Result<()> {
     // set_active, что и команда account_active_set) или очищаем при пустом списке.
     if was_active {
         match list.first() {
-            Some(first) => set_active(paths, &first.id)?,
+            // set_active_locked: замок уже держим здесь — публичный set_active
+            // захватил бы его повторно и deadlock'нулся бы.
+            Some(first) => set_active_locked(paths, &first.id)?,
             None => {
                 let mut settings = crate::settings::Settings::load(&paths.settings_file())?;
                 settings.accounts_active_id = None;
@@ -135,6 +152,13 @@ pub fn active(paths: &crate::paths::Paths) -> Option<Account> {
 }
 
 pub fn set_active(paths: &crate::paths::Paths, id: &str) -> Result<()> {
+    let _lock = accounts_lock();
+    set_active_locked(paths, id)
+}
+
+/// Тело set_active БЕЗ захвата замка — для вызова из-под уже удерживаемого
+/// ACCOUNTS_LOCK (remove). Проверка list→save settings под тем же замком.
+fn set_active_locked(paths: &crate::paths::Paths, id: &str) -> Result<()> {
     if !list(paths).iter().any(|a| a.id == id) {
         return Err(LauncherError::NotFound(format!("аккаунт {id}")));
     }
@@ -189,8 +213,10 @@ pub struct LaunchIdentity {
 /// Single-flight refresh (аудит 2026-10-06): конкурентные потребители одного
 /// аккаунта (запуск игры, смена скина) не должны гонять refresh параллельно —
 /// сервер инвалидирует прежний access_token, и второй запрос ловит 401.
-/// Мьютекс per refresh_ref из глобального реестра; под замком — ТОЛЬКО
-/// сетевой refresh_session, keyring read/write остаётся вне мьютекса.
+/// Мьютекс per refresh_ref из глобального реестра; под замком — чтение
+/// refresh-токена из keyring и сетевой refresh_session (D64: чтение ДО gate
+/// гоняло протухший токен после параллельной ротации). Запись ротации —
+/// вне мьютекса.
 pub(crate) fn refresh_gate(refresh_ref: &str) -> Arc<tokio::sync::Mutex<()>> {
     static GATES: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
     let gates = GATES.get_or_init(|| Mutex::new(HashMap::new()));
@@ -200,6 +226,22 @@ pub(crate) fn refresh_gate(refresh_ref: &str) -> Arc<tokio::sync::Mutex<()>> {
         .entry(refresh_ref.to_string())
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone()
+}
+
+/// D64: после refresh имя профиля могло измениться на сайте (Mojang/ely
+/// отдают актуальный player_name) — синхронизируем accounts.json, иначе UI и
+/// launch играют под старым ником. add() переиспользует запись по id
+/// (retain по id + push), так что обновляется только поле name.
+/// Best-effort: неудача записи — warn, запуск игры не отменяем.
+fn sync_account_name(paths: &crate::paths::Paths, acc: &Account, player_name: &str) {
+    if acc.name == player_name {
+        return;
+    }
+    let mut updated = acc.clone();
+    updated.name = player_name.to_string();
+    if let Err(e) = add(paths, updated) {
+        tracing::warn!("accounts: не обновить имя аккаунта {}: {e}", acc.id);
+    }
 }
 
 /// Идентичность для запуска: MSA/ely — с валидным токеном (refresh при
@@ -220,7 +262,6 @@ pub async fn launch_identity(
                     "у MSA-аккаунта нет refresh-токена".into(),
                 ));
             };
-            let refresh = keyring_get(rr)?;
             let settings =
                 crate::settings::Settings::load(&paths.settings_file())?;
             let cid = settings.azure_client_id.ok_or_else(|| {
@@ -228,19 +269,25 @@ pub async fn launch_identity(
                     "нет azureClientId в настройках — укажите его в Настройках (MSA-вход)".into(),
                 )
             })?;
-            // Single-flight: под мьютексом только сетевой refresh (аудит
-            // 2026-10-06); keyring-чтение и запись ротации — вне блока.
+            // Single-flight: под мьютексом чтение refresh-токена из keyring и
+            // сетевой refresh (D64: чтение ДО gate успевало протухнуть после
+            // параллельной ротации); запись ротации — вне блока.
             // Arc биндим отдельно: guard заимствует его, временного значения
             // недостаточно (E0716).
-            let session = {
+            let (session, refresh) = {
                 let gate = refresh_gate(rr);
                 let _held = gate.lock().await;
-                msa::refresh_session(client, &refresh, &cid).await?
+                let refresh = keyring_get(rr)?;
+                let session = msa::refresh_session(client, &refresh, &cid).await?;
+                (session, refresh)
             };
             // Обновлённый refresh-токен (если пришёл) — обратно в keyring.
             if session.refresh_token != refresh {
                 keyring_set(rr, &session.refresh_token)?;
             }
+            // D64: ник могли сменить на сайте — протухшее имя в accounts.json
+            // обновляем (best-effort, add() переиспользует запись по id).
+            sync_account_name(paths, &acc, &session.player_name);
             Ok(LaunchIdentity {
                 player_name: session.player_name,
                 uuid: session.uuid,
@@ -254,15 +301,17 @@ pub async fn launch_identity(
                     "у ely-аккаунта нет refresh-токена".into(),
                 ));
             };
-            let refresh = keyring_get(rr)?;
-            let session = {
+            let (session, refresh) = {
                 let gate = refresh_gate(rr);
                 let _held = gate.lock().await;
-                crate::auth::ely::refresh_session(client, &refresh).await?
+                let refresh = keyring_get(rr)?;
+                let session = crate::auth::ely::refresh_session(client, &refresh).await?;
+                (session, refresh)
             };
             if session.refresh_token != refresh {
                 keyring_set(rr, &session.refresh_token)?;
             }
+            sync_account_name(paths, &acc, &session.player_name);
             Ok(LaunchIdentity {
                 player_name: session.player_name,
                 uuid: session.uuid,
@@ -283,15 +332,17 @@ pub async fn launch_identity(
                     "у authlib-аккаунта нет refresh-токена".into(),
                 ));
             };
-            let refresh = keyring_get(rr)?;
-            let session = {
+            let (session, refresh) = {
                 let gate = refresh_gate(rr);
                 let _held = gate.lock().await;
-                custom::refresh_session(client, server, &refresh).await?
+                let refresh = keyring_get(rr)?;
+                let session = custom::refresh_session(client, server, &refresh).await?;
+                (session, refresh)
             };
             if session.refresh_token != refresh {
                 keyring_set(rr, &session.refresh_token)?;
             }
+            sync_account_name(paths, &acc, &session.player_name);
             Ok(LaunchIdentity {
                 player_name: session.player_name,
                 uuid: session.uuid,

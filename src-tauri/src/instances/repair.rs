@@ -189,7 +189,7 @@ mod tests {
         let asset_sha = crate::util::fs::sha1_bytes(b"asset-object-bytes");
         let index_json = serde_json::json!({
             "objects": {
-                "misc/ping.ogg": { "hash": asset_sha, "size": 19 }
+                "misc/ping.ogg": { "hash": asset_sha, "size": 18 }
             }
         });
         let index_sha = crate::util::fs::sha1_bytes(index_json.to_string().as_bytes());
@@ -220,7 +220,7 @@ mod tests {
                             "url": "http://localhost/fake-lib-1.0.jar",
                             "path": "com/example/fake-lib/1.0/fake-lib-1.0.jar",
                             "sha1": lib_sha,
-                            "size": 15
+                            "size": 14
                         }
                     }
                 }

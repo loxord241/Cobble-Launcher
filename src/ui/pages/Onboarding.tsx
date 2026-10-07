@@ -28,6 +28,10 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   const { settings, update } = useSettings();
   const { create } = useInstances();
   const [busy, setBusy] = useState(false);
+  // D64: disabled={busy} срабатывает только после ре-рендера — два быстрых
+  // клика по «Готово» в один тик успевали дважды войти в finish и плодить
+  // дубликаты офлайн-профиля/инстанса. Одноразовость гарантирует ref.
+  const inFlightRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   // Ник: пустой — «без профиля» (мастер пропустит создание), непустой и не по
   // маске — инлайн-ошибка, «Далее» заблокирован (раньше мастер молчал).
@@ -45,6 +49,8 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   }, []);
 
   const finish = async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -67,11 +73,14 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
       setError(apiErrorText(e));
     } finally {
       setBusy(false);
+      inFlightRef.current = false;
     }
   };
 
   /** D27: «Пропустить» тоже сохраняет onboardingDone — мастер не вернётся. */
   const skip = async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -81,6 +90,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
       setError(apiErrorText(e));
     } finally {
       setBusy(false);
+      inFlightRef.current = false;
     }
   };
 
@@ -189,6 +199,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
           <button
             onClick={() => void skip()}
             disabled={busy}
+            aria-busy={busy}
             className="text-sm text-text-muted hover:text-text"
           >
             {t("onboarding.skip")}
@@ -215,6 +226,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
               <button
                 onClick={() => void finish()}
                 disabled={busy || !version}
+                aria-busy={busy}
                 className="btn-primary"
               >
                 {t("onboarding.finish")}

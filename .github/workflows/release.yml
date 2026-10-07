@@ -8,6 +8,10 @@
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — содержимое cobble.key.pass
 # Без них бандл соберётся неподписанным и шаг latest.json честно упадёт
 # (нет .sig) — это защита от релиза, который автоапдейтер не примет.
+#
+# D64: тег никогда не интерполируется в pwsh-строки напрямую (только через
+# env: TAG), и первым же шагом проверяется regex-ом — инъекция кода в CI
+# через имя тега невозможна.
 name: Release build
 on:
   push:
@@ -34,10 +38,24 @@ jobs:
           node-version: 22
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
-      - name: "Проверка: тег совпадает с версиями package.json, tauri.conf.json и Cargo.toml"
+      - name: "Проверка: формат тега (первый шаг, до остального)"
+        env:
+          TAG: ${{ github.ref_name }}
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}" -replace '^v',''
+          $pattern = '^v[0-9A-Za-z][0-9A-Za-z.\-_]*$'
+          if ($env:TAG -notmatch $pattern) {
+            Write-Error "тег не подходит под шаблон $pattern — переименуй тег в формат vX.Y.Z (буквы, цифры, точка, дефис, подчёркивание)"
+            exit 1
+          }
+
+      - name: "Проверка: тег совпадает с версиями package.json, tauri.conf.json и Cargo.toml"
+        env:
+          TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          $tag = $env:TAG
+          $v = $tag -replace '^v',''
           $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           $section = ''
@@ -82,15 +100,43 @@ jobs:
         run: npm run tauri build
 
       - name: "latest.json из подписанного установщика"
+        env:
+          TAG: ${{ github.ref_name }}
         shell: pwsh
-        run: node scripts/make_latest_json.cjs "${{ github.ref_name }}"
+        run: node scripts/make_latest_json.cjs "$env:TAG"
 
       - name: "Черновик релиза с ассетами"
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = $env:TAG
           $v = $tag -replace '^v',''
-          $setup = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          # D64: кэш src-tauri/target тащит бандлы ПРОШЛЫХ версий (в nsis/
+          # копятся все когда-либо собранные setup.exe) — Select -First 1 по
+          # маске *-setup.exe сортирует ПО ИМЕНИ и клал бы в релиз старый
+          # установщик. Ищем строго сегмент _<v>_ — как в make_latest_json.cjs.
+          $setup = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "*_${v}_*-setup.exe" } |
+            Select-Object -First 1
+          if (-not $setup) {
+            Write-Error "в nsis-бандле нет установщика для версии $v (искал *_${v}_*-setup.exe) — сборка не совпала с тегом $tag"
+            exit 1
+          }
+          Write-Host "установщик: $($setup.Name)"
+          # D64: gh release create не идемпотентен — повторный прогон того же
+          # тега падал на «already exists». Черновик пересоздаём; опубликованный
+          # релиз не трогаем и падаем с понятным текстом.
+          $view = gh release view $tag --json isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if (-not ($view | ConvertFrom-Json).isDraft) {
+              Write-Error "релиз $tag уже опубликован — не трогаю; для пересборки создай новый тег"
+              exit 1
+            }
+            Write-Host "черновик $tag уже существует — удаляю и создаю заново"
+            gh release delete $tag --yes
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           gh release create $tag --draft --title "$tag" --notes "Изменения — заполнить перед публикацией (автосборка CI)." $setup.FullName "$($setup.FullName).sig" dist-latest/latest.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

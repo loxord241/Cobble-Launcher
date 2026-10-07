@@ -215,6 +215,41 @@ pub async fn check_updates(
     Ok(out)
 }
 
+/// D64: записи инстансовой `.trash/` (старые моды после обновлений, вытесненные
+/// при restore снапшота) старше 14 дней удаляются при каждой операции
+/// обновления — корзина больше не растёт неограниченно. Best-effort: любая
+/// ошибка по конкретной записи — warn, обновление не срываем.
+const TRASH_TTL: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 3600);
+
+fn prune_trash(trash: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(crate::util::fs::long_path(trash)) else {
+        return;
+    };
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(TRASH_TTL) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        // Дата — mtime записи: она не меняется после переименования в корзину.
+        let expired = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|t| t < cutoff)
+            .unwrap_or(false);
+        if !expired {
+            continue;
+        }
+        let p = entry.path();
+        let res = if p.is_dir() {
+            std::fs::remove_dir_all(crate::util::fs::long_path(&p))
+        } else {
+            std::fs::remove_file(crate::util::fs::long_path(&p))
+        };
+        if let Err(err) = res {
+            tracing::warn!(".trash: не удалить {}: {err}", p.display());
+        }
+    }
+}
+
 /// Батч-обновление: новая версия скачивается, старый файл → `.trash/`,
 /// манифест обновляется. Возвращает число обновлённых.
 pub async fn update_all(
@@ -229,6 +264,9 @@ pub async fn update_all(
         crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
     let trash = game_dir.join(".trash");
     std::fs::create_dir_all(crate::util::fs::long_path(&trash))?;
+    // D64: попутно подчищаем протухшие записи корзины — иначе `.trash`
+    // растёт неограниченно (каждое обновление оставляет старый мод).
+    prune_trash(&trash);
     let mut updated = 0;
 
     // A25: версии, которые нужно скачать, резолвим ОДНИМ батч-запросом по хэшам
@@ -331,8 +369,12 @@ pub async fn update_all(
         // Новый файл качаем во ВРЕМЕННОЕ имя: старый мод уезжает в корзину
         // ТОЛЬКО после успешной скачки всей пачки — сбой сети/отмена оставляли
         // бы инстанс сломанным.
+        // D64: filename из API — не доверенный путь: тот же санитайзер, что в
+        // install (dest и поле `file` в манифесте обязаны совпадать поле в
+        // поле, иначе следующая проверка не найдёт файл).
         let dir = crate::modrinth::install::dir_for_kind(old_entry.kind);
-        let dest = game_dir.join(dir).join(&file.filename);
+        let name = api::sanitize_file_name(&file.filename);
+        let dest = game_dir.join(dir).join(&name);
         if !planned_dests.insert(dest.clone()) {
             tracing::warn!(
                 "обновление {}: файл {} уже в плане обновления — дубликат пропускаю",
@@ -341,7 +383,7 @@ pub async fn update_all(
             );
             continue;
         }
-        let temp = dest.with_file_name(format!(".update-{}", file.filename));
+        let temp = dest.with_file_name(format!(".update-{}", name));
         plan.push(PlannedUpdate {
             task: DownloadTask {
                 id: format!("update:{}", file.filename),
@@ -356,10 +398,10 @@ pub async fn update_all(
             temp,
             dest,
             old_path: game_dir.join(&old_entry.file),
-            filename: file.filename.clone(),
+            filename: name.clone(),
             check_file: check.file.clone(),
             version_id: latest.id.clone(),
-            new_file_field: format!("{dir}/{}", file.filename),
+            new_file_field: format!("{dir}/{name}"),
             new_sha1: file.hashes.get("sha1").cloned(),
         });
     }
@@ -590,6 +632,36 @@ mod tests {
             .unwrap();
         assert_eq!(trashed.len(), 1, "старый мод должен лежать в корзине");
         assert_eq!(std::fs::read(trashed[0].path()).unwrap(), b"old");
+    }
+
+    /// D64: записи `.trash` старше 14 дней (по mtime) удаляются, свежие
+    /// остаются; ошибки отдельных записей не мешают остальным.
+    #[test]
+    fn prune_trash_removes_only_expired_entries() {
+        use std::fs::FileTimes;
+        let dir = tempfile::tempdir().unwrap();
+        let trash = dir.path().join(".trash");
+        std::fs::create_dir_all(&trash).unwrap();
+
+        // Старая запись: mtime 20 дней назад.
+        let old = trash.join("1717000000-ancient.jar");
+        std::fs::write(&old, b"old").unwrap();
+        let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(20 * 24 * 3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(stale))
+            .unwrap();
+
+        // Свежая запись (mtime только что) — должна пережить уборку.
+        let fresh = trash.join("9999999999-fresh.jar");
+        std::fs::write(&fresh, b"fresh").unwrap();
+
+        prune_trash(&trash);
+
+        assert!(!old.exists(), "протухшая запись удалена");
+        assert!(fresh.exists(), "свежая запись не тронута");
     }
 
     /// Регресс ENV-1 (антивирус придержал новый файл): temp снесён, старый
