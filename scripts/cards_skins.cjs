@@ -31,8 +31,12 @@ async function main() {
     });
     gridIsGrid ? ok("контейнер карточек — grid") : fail("контейнер карточек не grid");
 
-    const art = first.locator("img[src^='data:']");
-    (await art.count()) > 0 ? ok("арт карточки: data-URL (иконка или дефолт)") : fail("у карточки нет арта img[data:]");
+    // D63: дефолтный арт — бандл-пейзаж (src содержит instance-art) или
+    // data-URL (своя иконка/старый генератор); первый ряд — карточка с любым.
+    const art = first.locator("img[src^='data:'], img[src*='instance-art']");
+    (await art.count()) > 0
+      ? ok("арт карточки на месте (data-URL или пейзаж)")
+      : fail("у карточки нет арта (ни data:, ни instance-art)");
 
     const badge = await first.locator(".chip-mono").first().textContent().catch(() => "");
     /^\d+\.\d+/.test(badge.trim()) ? ok(`бейдж версии на арте: «${badge.trim()}»`) : fail("нет бейджа версии");

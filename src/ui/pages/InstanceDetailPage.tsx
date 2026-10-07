@@ -393,7 +393,7 @@ export default function InstanceDetailPage({
       {/* Шапка в стиле CurseForge: иконка, имя, чипы и большая кнопка запуска. */}
       <section className="flex flex-wrap items-center gap-4 rounded-lg border border-border-app bg-card p-5">
         <img
-          src={heroIconBroken ? defaultArtwork(inst.name) : (inst.icon ?? defaultArtwork(inst.name))}
+          src={heroIconBroken ? defaultArtwork(inst.id || inst.name) : (inst.icon ?? defaultArtwork(inst.id || inst.name))}
           onError={() => setHeroIconBroken(true)}
           alt=""
           aria-hidden

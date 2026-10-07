@@ -74,6 +74,9 @@ export const api = {
     invoke<{ ok: boolean }>("instance_launch", { id, player }),
   instanceImport: (path: string, name?: string) =>
     invoke<Instance>("instance_import", { path, name }),
+  /** D63: официальная панорама титульного экрана из собственных файлов
+   * игры инстанса (data-URL PNG) — null, пока ассеты не скачаны. */
+  panoramaArt: (id: string) => invoke<string | null>("panorama_art", { id }),
 
   manifestVersions: (showSnapshots: boolean, showOld: boolean) =>
     invoke<VersionEntry[]>("manifest_versions", { showSnapshots, showOld }),

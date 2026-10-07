@@ -7,6 +7,7 @@ pub mod configs;
 pub mod screens;
 pub mod modmeta;
 pub mod packart;
+pub mod panorama;
 pub mod shortcut;
 pub mod snapshots;
 pub mod worlds;

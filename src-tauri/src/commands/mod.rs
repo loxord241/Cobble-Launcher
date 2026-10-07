@@ -1203,6 +1203,21 @@ pub async fn skin_apply(
 
 // ---------- импорт и диагностика (спека §6.11, §6.10) ----------
 
+/// Дефолтный арт из собственных файлов игры (D63): официальная панорама
+/// титульного экрана из скачанных ассетов инстанса. None — файлов ещё нет.
+#[tauri::command]
+pub async fn panorama_art(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<String>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::panorama::panorama_data_url(&paths, &id)
+    })
+    .await
+    .map_err(join_err)?
+}
+
 #[tauri::command]
 pub async fn instance_import(
     state: State<'_, AppState>,

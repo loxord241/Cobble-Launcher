@@ -290,6 +290,7 @@ pub fn run() -> tauri::Result<()> {
             commands::logo_set_custom,
             commands::apply_logo,
             commands::instance_import,
+            commands::panorama_art,
             commands::crash_analyze,
             commands::java_list,
             commands::java_install,

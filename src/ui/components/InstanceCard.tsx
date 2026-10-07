@@ -1,6 +1,6 @@
 // Карточка инстанса в стиле CurseForge (D35, по скрину владельца): арт
-// сверху (своя иконка или процедурная «карта»), бейдж версии поверх арта,
-// ниже — имя и подпись; Play всплывает на арте при наведении, кебаб — в ноге.
+// сверху (своя иконка, панорама Minecraft или пиксель-пейзаж), бейдж версии
+// поверх арта, ниже — имя и подпись; Play всплывает на арте при наведении.
 // aria-label кнопок прежние («Играть — …», «Остановить — …») — приёмки живут.
 import { memo, useEffect, useState } from "react";
 import { Play, Square } from "lucide-react";
@@ -8,6 +8,7 @@ import { currentLanguage, t } from "../../i18n";
 import type { Instance } from "../../api/types";
 import type { LaunchStatus } from "../../state/instances";
 import { defaultArtwork } from "../defaultArt";
+import { instancePanorama } from "../panorama";
 import InstanceKebabMenu, { type KebabCallbacks } from "./InstanceKebabMenu";
 
 function InstanceCard({
@@ -52,6 +53,22 @@ function InstanceCard({
   // Новая иконка могла быть валидной — флаг протухания сбрасываем.
   useEffect(() => setIconBroken(false), [inst.icon]);
 
+  // D63: панорама из собственных файлов игры — пока грузится/её нет,
+  // показывается пиксель-пейзаж; грузим только когда ни арта, ни иконки.
+  const [pano, setPano] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setPano(null);
+    if (!inst.art && !inst.icon) {
+      instancePanorama(inst.id).then((url) => {
+        if (alive) setPano(url);
+      });
+    }
+    return () => {
+      alive = false;
+    };
+  }, [inst.id, inst.art, inst.icon]);
+
   return (
     <div className="group flex h-full flex-col overflow-hidden rounded-lg border border-border-app bg-card transition-all duration-200 hover:border-accent/70 hover:shadow-lg hover:shadow-black/25">
       {/* Арт: большой арт модпака из галереи, своя иконка (размытая подложка +
@@ -87,7 +104,7 @@ function InstanceCard({
           </>
         ) : (
           <img
-            src={defaultArtwork(inst.name)}
+            src={pano ?? defaultArtwork(inst.id || inst.name)}
             alt=""
             draggable={false}
             className="size-full object-cover"

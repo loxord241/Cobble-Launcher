@@ -76,11 +76,15 @@ async function main() {
   await page.waitForTimeout(300);
   await page.getByRole("menuitem", { name: "Убрать иконку" }).click();
   await page.waitForTimeout(800);
-  // D35: без своей иконки карточка показывает дефолтный арт (svg data-URL)
+  // D63: без своей иконки карточка показывает панораму (jpeg data-URL),
+  // пиксель-пейзаж (бандл-asset) или старый svg-генератор — любой из них.
   const pngGone = (await row.locator("img[src^='data:image/png;base64,']").count()) === 0;
-  const artBack = (await row.locator("img[src^='data:image/svg+xml']").count()) > 0;
+  const artBack =
+    (await row.locator(
+      "img[src^='data:image/svg+xml'], img[src^='data:image/jpeg'], img[src*='/assets/']",
+    ).count()) > 0;
   pngGone && artBack
-    ? ok("иконка убрана — вернулся дефолтный арт")
+    ? ok("иконка убрана — вернулся дефолтный арт (панорама/пейзаж)")
     : fail("иконка не убралась");
 
   // 3. Статистика запусков в настройках инстанса.
