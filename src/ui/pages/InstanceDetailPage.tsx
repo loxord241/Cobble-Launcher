@@ -40,6 +40,7 @@ import { useInstances } from "../../state/instances";
 import { useSettings } from "../../state/settings";
 import { pickImagePath } from "../components/pickFile";
 import { defaultArtwork } from "../defaultArt";
+import { instancePanorama } from "../panorama";
 import { formatSize } from "../format";
 import AddContentModal from "../components/AddContentModal";
 import ChangeVersionModal from "../components/ChangeVersionModal";
@@ -163,6 +164,25 @@ export default function InstanceDetailPage({
 
   // Новая иконка могла быть валидной — флаг протухания шапки сбрасываем.
   useEffect(() => setHeroIconBroken(false), [inst?.icon]);
+
+  // D64-хвост: панорама из собственных файлов игры — та же цепочка, что в
+  // карточке списка (арт галереи → иконка → панорама → пиксель-пейзаж).
+  // Раньше на странице «Обзор» панорамного тира не было вовсе — отсюда
+  // «старые фотки» в шапке при живой панораме в списке.
+  const [pano, setPano] = useState<string | null>(null);
+  const panoEligible = !inst?.art && (!inst?.icon || heroIconBroken);
+  useEffect(() => {
+    let alive = true;
+    setPano(null);
+    if (inst && panoEligible) {
+      instancePanorama(inst.id, inst.mcVersion).then((url) => {
+        if (alive) setPano(url);
+      });
+    }
+    return () => {
+      alive = false;
+    };
+  }, [inst?.id, inst?.mcVersion, panoEligible, inst]);
 
   // Фокус на первый пункт меню при открытии — навигация стрелками/Tab.
   useEffect(() => {
@@ -412,7 +432,11 @@ export default function InstanceDetailPage({
       {/* Шапка в стиле CurseForge: иконка, имя, чипы и большая кнопка запуска. */}
       <section className="flex flex-wrap items-center gap-4 rounded-lg border border-border-app bg-card p-5">
         <img
-          src={heroIconBroken ? defaultArtwork(inst.id || inst.name) : (inst.icon ?? defaultArtwork(inst.id || inst.name))}
+          src={
+            inst.icon && !heroIconBroken
+              ? inst.icon
+              : (pano ?? defaultArtwork(inst.id || inst.name))
+          }
           onError={() => setHeroIconBroken(true)}
           alt=""
           aria-hidden
