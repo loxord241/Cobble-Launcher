@@ -65,11 +65,11 @@ jobs:
             if ($section -eq 'package' -and $line -match '^\s*version\s*=\s*"([^"]+)"') { $cargo = $Matches[1]; break }
           }
           $mismatch = @()
-          if ($tag -ne $pkg)   { $mismatch += "package.json: $pkg" }
-          if ($tag -ne $conf)  { $mismatch += "src-tauri/tauri.conf.json: $conf" }
-          if ($tag -ne $cargo) { $mismatch += "src-tauri/Cargo.toml: $cargo" }
+          if ($v -ne $pkg)   { $mismatch += "package.json: $pkg" }
+          if ($v -ne $conf)  { $mismatch += "src-tauri/tauri.conf.json: $conf" }
+          if ($v -ne $cargo) { $mismatch += "src-tauri/Cargo.toml: $cargo" }
           if ($mismatch.Count -gt 0) {
-            Write-Error "тег v$tag не совпадает с версиями: $($mismatch -join '; ') — бампни версию перед тегом"
+            Write-Error "тег $tag не совпадает с версиями: $($mismatch -join '; ') — бампни версию перед тегом"
             exit 1
           }
 
