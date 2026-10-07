@@ -9,7 +9,7 @@
     "ru": "Файл повреждён при скачивании и не прошёл проверку хэша.",
     "en": "File corrupted during download and failed the hash check.",
     "uk": "Файл пошкоджено під час завантаження — не збігся хеш.",
-    "pl": "Plik uszkodził się podczas pobierania i nie przeszedł weryfikacji hash."
+    "pl": "Plik uległ uszkodzeniu podczas pobierania i nie przeszedł weryfikacji hash."
   },
   "not_found": {
     "ru": "Не найдено.",
@@ -19,7 +19,7 @@
   },
   "invalid_input": {
     "ru": "Проверьте введённые данные.",
-    "en": "Please check the entered data.",
+    "en": "Check the entered data.",
     "uk": "Перевірте введені дані.",
     "pl": "Sprawdź wprowadzone dane."
   },
@@ -69,7 +69,7 @@
     "ru": "Архив повреждён или не читается.",
     "en": "The archive is corrupted or unreadable.",
     "uk": "Архів пошкоджено або не читається.",
-    "pl": "Błąd archive."
+    "pl": "Archiwum jest uszkodzone lub nieczytelne."
   },
   "cancelled": {
     "ru": "Операция отменена.",
@@ -106,7 +106,7 @@
       "ru": "Файл скачан повторно и хэш снова не совпал — проверьте соединение или зеркало.",
       "en": "The file was redownloaded and the hash failed again — check your connection or mirror.",
       "uk": "Файл завантажено повторно і хеш знову не збігся — перевірте з'єднання або дзеркало.",
-      "pl": "Plik pobrany ponownie ponownie nie zgadza się haszem — sprawdź połączenie lub mirror."
+      "pl": "Plik pobrano ponownie, ale hash znowu się nie zgadza — sprawdź połączenie lub serwer lustrzany."
     },
     "java_settings": {
       "ru": "Установите Java автоматически в настройках или укажите путь вручную.",

@@ -6,13 +6,13 @@
 
 # Cobble Launcher
 
-**Szybki i uczciwy launcher Minecraft dla Windows**
+**Uczciwy launcher Minecraft dla Windows**
 
 [![Wersja](https://img.shields.io/github/v/release/loxord241/Cobble-Launcher?style=flat-square&label=wersja)](https://github.com/loxord241/Cobble-Launcher/releases/latest)
 [![Licencja](https://img.shields.io/github/license/loxord241/Cobble-Launcher?style=flat-square)](LICENSE)
 [![Platforma](https://img.shields.io/badge/Windows-10%2F11_x64-blue?style=flat-square&logo=windows)](https://github.com/loxord241/Cobble-Launcher/releases/latest)
 [![Języki](https://img.shields.io/badge/języki-ru·en·uk·pl-green?style=flat-square)](#języki)
-[![Testy](https://img.shields.io/badge/testy-331%2B10-success?style=flat-square)](#budowanie-z-kodu-źródłowego)
+[![Testy](https://img.shields.io/badge/testy-423%2B10-success?style=flat-square)](#budowanie-z-kodu-źródłowego)
 
 **[Pobierz najnowszą wersję](https://github.com/loxord241/Cobble-Launcher/releases/latest)** ·
 [Zgłoś problem](https://github.com/loxord241/Cobble-Launcher/issues) ·
@@ -32,7 +32,7 @@ Reakcie. Żadnych silników przeglądarkowych w tle, żadnych „przyspieszaczy�
 iniekcji do gry: wyłącznie oficjalne źródła, weryfikacja każdego pliku po hashu
 i zestaw sodium do optymalizacji.
 
-## 🗂 Katalog Modrinth
+## Katalog Modrinth
 
 - Katalog na stronie głównej: paczki modów i mody, wyszukiwanie, sortowanie
   (pobrania / ulubione / aktualizacje), filtr loadera, nieskończone przewijanie
@@ -40,7 +40,7 @@ i zestaw sodium do optymalizacji.
 - Instalacja paczek modów do nowej instancji i modów — prosto z okna projektu
   lub ze strony instancji; zbiorcza aktualizacja modów jednym kliknięciem
 
-## 🎮 Instancje
+## Instancje
 
 - Izolowane instancje: własna wersja, loader (Fabric / Quilt / Forge /
   NeoForge), mody i ustawienia
@@ -52,7 +52,7 @@ i zestaw sodium do optymalizacji.
   duplikowanie, kopie zapasowe i snapshoty modów z możliwością przywrócenia
 - Światy, zrzuty ekranu i configi modów — wprost ze strony instancji
 
-## 👤 Profile
+## Profile
 
 - Profile Microsoft (OAuth w przeglądarce), Ely.by (authlib-injector) i
   offline; profile offline — uczciwie oznaczone jako nieoficjalne
@@ -74,14 +74,14 @@ i zestaw sodium do optymalizacji.
   </table>
 </div>
 
-## 🔄 Automatyczne aktualizacje
+## Automatyczne aktualizacje
 
 Launcher sam sprawdza wydania (raz na sesję, po cichu) i pokazuje plakietkę
 „Dostępna aktualizacja”. Instalacja jednym przyciskiem: podpisana aktualizacja
 (minisign), postęp pobierania, automatyczny restart. Twoje instancje, profile
 i ustawienia zostają na miejscu.
 
-## 🛡 Bezpieczeństwo i prywatność
+## Bezpieczeństwo i prywatność
 
 - **Tylko oficjalne źródła**: Mojang, Modrinth, Adoptium — każdy plik jest
   sprawdzany z hashem pobranym z serwera. Mirrory bez weryfikacji hash są
@@ -91,19 +91,19 @@ i ustawienia zostają na miejscu.
 - **Sekrety nie opuszczają systemu**: tokeny są przechowywane w keyringu
   Windows, a w logach włączone jest automatyczne ukrywanie sekretów.
 
-## 🌍 Języki
+## Języki
 
 Русский · English · Українська · Polski — przełączane w onboardingu i
 ustawieniach, obejmują cały interfejs, komunikaty o błędach i formaty dat.
 
-## ⬇️ Pobieranie
+## Pobieranie
 
 Gotowe instalatory (NSIS i MSI, Windows 10/11 x64) — na stronie
 [wydań](https://github.com/loxord241/Cobble-Launcher/releases/latest).
 Po instalacji aktualizacje przychodzą same; ręcznie — przycisk „Sprawdź
 aktualizacje” w ustawieniach.
 
-## 🧑‍💻 Budowanie z kodu źródłowego
+## Budowanie z kodu źródłowego
 
 Wymagane: Node.js 20+, Rust (stable) i npm.
 
@@ -122,10 +122,10 @@ Kontrole jakości:
 
 ```bash
 npm run build                # TypeScript strict + Vite
-cd src-tauri && cargo test   # 331 testów rdzenia + 10 integracyjnych
+cd src-tauri && cargo test   # 423 testy rdzenia + 10 integracyjnych
 ```
 
-## 🧱 Stos technologiczny i struktura
+## Stos technologiczny i struktura
 
 | Warstwa | Technologie |
 |---|---|
@@ -142,7 +142,7 @@ cd src-tauri && cargo test   # 331 testów rdzenia + 10 integracyjnych
 - `scripts/` — testy akceptacyjne: kompleksowe sprawdzenia UI, cyklu życia
   procesu i integracji z Modrinth
 
-## 📄 Licencja i znaki towarowe
+## Licencja i znaki towarowe
 
 Kod projektu — na licencji **MIT** (patrz [LICENSE](LICENSE)); bezpośrednie
 zależności i ich licencje — w [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md),
@@ -150,7 +150,7 @@ atrybucje i znaki towarowe — w [NOTICE](NOTICE).
 
 **Не официальный продукт Minecraft. Не связан с Mojang и Microsoft.**
 
-Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.
+**Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.**
 
 **Не офіційний продукт Minecraft. Не пов'язаний з Mojang та Microsoft.**
 

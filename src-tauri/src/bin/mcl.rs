@@ -293,6 +293,15 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Cmd::AuthOffline { nick } => {
+            // D62: повторный вызов с тем же ником не должен плодить дубли —
+            // CLI генерировал новый uuid на каждый запуск и получал N
+            // одинаковых офлайн-аккаунтов. Ищем существующий по name+kind.
+            if let Some(acc) = mc_launcher_v2_lib::auth::list(&paths).into_iter().find(|a| {
+                a.kind == mc_launcher_v2_lib::auth::AccountKind::Offline && a.name == nick
+            }) {
+                println!("Офлайн-профиль {nick} уже добавлен (id {})", acc.id);
+                return Ok(());
+            }
             let uuid = mc_launcher_v2_lib::auth::offline::offline_uuid(&nick).to_string();
             let acc = mc_launcher_v2_lib::auth::Account {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -345,8 +354,10 @@ async fn run(cli: Cli) -> Result<()> {
                     None => tokio::time::sleep(std::time::Duration::from_secs(3)).await,
                 }
             }
-            println!("Авторизация ещё не завершена — повторите poll");
-            Ok(())
+            // D62: 30 итераций (~90 с) без завершения — это провал, а не успех:
+            // exit 0 обманывал скрипты-обёртки, проверяющие код возврата.
+            eprintln!("авторизация не завершена — повторите poll");
+            std::process::exit(2);
         }
         Cmd::AuthMsaWeb => {
             let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
@@ -360,8 +371,30 @@ async fn run(cli: Cli) -> Result<()> {
             let state = uuid::Uuid::new_v4().to_string();
             let url = mc_launcher_v2_lib::auth::msa::authorize_url(&client_id, port, &state);
             println!("Открываю браузер для входа (localhost:{port})...");
-            let _ = std::process::Command::new("explorer").arg(&url).spawn();
-            let code = mc_launcher_v2_lib::auth::msa::wait_auth_code(listener, state.clone()).await?;
+            // D62: URL печатаем в stdout ДО попытки открыть браузер — если окно
+            // не появилось или explorer недоступен, ссылка уже видна и её можно
+            // открыть вручную.
+            println!("Открой в браузере, если окно не появилось: {url}");
+            if let Err(e) = std::process::Command::new("explorer").arg(&url).spawn() {
+                // D62: молча проглоченная ошибка спавна оставляла пользователя
+                // ждать ответа, который никогда не придёт.
+                eprintln!("Не удалось открыть браузер: {e} — открой ссылку выше вручную");
+            }
+            // D62: accept_timeout 600 с — разумный предел на ручной вход;
+            // без него листнер висел бы вечно, а скрипт-обёртка никогда не
+            // возвращался бы.
+            let code =
+                match mc_launcher_v2_lib::auth::msa::wait_auth_code(listener, state, Duration::from_secs(600))
+                    .await
+                {
+                    Ok(code) => code,
+                    // D62: таймаут/ошибка ожидания — человекочитаемое пояснение,
+                    // а не только голый код из main.
+                    Err(e) => {
+                        eprintln!("Вход через браузер не завершён за 600 с: {e}");
+                        return Err(e);
+                    }
+                };
             let session = mc_launcher_v2_lib::auth::msa::finish_web_login(&client, &client_id, &code, port).await?;
             let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
             mc_launcher_v2_lib::auth::keyring_set(&ref_name, &session.refresh_token)?;
@@ -399,12 +432,11 @@ async fn run(cli: Cli) -> Result<()> {
             )
             .await?;
             println!("Импортирован: {} [{}] id={}", inst.name, inst.mc_version, inst.id);
+            // D62: установку загрузчика теперь делает сам import_archive
+            // (внутри транзакции с откатом; в офлайн-режиме клиента — пропуск
+            // с warning и None). Дублирующий install_loader в CLI убран —
+            // оставлена только обработка результата.
             if let Some((kind, ver)) = loader {
-                let client = std::sync::Arc::new(HttpClient::new(settings.proxy_url.as_deref())?);
-                mc_launcher_v2_lib::instances::run::install_loader(
-                    &paths, &settings, client, &inst, &kind, Some(&ver),
-                )
-                .await?;
                 println!("Загрузчик {kind} {ver} установлен");
             }
             Ok(())
@@ -674,7 +706,14 @@ async fn cmd_launch(
     println!("Подготовка заняла {:.1} с", t0.elapsed().as_secs_f64());
 
     if no_run {
-        println!("Команда: {} {}", cmd.program.display(), cmd.args.join(" "));
+        // D62: join(" ") ломал аргументы с пробелами (classpath под Windows —
+        // один аргумент через «;», но ники и пути бывают с пробелами) —
+        // для показа квотируем такие аргументы.
+        let shown = std::iter::once(cmd.program.display().to_string())
+            .chain(cmd.args.iter().map(|a| quote_for_display(a)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!("Команда: {shown}");
         return Ok(());
     }
 
@@ -697,6 +736,17 @@ fn crate_long(p: &Path) -> PathBuf {
     mc_launcher_v2_lib::util::fs::long_path(p)
 }
 
+/// D62: простая эвристика для ЧЕЛОВЕЧЕСКОГО показа команды (не для исполнения):
+/// аргумент с пробелом или кавычкой берём в кавычки, внутренние кавычки
+/// экранируем. Пустой аргумент тоже квотируем, иначе он теряется в показе.
+fn quote_for_display(arg: &str) -> String {
+    if arg.is_empty() || arg.contains(' ') || arg.contains('"') {
+        format!("\"{}\"", arg.replace('"', "\\\""))
+    } else {
+        arg.to_string()
+    }
+}
+
 async fn cmd_java_install(paths: &Paths, settings: &Settings, major: u32) -> Result<()> {
     let client = HttpClient::new(settings.proxy_url.as_deref())?;
     println!("Скачиваю JRE {major} с Adoptium…");
@@ -714,19 +764,28 @@ async fn cmd_java_install(paths: &Paths, settings: &Settings, major: u32) -> Res
 
 fn find_instance(paths: &Paths, id_or_name: &str) -> Result<mc_launcher_v2_lib::instances::Instance> {
     let all = mc_launcher_v2_lib::instances::list(paths);
-    all.iter()
-        .find(|i| i.id == id_or_name)
-        .cloned()
-        .or_else(|| {
-            // по имени без учёта регистра или по префиксу id
-            all.iter()
-                .find(|i| {
-                    i.name.eq_ignore_ascii_case(id_or_name)
-                        || i.id.starts_with(id_or_name)
-                })
-                .cloned()
-        })
-        .ok_or_else(|| LauncherError::NotFound(format!("инстанс {id_or_name}")))
+    // Точный id однозначен по определению (id уникальны) — приоритет.
+    if let Some(i) = all.iter().find(|i| i.id == id_or_name) {
+        return Ok(i.clone());
+    }
+    // D62: eq_ignore_ascii_case не работает для кириллицы (дефолтное имя
+    // «Инстанс») — сравниваем через to_lowercase(), он юникодный и для ASCII,
+    // и для не-ASCII.
+    let needle = id_or_name.to_lowercase();
+    let matches: Vec<&mc_launcher_v2_lib::instances::Instance> = all
+        .iter()
+        .filter(|i| i.name.to_lowercase() == needle || i.id.starts_with(id_or_name))
+        .collect();
+    match matches.as_slice() {
+        [] => Err(LauncherError::NotFound(format!("инстанс {id_or_name}"))),
+        [only] => Ok((*only).clone()),
+        // D62: неоднозначный префикс --id раньше молча брал первого кандидата —
+        // теперь возвращаем ошибку со списком, кого имели в виду.
+        many => Err(LauncherError::InvalidInput(format!(
+            "инстанс {id_or_name:?} — неоднозначно, уточните: {}",
+            many.iter().map(|i| i.id.as_str()).collect::<Vec<_>>().join(", ")
+        ))),
+    }
 }
 
 async fn cmd_instance_create(
@@ -966,7 +1025,12 @@ async fn cmd_instance_launch(
 fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> Result<bool> {
     let logs_dir = game_dir.join("logs");
     std::fs::create_dir_all(crate_long(&logs_dir))?;
-    let log_path = crate_long(&logs_dir.join("latest.log"));
+    // D62: latest.log уже открыт самой игрой (Log4j держит хэндл и ротирует) —
+    // писать в него из CLI нельзя: задвоение строк и «дыры» вокруг ротации,
+    // а ведь именно его печатаем как «полный лог» и советуем для crash-analyze.
+    // Свой строчный лог — в отдельный файл, который принадлежит только нам.
+    let cli_log = crate_long(&logs_dir.join("mcl-launch.log"));
+    let latest_log = crate_long(&logs_dir.join("latest.log"));
 
     let mut command = Command::new(&cmd.program);
     command
@@ -978,7 +1042,7 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
     let mut child = command.spawn().map_err(|e| {
         LauncherError::JavaNotFound(format!("не удалось запустить игру: {e}"))
     })?;
-    println!("Игра запущена (PID {}). Лог: {}", child.id(), log_path.display());
+    println!("Игра запущена (PID {}). Лог: {}", child.id(), cli_log.display());
 
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
@@ -997,9 +1061,10 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
     }
     drop(tx);
 
-    // ENV-4: не держим handle latest.log — Log4j в игре ротирует этот же файл.
-    // Свежий лог создаём и сразу закрываем; строки пишем append-ом на каждую.
-    std::fs::File::create(&log_path)?;
+    // D62: наш файл можно смело пересоздавать (обрезаем лог прошлого запуска),
+    // хэндл не держим; строки дальше пишем append-ом на каждую.
+    // latest.log не создаём и не открываем вовсе — он принадлежит игре.
+    std::fs::File::create(&cli_log)?;
     let mut tail: VecDeque<String> = VecDeque::with_capacity(64);
     let start = Instant::now();
     let mut found_at: Option<Instant> = None;
@@ -1019,7 +1084,7 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
         }
         match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(line) => {
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&cli_log) {
                     let _ = writeln!(f, "{line}");
                 }
                 if found_at.is_none() && line.contains("Sound engine started") {
@@ -1045,10 +1110,22 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
     let found = found_at.is_some();
 
     // Завершаем дерево процессов игры (мы — супервизор приёмки).
+    // D62: taskkill/kill по уже завершённому PID опасен — в окне
+    // переиспользования PID под ним может оказаться чужой процесс.
+    // Дерево трогаем только если ребёнок ещё жив (try_wait() → None);
+    // если он уже завершился, try_wait заодно забрал его статус (нет zombie).
     let pid = child.id();
-    let _ = child.kill();
-    let _ = child.wait();
-    kill_tree(pid);
+    if child.try_wait()?.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+        kill_tree(pid);
+    }
+
+    // D62: «полный лог» для диагностики — latest.log, который писала сама
+    // игра; читаем его с диска ПОСЛЕ завершения процесса (к тому моменту
+    // Log4j сбросил буферы). Файла может не быть (падение до инициализации
+    // логгера) — обрабатываем отсутствие без ошибки.
+    let full_log = std::fs::read_to_string(&latest_log).ok();
 
     if found {
         if let Some(a) = &atlas_line {
@@ -1063,7 +1140,20 @@ fn launch_and_wait(cmd: &LaunchCommand, game_dir: &Path, timeout_secs: u64) -> R
         for l in tail.iter().rev().take(20).rev() {
             println!("  {l}");
         }
-        println!("  полный лог: {}", log_path.display());
+        // D62: путь для crash-analyze печатаем только тот, чьё содержимое мы
+        // реально прочитали выше — иначе пользователь отправит в анализ файл,
+        // которого нет. Не читается latest.log → указываем на наш лог.
+        match &full_log {
+            Some(text) => println!(
+                "  полный лог: {} ({} строк)",
+                latest_log.display(),
+                text.lines().count()
+            ),
+            None => println!(
+                "  полный лог: {} (latest.log не найден или не читается)",
+                cli_log.display()
+            ),
+        }
     }
     Ok(found)
 }
@@ -1079,6 +1169,9 @@ fn kill_tree(pid: u32) {
     }
     #[cfg(unix)]
     {
+        // D62: утилиты убийства дерева в libcrate нет (instances::kill делает
+        // тот же одиночный kill), /proc-обход выдумывать в CLI не стал —
+        // честное ограничение: дети java, если завелись, остаются жить.
         let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
     }
 }

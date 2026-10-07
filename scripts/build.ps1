@@ -23,7 +23,10 @@ if ($Bundle -and (Test-Path $keyPath)) {
         exit 1
     }
     $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $keyPath -Raw
-    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content $passPath -Raw).Trim()
+    # D62: .Trim() молча портил пароли с пробелами по краям. Убираем только
+    # завершающий перевод строки файла (CRLF/LF) — сами пробелы не трогаем.
+    $rawPass = Get-Content $passPath -Raw
+    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $rawPass -replace "\r?\n$", ""
 }
 
 Write-Host "==> npm install" -ForegroundColor Cyan

@@ -320,6 +320,17 @@ impl DownloadEngine {
                     }
                 }
             }
+            drop(guard); // D62: дальше хелпер сам берёт лок tasks — вложенный захват std Mutex повесил бы поток
+
+            // D62: группа без живых (Pending/Downloading) задач дошла до конца —
+            // ровно один worker убирает её из реестра и шлёт dl_group_done.
+            if let Some(failed) = self.finish_group_if_complete(&entry.task.group) {
+                self.bus.emit(LauncherEvent::DlGroupDone {
+                    group: entry.task.group.clone(),
+                    instance_id: instance_id_from_group(&entry.task.group),
+                    failed,
+                });
+            }
         }
     }
 
@@ -341,6 +352,40 @@ impl DownloadEngine {
         map.entry(group.to_string())
             .or_insert_with(|| Arc::new(AtomicBool::new(false)))
             .clone()
+    }
+
+    /// D62: группа дошла до конца? Some(failed) — РОВНО ОДИН раз на группу:
+    /// когда у группы не осталось задач в Pending/Downloading, первый дошедший
+    /// worker получает право на эмиссию dl_group_done атомарной связкой
+    /// «проверь+убери» под одним локом groups (остальные видят отсутствие
+    /// группы и молчат); заодно тикер перестаёт слебить пустую группу.
+    /// None — в группе ещё есть живые задачи либо событие уже ушло.
+    /// `failed` = в группе есть Failed-задачи (Cancelled отменой не считается —
+    /// отмена не «провал», её состояние UI видит в queue_state). Порядок
+    /// блокировок tasks → groups — как в add_tasks: обратный дал бы дедлок,
+    /// поэтому `failed` считается под ПЕРВЫМ локом tasks (состояния финальны:
+    /// живых задач нет, worker до них больше не дотянется до retry_failed).
+    /// group_cancels не трогаем — флаги отмены живут отдельно от реестра групп,
+    /// cancel_group обязан работать и после «завершения» группы.
+    fn finish_group_if_complete(&self, group: &str) -> Option<bool> {
+        let (alive, failed) = {
+            let guard = self.rt.tasks.lock().unwrap();
+            let mut alive = false;
+            let mut failed = false;
+            for e in guard.iter().filter(|e| e.task.group == group) {
+                match e.state {
+                    TaskState::Pending | TaskState::Downloading => alive = true,
+                    TaskState::Failed => failed = true,
+                    TaskState::Done | TaskState::Cancelled => {}
+                }
+            }
+            (alive, failed)
+        };
+        if alive {
+            return None;
+        }
+        let mut groups = self.rt.groups.lock().unwrap();
+        groups.remove(group).then_some(failed)
     }
 
     /// Скачать один файл: `.part` → хэш → атомарный rename.
@@ -617,6 +662,10 @@ impl DownloadEngine {
             // (engine_for), так что группа здесь одна; для гипотетической
             // смеси шлём по событию на каждую группу с агрегатами движка.
             // PERF#6: из множества, без клона строк всех задач под локом.
+            // D62: о конце группы фронт узнаёт не по «тишине» прогресса, а по
+            // dl_group_done (его шлёт worker в finish_group_if_complete) —
+            // завершённая группа удаляется из множества, и тикер перестаёт
+            // слебить её здесь же, пустых событий прогресса больше нет.
             let groups: Vec<String> = {
                 let groups = self.rt.groups.lock().unwrap();
                 let mut g: Vec<String> = groups.iter().cloned().collect();
@@ -929,5 +978,106 @@ mod tests {
         assert_eq!(found.len(), 1, "только движковый .part.<hex>: {found:?}");
         assert_eq!(found[0], p);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D62: у теста свой каталог в temp (не общий tmp), чтобы параллельные
+    /// тесты не делили файлы.
+    fn d62_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// События DlGroupDone из шины (тикаем try_recv после run(): worker шлёт
+    /// событие ДО возврата run, поэтому оно уже в канале).
+    fn drain_group_done(rx: &mut tokio::sync::broadcast::Receiver<LauncherEvent>) -> Vec<(String, Option<String>, bool)> {
+        let mut done = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let LauncherEvent::DlGroupDone {
+                group,
+                instance_id,
+                failed,
+            } = ev
+            {
+                done.push((group, instance_id, failed));
+            }
+        }
+        done
+    }
+
+    /// D62: группа задач завершилась провалом (офлайн, обе задачи Failed) —
+    /// dl_group_done вышел РОВНО один раз, failed=true; группа убрана из
+    /// реестра (тикер больше не слебит пустую группу).
+    #[tokio::test]
+    async fn group_done_emitted_once_with_failed_true() {
+        let bus = EventBus::new(64);
+        let mut rx = bus.subscribe();
+        let client = Arc::new(HttpClient::new(None).unwrap());
+        client.set_offline(true);
+        let engine = DownloadEngine::new(client, 2, bus);
+
+        let tmp = d62_dir("mcl-d62-group-done-failed");
+        let mk = |id: &str, name: &str| DownloadTask {
+            id: id.into(),
+            // Офлайн-гейт срабатывает до соединения: адрес не важен.
+            url: "http://127.0.0.1:1/x".into(),
+            dest: tmp.join(name),
+            sha1: None,
+            sha512: None,
+            size: None,
+            group: "g-d62-fail".into(),
+            priority: 0,
+        };
+        assert_eq!(engine.add_tasks(vec![mk("a", "a.bin"), mk("b", "b.bin")]), 2);
+        engine.run().await.unwrap();
+
+        let done = drain_group_done(&mut rx);
+        assert_eq!(done.len(), 1, "ровно одно dl_group_done: {done:?}");
+        assert_eq!(done[0].0, "g-d62-fail");
+        assert_eq!(done[0].1, None, "у группы без префикса инстанса владельца нет");
+        assert!(done[0].2, "все задачи Failed → failed=true");
+        assert!(
+            engine.rt.groups.lock().unwrap().is_empty(),
+            "завершённая группа убрана из реестра"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// D62: успешная группа — dl_group_done ровно один раз с failed=false.
+    /// Сети нет: dest уже существует и хэши не заданы → download_one отдаёт
+    /// файл из кэша без запроса.
+    #[tokio::test]
+    async fn group_done_emitted_once_with_failed_false_on_success() {
+        let bus = EventBus::new(64);
+        let mut rx = bus.subscribe();
+        let client = Arc::new(HttpClient::new(None).unwrap());
+        let engine = DownloadEngine::new(client, 1, bus);
+
+        let tmp = d62_dir("mcl-d62-group-done-ok");
+        std::fs::write(tmp.join("ok.bin"), b"cached").unwrap();
+        let added = engine.add_tasks(vec![DownloadTask {
+            id: "ok".into(),
+            url: "http://127.0.0.1:1/ok.bin".into(),
+            dest: tmp.join("ok.bin"),
+            sha1: None,
+            sha512: None,
+            size: None,
+            group: "instance:inst-d62".into(),
+            priority: 0,
+        }]);
+        assert_eq!(added, 1);
+        engine.run().await.unwrap();
+
+        let done = drain_group_done(&mut rx);
+        assert_eq!(done.len(), 1, "ровно одно dl_group_done: {done:?}");
+        assert_eq!(done[0].0, "instance:inst-d62");
+        assert_eq!(done[0].1.as_deref(), Some("inst-d62"), "instance_id извлечён из группы");
+        assert!(!done[0].2, "успех → failed=false");
+        assert!(
+            engine.rt.groups.lock().unwrap().is_empty(),
+            "завершённая группа убрана из реестра"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

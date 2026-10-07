@@ -49,6 +49,8 @@ pub async fn download_installer(
     if dest_long.exists() {
         return Ok(dest);
     }
+    // D62: у «сырых» GET ниже (installer.jar + .sha1) своего таймаута нет —
+    // общий у клиента снят, поэтому send и чтение тела страхуем локально.
     // F16: офлайн-режим — мгновенный честный отказ вместо сетевого таймаута.
     if client.offline() {
         return Err(LauncherError::OfflineMode("загрузчик Forge".into()));
@@ -58,22 +60,26 @@ pub async fn download_installer(
         format!("{MAVEN_BASE}/net/minecraftforge/forge/{full}/forge-{full}-installer.jar");
     let sha_url = format!("{jar_url}.sha1");
 
-    let resp = client.raw().get(&jar_url).send().await?;
+    // D62: TTFB-предохранитель на send (30 с)…
+    let resp = client.send_timed(client.raw().get(&jar_url)).await?;
     if !resp.status().is_success() {
         return Err(LauncherError::network(format!(
             "HTTP {} для {jar_url}",
             resp.status()
         )));
     }
-    let bytes = resp.bytes().await?;
+    // …и щедрый лимит на тело (600 с): installer.jar — крупный бинарник,
+    // короткий лимит рвал бы его на медленном канале.
+    let bytes = client.body_timed_big(resp).await?;
 
-    let sha_resp = client.raw().get(&sha_url).send().await?;
+    // D62: .sha1 — крошечный текст, обычные 60 с на тело достаточны.
+    let sha_resp = client.send_timed(client.raw().get(&sha_url)).await?;
     if !sha_resp.status().is_success() {
         return Err(LauncherError::network(format!(
             "нет .sha1 для installer {version} — скачивание запрещено (спека §3)"
         )));
     }
-    let expected = String::from_utf8_lossy(&sha_resp.bytes().await?)
+    let expected = String::from_utf8_lossy(&client.body_timed(sha_resp).await?)
         .split_whitespace()
         .next()
         .unwrap_or("")

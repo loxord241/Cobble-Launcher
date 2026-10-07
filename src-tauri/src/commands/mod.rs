@@ -775,14 +775,18 @@ pub async fn mrpack_install(
     name: Option<String>,
 ) -> Result<Instance> {
     // Ключ реестра движков = группа задач установки: иначе «Стоп» не нашёл бы,
-    // что отменять (D1). У .mrpack до парсинга манифеста нет id — берём имя файла.
+    // что отменять (D1). У .mrpack до парсинга манифеста нет id — берём имя
+    // файла. Хвост-uuid: две одновременные установки (переоткрытое окно
+    // проекта) не должны делить tmp-файл и движок — провал чужой задачи в
+    // общем движке раньше валит здоровую установку.
     let pack_path = std::path::Path::new(&path);
     let group = format!(
-        "mrpack:{}",
+        "mrpack:{}:{}",
         pack_path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default()
+            .unwrap_or_default(),
+        &uuid::Uuid::new_v4().simple().to_string()[..8],
     );
     let engine = state.engine_for(&group).await;
     let http = state.http().await;
@@ -810,7 +814,9 @@ pub async fn modpack_install(
     project_id: String,
     name: Option<String>,
 ) -> Result<Instance> {
-    let group = format!("mrpack:{project_id}");
+    // Хвост-uuid — как в mrpack_install: параллельные установки одного
+    // проекта не делят движок и tmp-файл.
+    let group = format!("mrpack:{project_id}:{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let engine = state.engine_for(&group).await;
     let http = state.http().await;
     let settings = state.settings.read().await.clone();
@@ -1204,26 +1210,17 @@ pub async fn instance_import(
     name: Option<String>,
 ) -> Result<Instance> {
     let http = state.http().await;
-    let (mut inst, loader) = crate::import::import_archive(
+    // Загрузчик ставится ВНУТРИ import_archive под тем же откатом A29:
+    // раньше сбой install_loader после распаковки оставлял сохранённый
+    // инстанс вне транзакции (повторный импорт плодил дубль с копией контента).
+    let (inst, _loader) = crate::import::import_archive(
         &state.paths,
         &state.settings.read().await.clone(),
-        http.clone(),
+        http,
         std::path::Path::new(&path),
         name.as_deref(),
     )
     .await?;
-    // Распознанный загрузчик ставим сразу.
-    if let Some((kind, ver)) = loader {
-        inst = instances::run::install_loader(
-            &state.paths,
-            &state.settings.read().await.clone(),
-            http,
-            &inst,
-            &kind,
-            Some(&ver),
-        )
-        .await?;
-    }
     Ok(inst)
 }
 
@@ -1378,8 +1375,20 @@ pub async fn java_recommended(mc_version: String) -> Result<u8> {
 // ---------- настройки ----------
 
 #[tauri::command]
-pub async fn settings_get(state: State<'_, AppState>) -> Result<Settings> {
-    Ok(state.settings.read().await.clone())
+pub async fn settings_get(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    // Бэклог D61: ключ CurseForge в рендер не отдаётся — фронт его не
+    // читает, а в памяти WebView секрету делать нечего. Вместо значения —
+    // bool hasCurseforgeKey. Формат остальных полей не меняется.
+    let mut s = state.settings.read().await.clone();
+    let has_key = s
+        .curseforge_api_key
+        .as_deref()
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false);
+    s.curseforge_api_key = None;
+    let mut v = serde_json::to_value(&s)?;
+    v["hasCurseforgeKey"] = has_key.into();
+    Ok(v)
 }
 
 #[tauri::command]
@@ -1413,6 +1422,15 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> Res
     // откатывало бы смену активного аккаунта — берём значение с диска.
     if let Ok(current) = Settings::load(&state.paths.settings_file()) {
         merged.accounts_active_id = current.accounts_active_id;
+        // settings_get ключ не отдаёт: None от фронта = «не менялось»
+        // (иначе каждый settings_set стирал бы ключ), Some("") = сброс,
+        // Some(k) = явная установка.
+        let incoming = merged.curseforge_api_key.take();
+        merged.curseforge_api_key = match incoming {
+            None => current.curseforge_api_key,
+            Some(k) if k.trim().is_empty() => None,
+            Some(k) => Some(k),
+        };
     }
     merged.save(&state.paths.settings_file())?;
     // F16/F17: офлайн-режим и лимит скорости применяются к актуальному
@@ -1426,7 +1444,7 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> Res
     Ok(OkMsg { ok: true })
 }
 
-// ---------- волна D37 (фаза 2 аудита паритета) ----------
+// ---------- миры, скриншоты, конфиги (аудит паритета D37) ----------
 
 /// Список миров инстанса (F24).
 #[tauri::command]
@@ -1997,6 +2015,7 @@ fn emit_event(app: &AppHandle, event: &LauncherEvent) -> tauri::Result<()> {
     let name = match event {
         LauncherEvent::DlProgress(_) => "dl_progress",
         LauncherEvent::DlQueueState(_) => "dl_queue_state",
+        LauncherEvent::DlGroupDone { .. } => "dl_group_done",
         LauncherEvent::LaunchState { .. } => "launch_state",
         LauncherEvent::GameLogLine { .. } => "game_log_line",
         LauncherEvent::AccountRefreshFailed { .. } => "account_refresh_failed",

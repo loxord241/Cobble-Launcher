@@ -139,6 +139,9 @@ pub async fn install_jre(
     Ok(java_exe)
 }
 
+/// D62: три ветки GET ниже (Range-докачка / 416 / с нуля) страхуются
+/// `send_timed` — у клиента общего таймаута больше нет, а голый `send`
+/// на молчащем сервере подвешивал установку навечно.
 async fn download_to_file(
     client: &HttpClient,
     url: &str,
@@ -158,24 +161,29 @@ async fn download_to_file(
     // просим у сервера только хвост. SHA256-проверка ниже остаётся страховкой
     // от битой докачки.
     let mut resumed: u64 = std::fs::metadata(&dest_long).map(|m| m.len()).unwrap_or(0);
+    // D62: только send под TTFB-предохранителем (30 с) — у него своего
+    // таймаута нет; READ_IDLE ниже страхует лишь чтение тела стрима.
+    // Ветвление Range/206/416 не тронуто.
     let resp = if resumed > 0 {
         let r = client
-            .raw()
-            .get(url)
-            .header(reqwest::header::RANGE, format!("bytes={resumed}-"))
-            .send()
+            .send_timed(
+                client
+                    .raw()
+                    .get(url)
+                    .header(reqwest::header::RANGE, format!("bytes={resumed}-")),
+            )
             .await?;
         if r.status().as_u16() == 416 {
             // Диапазон за концом файла: .part уже полон или мусорен —
             // начинаем с нуля.
             let _ = std::fs::remove_file(&dest_long);
             resumed = 0;
-            client.raw().get(url).send().await?
+            client.send_timed(client.raw().get(url)).await?
         } else {
             r
         }
     } else {
-        client.raw().get(url).send().await?
+        client.send_timed(client.raw().get(url)).await?
     };
     if !resp.status().is_success() {
         return Err(LauncherError::network(format!(

@@ -106,7 +106,11 @@ export default function InstancesPage({
         setNotice(t("instances.import.done", { name: inst.name, version: inst.mcVersion }));
         await load();
       } catch (e) {
+        // D62: список перечитываем и при ошибке — при частичном/отложенном
+        // успехе инстанс уже мог появиться, а откат ядра мог что-то удалить
+        // или изменить; без load() это не видно до перезапуска лаунчера.
         setError(apiErrorText(e));
+        void load();
       }
     })();
   };

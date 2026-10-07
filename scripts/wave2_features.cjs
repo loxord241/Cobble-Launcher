@@ -45,6 +45,9 @@ async function main() {
   if (!instId) {
     fail("window.__TAURI__ недоступен — нужен withGlobalTauri в tauri.conf (временный флаг приёмки)");
     console.log("ALL WAVE2 CHECKS PASSED".replace("PASSED", "SKIPPED-ICON"));
+    // D62: ранний выход (как в конце скрипта) — без id дальше кликать кебаб
+    // бессмысленно, падало CRASH по таймауту.
+    process.exit(failed === 0 ? 0 : 1);
   }
   if (instId) {
     const err = await page.evaluate(async ({ id, p }) => {
@@ -87,7 +90,7 @@ async function main() {
   await page.waitForSelector("role=dialog");
   const chips = await page
     .getByText(/Запусков: \d+/)
-    .or(page.getByText(/В игре: \d+ ч \d+ мин/))
+    .or(page.getByText(/Последний запуск:/))
     .count();
   chips > 0 ? ok("статистика (запусков/время) видна в настройках") : fail("чипов статистики нет");
   await page.keyboard.press("Escape");

@@ -47,6 +47,12 @@ export const useSkins = create<SkinsState>((_set, get) => ({
     await fetchSkin(acc);
   },
   refresh: async (acc) => {
+    // D62: fetchSkin при живом inflight вернул бы СТАРЫЙ промис: запрос,
+    // начатый до skinApply, завершился бы после него и затёр свежий скин
+    // устаревшей текстурой. Поэтому дожидаемся текущий запрос и запускаем
+    // новую загрузку (цепочку), а не переиспользуем старый результат.
+    const prev = inflight.get(acc.id);
+    if (prev) await prev;
     await fetchSkin(acc);
   },
   invalidate: (accountId) => {

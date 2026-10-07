@@ -91,12 +91,41 @@ async function main() {
   // 7. Настройки: галочка выбора темы (пружинка)
   await page.getByRole("navigation").getByRole("button", { name: /^Настройки/ }).click();
   await sleep(1500);
-  // Тема: клик по невыбранной карточке (галочка-пружинка), затем возврат.
-  const offCard = page.locator('button[aria-pressed="false"]').first();
-  await offCard.click();
-  await sleep(1200);
-  await page.locator('button[aria-pressed="true"]').first().click();
-  await sleep(1200);
+  // Тема: клик по невыбранной КАРТОЧКЕ ТЕМЫ (галочка-пружинка), затем возврат.
+  // D62: раньше кликали первый button[aria-pressed=false] на странице — это пресет
+  // акцента/логотипа (SettingsPage), перманентно менялся uiAccent/логотип юзера.
+  // Названия карточек — из ru-локали (i18n keys themes.*), язык выставлен выше.
+  const THEME_RU = {
+    "dark": "Сланец · Тёмная",
+    "light": "Сланец · Светлая",
+    "cb-dark": "Дальтоник · Тёмная",
+    "cb-light": "Дальтоник · Светлая",
+    "mc": "Глубинный сланец",
+  };
+  const themeCard = (name) => page.getByRole("button", { name, exact: true });
+  // D62: снапшот исходной темы + настроек ядра (theme/uiAccent/logo) для отката.
+  const origTheme = await page.evaluate(() => document.documentElement.getAttribute("data-theme") || "dark");
+  let snap = null;
+  try {
+    snap = await page.evaluate(() => (window.__TAURI__ ? window.__TAURI__.core.invoke("settings_get") : null));
+  } catch { snap = null; }
+  let origCardName = null;
+  let offCardName = null;
+  for (const [id, name] of Object.entries(THEME_RU)) {
+    // D62: короткий таймаут пробы — не висим 30 с на каждой карточке.
+    const pressed = await themeCard(name).getAttribute("aria-pressed", { timeout: 3000 }).catch(() => null);
+    if (pressed === "true") origCardName = name;
+    else if (pressed === "false" && !offCardName) offCardName = name;
+  }
+  if (origCardName && offCardName) {
+    await themeCard(offCardName).click();
+    await sleep(1200);
+    // Возврат кликом по исходной карточке — пружинка второй раз, состояние на месте.
+    await themeCard(origCardName).click();
+    await sleep(1200);
+  } else {
+    console.error("WARN: карточки тем не найдены — демо темы пропущено");
+  }
   // 8. Палитра команд (Ctrl+P) — вход панели
   await page.keyboard.press("Control+p");
   await sleep(1500);
@@ -115,11 +144,27 @@ async function main() {
   await sleep(1100);
   await offline.click();
   await sleep(1000);
-  // Финал: вернуть тёмную тему (сценарий оставляет выбранной последнюю кликнутую).
-  await page.locator('button[aria-pressed="false"]', { hasText: "Тёмная" }).first().click();
+  // D62: финал — вернуть исходную тему (хардкод «Тёмная» перетирал выбор юзера).
+  const curTheme = await page.evaluate(() => document.documentElement.getAttribute("data-theme") || "dark");
+  if (curTheme !== origTheme && THEME_RU[origTheme]) {
+    await themeCard(THEME_RU[origTheme]).click();
+  }
   await sleep(1200);
 
   await cdp.send("Page.stopScreencast").catch(() => {});
+  // D62: на всякий случай — откат ядра-настроек из снапшота, если клики по
+  // карточкам (dark/light пишут settings.theme) успели что-то изменить.
+  if (snap) {
+    try {
+      const now = await page.evaluate(() => window.__TAURI__.core.invoke("settings_get"));
+      if (now && JSON.stringify(now) !== JSON.stringify(snap)) {
+        await page.evaluate((s) => window.__TAURI__.core.invoke("settings_set", { settings: s }), snap);
+        console.log("OK: настройки ядра восстановлены из снапшота");
+      }
+    } catch (e) {
+      console.error("WARN: не удалось откатить настройки ядра:", e.message || e);
+    }
+  }
   await browser.close();
 
   // concat-файл с реальными длительностями кадров

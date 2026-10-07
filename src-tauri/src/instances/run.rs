@@ -3,7 +3,7 @@
 
 use crate::errors::{LauncherError, Result};
 use crate::events::{EventBus, LaunchPhase, LauncherEvent};
-use crate::instances::{minecraft_dir, Instance, InstanceLock};
+use crate::instances::{minecraft_dir, Instance, InstanceLock, LockFile, process_start_time};
 use crate::java::detect::{pick_java, scan_all, JavaInstall};
 use crate::mojang::assets::{
     fetch_asset_index, materialize_virtual, needs_virtual, plan_asset_tasks,
@@ -508,7 +508,7 @@ pub async fn resolve_java(
     if let Some(found) = pick_java(need_major, &installs) {
         return Ok(found.clone());
     }
-    // 3. Adoptium (спека §6.5, M2)
+    // 4. Adoptium (спека §6.5, M2)
     tracing::info!("Java {need_major} не найдена — скачиваю с Adoptium");
     let exe = crate::java::adoptium::install_jre(&client, &paths.runtime_dir(), need_major, |_, _| {})
         .await?;
@@ -566,6 +566,16 @@ pub fn launch_blocking(
         .spawn()
         .map_err(|e| LauncherError::JavaNotFound(format!("не удалось запустить игру: {e}")))?;
     lock.set_child_pid(child.id());
+    // D62: PID игры в .lock — JSON {"pid":..,"startTime":..} (см. launch_detached):
+    // переиспользованный Windows'ом PID больше не считается «игра ещё работает»,
+    // а после выхода лок снимается Drop'ом по совпадению PID с expected —
+    // файл с голым PID лаунчера больше не висит до следующего запуска.
+    let pid = child.id();
+    let start_time = process_start_time(pid).unwrap_or(0);
+    let _ = crate::util::fs::atomic_write(
+        &inst_dir.join(".lock"),
+        LockFile { pid, start_time }.to_line().as_bytes(),
+    );
     emit(bus, &inst.id, LaunchPhase::Running);
 
     let mut found = true;
@@ -802,14 +812,24 @@ pub fn launch_detached(
         .spawn()
         .map_err(|e| LauncherError::JavaNotFound(format!("не удалось запустить игру: {e}")))?;
     lock.set_child_pid(child.id());
+    let pid = child.id();
     // PID в .lock: instance_kill / process_status читают отсюда. Пишем атомарно
     // (atomic_write: .part → rename): усечение-потом-запись при сбое между ними
     // оставляло бы пустой .lock навсегда.
+    // D62: раньше тут был голый PID, а Windows переиспользует PID после смерти
+    // процесса — «живой PID» оказывался чужим процессом: вечная блокировка
+    // rename/delete/copy/import, враньё в process_status, а instance_kill
+    // отправлял taskkill /F /T чужому процессу. Теперь JSON
+    // {"pid":..,"startTime":..}: живость = PID существует И start_time
+    // совпадает. start_time — свежий sysinfo-снапшот ровно по этому PID
+    // (глобальный объект не держим: устаревает). Процесс исчез до снятия
+    // времени → startTime:0 — такой lock протухает мгновенно, это правильно.
+    let start_time = process_start_time(pid).unwrap_or(0);
     let _ = crate::util::fs::atomic_write(
         &inst_dir.join(".lock"),
-        child.id().to_string().as_bytes(),
+        LockFile { pid, start_time }.to_line().as_bytes(),
     );
-    tracing::info!("инстанс {instance_id}: игра запущена (PID {})", child.id());
+    tracing::info!("инстанс {instance_id}: игра запущена (PID {pid})");
     bus.emit(LauncherEvent::LaunchState {
         instance_id: instance_id.to_string(),
         phase: LaunchPhase::Running,
@@ -820,7 +840,6 @@ pub fn launch_detached(
     let id_clone = instance_id.to_string();
     let bus_clone = bus.clone();
     let game_dir = prepared.game_dir;
-    let pid = child.id();
     // F26: Discord Rich Presence — фоновый поток, живёт пока процесс игры;
     // Discord не запущен → connect вернёт None и поток сразу закончится.
     if let Some(details) = discord_rpc {
@@ -1347,5 +1366,34 @@ mod tests {
         assert!(inst.jvm_flags.is_empty(), "флаги сброшены независимо от шейдеров");
         assert_eq!(actions.len(), 1, "мера только о флагах: {actions:?}");
         assert!(actions[0].contains("JVM"), "{actions:?}");
+    }
+
+    /// D62: запись .lock после спавна (JSON pid+startTime, как в
+    /// launch_detached) читается running_pid строго: честная пара — «запущен»,
+    /// чужой start_time (PID переиспользован Windows) — нет.
+    #[test]
+    fn lock_json_from_launch_is_validated_by_running_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let inst = Instance::new("d62-detached", "1.20.1");
+        crate::instances::save(&paths, &inst).unwrap();
+        let inst_dir = crate::instances::instance_dir(&paths, &inst.id);
+
+        let pid = std::process::id();
+        let start_time = process_start_time(pid).unwrap();
+        // Ровно то, что пишет launch_detached после спавна игры.
+        let _ = crate::util::fs::atomic_write(
+            &inst_dir.join(".lock"),
+            LockFile { pid, start_time }.to_line().as_bytes(),
+        );
+        assert_eq!(crate::instances::running_pid(&inst_dir), Some(pid));
+
+        // Windows переиспользовала PID: процесс жив, но старт не совпал.
+        let _ = crate::util::fs::atomic_write(
+            &inst_dir.join(".lock"),
+            LockFile { pid, start_time: start_time + 1 }.to_line().as_bytes(),
+        );
+        assert_eq!(crate::instances::running_pid(&inst_dir), None);
     }
 }

@@ -226,7 +226,10 @@ pub async fn fetch_skin(
     let bytes = match cache_fresh(&cache) {
         Some(bytes) => bytes,
         None => {
-            let resp = http.raw().get(&url).send().await.map_err(LauncherError::from)?;
+            // D62: «сырой» GET под предохранителями — send 30 с (TTFB), тело
+            // 60 с (скины — сотни КБ, запас есть): молчащий CDN больше не
+            // держит загрузку профиля навечно.
+            let resp = http.send_timed(http.raw().get(&url)).await?;
             let status = resp.status();
             if status.as_u16() == 404 || status.as_u16() == 204 {
                 // Скин сняли — кэш чистим, UI покажет дефолт.
@@ -236,13 +239,13 @@ pub async fn fetch_skin(
             if !status.is_success() {
                 return Err(LauncherError::network(format!("skin: HTTP {status}")));
             }
-            let bytes = resp.bytes().await.map_err(LauncherError::from)?;
+            let bytes = http.body_timed(resp).await?;
             validate_png(&bytes)?;
             if let Some(dir) = cache.parent() {
                 std::fs::create_dir_all(dir)?;
             }
             crate::util::fs::atomic_write(&cache, &bytes)?;
-            bytes.to_vec()
+            bytes
         }
     };
 
@@ -695,12 +698,16 @@ async fn put_ely_skin(
     let status = tokio::time::timeout(
         std::time::Duration::from_secs(120),
         async {
+            // D62: send под предохранителем TTFB; внешний таймаут 120 с
+            // остаётся общим пределом попытки.
             let resp = client
-                .raw()
-                .put(ely_upload_url(model))
-                .bearer_auth(token)
-                .multipart(ely_skin_form(png))
-                .send()
+                .send_timed(
+                    client
+                        .raw()
+                        .put(ely_upload_url(model))
+                        .bearer_auth(token)
+                        .multipart(ely_skin_form(png)),
+                )
                 .await?;
             Ok::<u16, LauncherError>(resp.status().as_u16())
         },
@@ -762,15 +769,19 @@ pub async fn apply_skin(
             // Ротация refresh-токена — новый сохраняем (иначе следующий
             // refresh пойдёт по протухшему).
             persist_rotated_msa_refresh(rr, &refresh, &session)?;
+            // D62: PUT скина — «сырой» запрос под предохранителем (30 с TTFB):
+            // дальше нужен только статус, тело не читается.
             let resp = client
-                .raw()
-                .put(MSA_SKINS_URL)
-                .bearer_auth(&session.access_token)
-                .json(&serde_json::json!({
-                    "variant": model.variant(),
-                    "file": STANDARD.encode(&png),
-                }))
-                .send()
+                .send_timed(
+                    client
+                        .raw()
+                        .put(MSA_SKINS_URL)
+                        .bearer_auth(&session.access_token)
+                        .json(&serde_json::json!({
+                            "variant": model.variant(),
+                            "file": STANDARD.encode(&png),
+                        })),
+                )
                 .await?;
             let status = resp.status();
             if status.is_success() {

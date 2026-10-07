@@ -6,6 +6,13 @@ async function main() {
   const browser = await chromium.connectOverCDP("http://localhost:9223");
   const page = browser.contexts()[0].pages()[0];
   page.setDefaultTimeout(20000);
+  // D62: снапшоты для отката после прогона (настройки инстанса, аккаунты).
+  let instSnap = null;
+  let accSnap = null;
+  let testNick = null;
+  const invoke = (cmd, args = {}) =>
+    page.evaluate(async ({ cmd, args }) => window.__TAURI__.core.invoke(cmd, args), { cmd, args });
+  try {
   await page.goto("http://localhost:1420/?theme=dark", { waitUntil: "networkidle" }).catch(() => {});
   // Язык интерфейса — ru: свежая установка стартует на en (D30), проверки ниже русскоязычные.
   await page.evaluate(() => localStorage.setItem("lang", "ru"));
@@ -44,9 +51,21 @@ async function main() {
 
   // 3. Настройки инстанса
   console.log("==> 3. Проверка настроек инстанса");
+  // D62: снапшот инстанса ДО правки — восстановим настройки/имя в finally.
+  try {
+    const rowLabel = await page
+      .locator('[role="button"][aria-label^="Открыть "]')
+      .first()
+      .getAttribute("aria-label");
+    const rowName = (rowLabel || "").replace(/^Открыть\s+/, "");
+    const list = await invoke("instance_list");
+    instSnap = list.find((i) => i.name === rowName) || list[0] || null;
+  } catch (e) {
+    console.error("WARN: снапшот инстанса недоступен (нужен withGlobalTauri):", e.message || e);
+  }
   await page.getByRole("menuitem", { name: "Настройки" }).click();
   await page.waitForSelector("role=dialog");
-  await page.waitForSelector("text=Выделение оперативной памяти");
+  await page.waitForSelector("text=Оперативная память (МБ)");
   // Меняем заметки и флаги
   await page.fill("#inst-jvm-flags", "-XX:+UseG1GC -Dlauncher.test=true");
   await page.fill("#inst-notes", "Тестовая заметка E2E");
@@ -94,7 +113,14 @@ async function main() {
   await page.waitForSelector("text=Управление аккаунтами");
 
   // Добавляем тестовый офлайн-профиль
-  const testNick = `Tester_${Date.now().toString().slice(-4)}`;
+  // D62: снапшот активного аккаунта ДО добавления — вернём его в finally.
+  testNick = `Tester_${Date.now().toString().slice(-4)}`;
+  try {
+    const settings = await invoke("settings_get");
+    accSnap = { activeId: settings.accountsActiveId || null };
+  } catch (e) {
+    console.error("WARN: снапшот аккаунтов недоступен (нужен withGlobalTauri):", e.message || e);
+  }
   await page.fill("input[placeholder='Никнейм игрока']", testNick);
   await page.getByRole("button", { name: "Добавить" }).click();
   await page.waitForTimeout(600);
@@ -110,7 +136,39 @@ async function main() {
   console.log(`OK: активный профиль ${testNick} отображается в титлбаре`);
 
   console.log("==> ALL E2E FEATURE CHECKS PASSED!");
-  await browser.close();
+  } finally {
+    // D62: откат — настройки инстанса и аккаунты возвращаются даже при FAIL.
+    // Требуется withGlobalTauri (временный флаг приёмки): без него — только WARN.
+    try {
+      if (accSnap) {
+        const accounts = await invoke("account_list");
+        const test = testNick && accounts.find((a) => a.name === testNick);
+        if (test) await invoke("account_remove", { id: test.id });
+        const settings = await invoke("settings_get");
+        if (accSnap.activeId && settings.accountsActiveId !== accSnap.activeId) {
+          // account_remove активного сам переназначает первого — задаём исходного явно.
+          await invoke("account_active_set", { id: accSnap.activeId });
+        }
+        console.log("OK: откат аккаунтов выполнен");
+      }
+    } catch (e) {
+      console.error("WARN: не удалось откатить аккаунты:", e.message || e);
+    }
+    try {
+      if (instSnap) {
+        const cur = await invoke("instance_settings_get", { id: instSnap.id });
+        if (cur && cur.name !== instSnap.name) {
+          // Шаг «Переименовать» мог сменить имя — возвращаем исходное.
+          await invoke("instance_rename", { id: instSnap.id, name: instSnap.name });
+        }
+        await invoke("instance_settings_set", { instance: instSnap });
+        console.log("OK: настройки инстанса восстановлены из снапшота");
+      }
+    } catch (e) {
+      console.error("WARN: не удалось откатить настройки инстанса:", e.message || e);
+    }
+    await browser.close().catch(() => {});
+  }
 }
 
 main().catch((e) => {

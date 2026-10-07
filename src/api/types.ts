@@ -89,6 +89,8 @@ export interface Settings {
   proxyUrl?: string;
   mirrorBase?: string;
   curseforgeApiKey?: string;
+  /** D62: settings_get больше не отдаёт значение ключа — только флаг. */
+  hasCurseforgeKey?: boolean;
   azureClientId?: string;
   accountsActiveId?: string;
   onboardingDone: boolean;
@@ -109,7 +111,7 @@ export interface Settings {
   logo: string;
 }
 
-// ---------- Волна D37 (фаза 2 аудита паритета) ----------
+// ---------- миры, скриншоты, конфиги (аудит паритета D37) ----------
 
 /** Мир инстанса (зеркало instances::worlds::WorldInfo). */
 export interface WorldInfo {
@@ -237,12 +239,22 @@ export interface QueueStateEvent extends QueueState {
   event: "dl_queue_state";
 }
 
+/** Группа задач загрузок дошла до конца (D62): фронт снимает виртуальный
+ * статус занятости сразу, а не watchdog-тишиной через ~90 с. */
+export interface DlGroupDoneEvent {
+  event: "dl_group_done";
+  group: string;
+  instanceId?: string;
+  failed: boolean;
+}
+
 export type CoreEvent =
   | DlProgressEvent
   | LaunchStateEvent
   | GameLogLineEvent
   | AccountRefreshFailedEvent
-  | QueueStateEvent;
+  | QueueStateEvent
+  | DlGroupDoneEvent;
 
 // ---------- Modrinth (M5; зеркалит snake_case Rust-структур) ----------
 
@@ -391,7 +403,7 @@ export interface UpdateInfo {
   note?: string;
 }
 
-// ---------- Волна D37-B ----------
+// ---------- скины и аккаунты (аудит паритета D37-B) ----------
 
 /** Скриншот инстанса (зеркало instances::screens::ShotInfo). */
 export interface ShotInfo {
@@ -428,7 +440,7 @@ export interface PackArtInfo {
   png?: string;
 }
 
-// ---------- Волна D37-C ----------
+// ---------- контент и процессы (аудит паритета D37-C) ----------
 
 /** Файл конфига мода (F29; зеркало instances::configs::ConfigFile). */
 export interface ConfigFile {

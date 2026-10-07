@@ -622,21 +622,81 @@ fn recycle_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// PID запущенного инстанса из `.lock` (None = не запущен / протух).
+/// Содержимое `.lock` (D62): JSON одной строкой `{"pid":123,"startTime":456789}`
+/// — camelCase, как settings.json. `startTime` — start_time процесса из
+/// sysinfo на момент записи: Windows переиспользует PID после смерти процесса,
+/// поэтому владелец лока проверяется по ПАРЕ (pid, start_time), а не по голому
+/// PID. `startTime:0` = старт прочитать не успели (процесс уже исчез) — такой
+/// lock протухает мгновенно, это осознанное поведение.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LockFile {
+    #[serde(default)]
+    pub pid: u32,
+    #[serde(default)]
+    pub start_time: u64,
+}
+
+impl LockFile {
+    /// Ровно то, что атомарно пишется в `.lock` (одна строка JSON).
+    pub fn to_line(self) -> String {
+        // Два примитива — сериализации нечем упасть.
+        serde_json::to_string(&self).expect("сериализация .lock")
+    }
+
+    /// Разобрать содержимое `.lock`: `(pid, Some(start_time))` для JSON,
+    /// `(pid, None)` для легаси-голого-PID (старое поведение: живость только
+    /// по PID). None — пустой/нечитаемый файл (см. lock_file_pid).
+    pub fn parse(text: &str) -> Option<(u32, Option<u64>)> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            // D24: пустой файл — чужой lock в окне «создан, но PID ещё не
+            // записан»: не снимать и не объявлять своим.
+            return None;
+        }
+        if let Ok(lf) = serde_json::from_str::<LockFile>(trimmed) {
+            return Some((lf.pid, Some(lf.start_time)));
+        }
+        // Легаси (до D62): голый PID, информации о старте нет. debug, не warn —
+        // файл читается на каждый чек списка инстансов, спамить нельзя.
+        let pid = trimmed.parse::<u32>().ok()?;
+        tracing::debug!("легаси .lock (голый PID {pid}) — живость без проверки start_time");
+        Some((pid, None))
+    }
+}
+
+/// D62: владеет ли записанная в `.lock` пара (pid, start_time) живым процессом.
+/// ЧИСТАЯ функция — тестируется без реальных процессов. `actual_start_time` —
+/// свежий sysinfo-снапшот по этому PID (None = процесса нет, он же покрывает
+/// pid_alive). Сам PID в сравнении не участвует: переиспользование различает
+/// именно несовпадение start_time при живом процессе.
+fn lock_pid_matches(_pid: u32, lock_start_time: u64, actual_start_time: Option<u64>) -> bool {
+    let Some(actual) = actual_start_time else {
+        return false; // процесса с таким PID нет — мёртв независимо от записи
+    };
+    // startTime:0 в локе (не успели прочитать) — протухает мгновенно.
+    lock_start_time != 0 && lock_start_time == actual
+}
+
 /// Жив ли процесс по PID (для Discord-RPC-потока F26; не трогает .lock).
 pub(crate) fn running_pid_alive(pid: u32) -> bool {
     pid_alive(pid)
 }
 
+/// PID запущенного инстанса из `.lock` (None = не запущен / протух).
+/// D62: для JSON-лока строго — PID существует И start_time совпадает, иначе
+/// переиспользованный Windows'ом PID навсегда блокировал бы rename/delete/
+/// copy/import, портил stats и подставлял чужой процесс под taskkill в kill.
+/// Легаси-голый-PID — старое поведение: только живость PID.
 pub fn running_pid(instance_dir: &Path) -> Option<u32> {
     let lock = instance_dir.join(".lock");
     let text = std::fs::read_to_string(long_path(&lock)).ok()?;
-    let pid = text.trim().parse::<u32>().ok()?;
-    if pid_alive(pid) {
-        Some(pid)
-    } else {
-        None
-    }
+    let (pid, start_time) = LockFile::parse(&text)?;
+    let alive = match start_time {
+        None => pid_alive(pid),
+        Some(recorded) => lock_pid_matches(pid, recorded, process_start_time(pid)),
+    };
+    alive.then_some(pid)
 }
 
 /// P1-барьер: доказать, что каталог — настоящий инстанс лаунчера, а не точка
@@ -741,11 +801,12 @@ fn create_lock_file(long: &Path, pid: u32) -> std::io::Result<()> {
     Ok(())
 }
 
-/// PID из `.lock`, если он там корректно записан. Пустой или битый файл → None:
-/// такой lock нельзя ни снять (PID неизвестен — вдруг его пишет живой процесс
-/// прямо сейчас), ни объявить своим.
+/// PID из `.lock`, если он там корректно записан (JSON D62 или легаси-голый
+/// PID — парсер общий). Пустой или нечитаемый файл → None: такой lock нельзя
+/// ни снять (PID неизвестен — вдруг его пишет живой процесс прямо сейчас),
+/// ни объявить своим.
 fn lock_file_pid(long: &Path) -> Option<u32> {
-    std::fs::read_to_string(long).ok()?.trim().parse::<u32>().ok()
+    LockFile::parse(&std::fs::read_to_string(long).ok()?).map(|(pid, _)| pid)
 }
 
 /// Сообщение «занято» — одно на все ветки acquire, чтобы UI/i18n видели
@@ -766,12 +827,16 @@ impl InstanceLock {
             if e.kind() != std::io::ErrorKind::AlreadyExists {
                 return Err(e.into());
             }
-            // Чужой .lock можно снять только протухший: в файле валидный PID,
-            // а процесса с ним уже нет. Иначе — «занято», файл не трогаем.
-            let Some(stale_pid) = lock_file_pid(&long).filter(|pid| !pid_alive(*pid)) else {
+            // Чужой .lock можно снять только протухший: владелец мёртв по
+            // строгой проверке running_pid (D62: для JSON-лока — PID существует
+            // И start_time совпадает; переиспользованный Windows'ом PID чужого
+            // процесса больше не «оживляет» лок навсегда). Файл без
+            // распознаваемого PID или с живым владельцем не трогаем — «занято».
+            let stale = lock_file_pid(&long).filter(|_| running_pid(instance_dir).is_none());
+            let Some(stale_pid) = stale else {
                 return Err(lock_busy());
             };
-            tracing::warn!("протухший .lock (PID {stale_pid} мёртв), снимаю: {long:?}");
+            tracing::warn!("протухший .lock (PID {stale_pid} не владелец), снимаю: {long:?}");
             let _ = std::fs::remove_file(&long);
             // Гонка может повториться (lock перехватил третий процесс) —
             // тогда он и владелец.
@@ -795,7 +860,9 @@ impl Drop for InstanceLock {
     fn drop(&mut self) {
         let long = long_path(&self.path);
         if let Ok(text) = std::fs::read_to_string(&long) {
-            let file_pid = text.trim().parse::<u32>().unwrap_or(0);
+            // D62: PID достаётся общим парсером (JSON/легаси-голый-PID); пустой
+            // или нечитаемый файл → None → не трогаем (см. lock_file_pid).
+            let file_pid = LockFile::parse(&text).map(|(pid, _)| pid);
             let exp = self.expected_pid.load(std::sync::atomic::Ordering::SeqCst);
             // Только точное равенство с expected_pid. Прежняя запасная ветка
             // «file_pid == PID лаунчера» снимала ЧУЖОЙ lock: после быстрого
@@ -803,7 +870,7 @@ impl Drop for InstanceLock {
             // старого объекта стирал его файл. Окно запуска (в файле ещё PID
             // лаунчера до записи child-pid) закрывает логика кражи протухшего
             // лока в acquire: процесс-писатель мёртв → pid_alive=false.
-            if file_pid == exp {
+            if file_pid == Some(exp) {
                 let _ = std::fs::remove_file(&long);
             }
         }
@@ -816,11 +883,20 @@ impl Drop for InstanceLock {
 /// Семантика та же: «жив по PID»; несуществующий PID (в т.ч. отсутствующий в
 /// снапшоте) — мёртв.
 fn pid_alive(pid: u32) -> bool {
+    process_start_time(pid).is_some()
+}
+
+/// D62: стартовое время процесса (sysinfo, секунды от UNIX_EPOCH) — пишется
+/// в `.lock` рядом с PID: Windows переиспользует PID, и живой «чужой» процесс
+/// с тем же PID выдавал себя за игру. Снапшот минимальный (только запрошенный
+/// PID) и живёт только внутри вызова — глобальный объект sysinfo устаревает.
+/// None — процесса с таким PID нет.
+pub(crate) fn process_start_time(pid: u32) -> Option<u64> {
     let pid = sysinfo::Pid::from_u32(pid);
     let mut sys = sysinfo::System::new();
     // Обновляем только запрошенный PID: остальные процессы не открываются.
     sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
-    sys.process(pid).is_some()
+    sys.process(pid).map(|p| p.start_time())
 }
 
 #[cfg(windows)]
@@ -1417,5 +1493,82 @@ mod tests {
             validate_instance_settings(&inst).is_ok(),
             "легитимные флаги не задеты"
         );
+    }
+
+    // D62: формат .lock — JSON одной строкой (camelCase); парсер понимает и
+    // легаси-голый-PID; живость владельца — по паре (pid, start_time).
+
+    /// D62 (а): JSON, который пишет launch (run.rs), читается обратно тем же
+    /// парсером — roundtrip с сохранением обоих полей.
+    #[test]
+    fn lock_file_json_roundtrip() {
+        let lf = LockFile {
+            pid: 12345,
+            start_time: 1_720_000_000,
+        };
+        let line = lf.to_line();
+        assert_eq!(
+            line, r#"{"pid":12345,"startTime":1720000000}"#,
+            "camelCase, одна строка"
+        );
+        let (pid, start) = LockFile::parse(&line).expect("JSON-лок парсится");
+        assert_eq!(pid, 12345);
+        assert_eq!(start, Some(1_720_000_000));
+    }
+
+    /// D62 (б): легаси — голый PID, старое поведение (без start_time, живость
+    /// только по PID). Пустой и нечисловой файлы не парсятся вовсе.
+    #[test]
+    fn lock_file_legacy_bare_pid() {
+        let (pid, start) = LockFile::parse(" 4242\n").expect("легаси-лок парсится");
+        assert_eq!(pid, 4242);
+        assert_eq!(start, None, "легаси: start_time неизвестен");
+        assert!(LockFile::parse("").is_none(), "пустой файл — не lock");
+        assert!(LockFile::parse("мусор").is_none(), "нечисло — не lock");
+    }
+
+    /// D62 (в): чистая проверка пары (pid, start_time) — переиспользованный
+    /// PID (живой процесс с другим стартом) не считается владельцем лока,
+    /// startTime:0 протухает мгновенно.
+    #[test]
+    fn lock_pid_matches_rejects_reused_pid() {
+        assert!(lock_pid_matches(100, 500, Some(500)), "совпадение — наш процесс");
+        assert!(
+            !lock_pid_matches(100, 500, Some(999)),
+            "чужой start_time при живом PID — переиспользование"
+        );
+        assert!(!lock_pid_matches(100, 500, None), "процесс исчез — мёртв");
+        assert!(!lock_pid_matches(100, 0, Some(0)), "startTime:0 — протух сразу");
+        assert!(!lock_pid_matches(100, 0, Some(123)), "startTime:0 — протух против любого");
+    }
+
+    /// D62: running_pid на реальном .lock своего процесса — строгая проверка
+    /// против переиспользованного PID, легаси-файл работает по-старому.
+    #[test]
+    fn running_pid_strict_for_json_and_legacy_for_bare_pid() {
+        let (_d, paths) = test_paths();
+        let inst = Instance::new("d62-lock", "1.20.1");
+        save(&paths, &inst).unwrap();
+        let dir = instance_dir(&paths, &inst.id);
+        let my = std::process::id();
+        let my_start = process_start_time(my).expect("свой процесс виден sysinfo");
+        let lock_path = long_path(&dir.join(".lock"));
+
+        // Свой живой PID + честный start_time → «запущен».
+        std::fs::write(&lock_path, LockFile { pid: my, start_time: my_start }.to_line()).unwrap();
+        assert_eq!(running_pid(&dir), Some(my));
+
+        // Тот же живой PID, но чужой start_time (переиспользование) → не запущен.
+        std::fs::write(&lock_path, LockFile { pid: my, start_time: my_start + 1 }.to_line())
+            .unwrap();
+        assert_eq!(running_pid(&dir), None);
+
+        // Легаси-голый-PID: старое поведение — только живость → «запущен».
+        std::fs::write(&lock_path, my.to_string()).unwrap();
+        assert_eq!(running_pid(&dir), Some(my));
+
+        // Мёртвый PID в новом формате → None (лок снимет acquire как протухший).
+        std::fs::write(&lock_path, LockFile { pid: u32::MAX, start_time: 42 }.to_line()).unwrap();
+        assert_eq!(running_pid(&dir), None);
     }
 }

@@ -125,10 +125,6 @@ export function errorText(e: ErrorPayload): string {
   // Причина из ядра: пустая или равная коду детализации не несёт.
   const detail = e.message && e.message !== e.code ? e.message : undefined;
   const base =
-    // «Сеть» без деталей бесполезна: реальная причина (статус/тело ответа
-    // Microsoft) приходит в message — показываем её (жалоба владельца 2026-09-27).
-    // Когда причина есть, вместо длинной обёртки с советом берём короткую
-    // network_detail («Проблема с сетью: <причина>»), иначе текст задваивался.
     e.code === "network" && detail
       ? `${short ?? localized ?? e.code}: ${detail}`
       : // invalid_input без деталей бесполезен так же, как network: что именно

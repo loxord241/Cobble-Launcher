@@ -7,6 +7,8 @@ async function main() {
   page.setDefaultTimeout(60000);
 
   // B2: дефолт чистой установки — en (D30); приёмки русскоязычные → ставим ru.
+  // D62: goto ДО setItem — иначе lang может быть перезаписан инициализацией приложения.
+  await page.goto("http://localhost:1420/", { waitUntil: "networkidle" }).catch(() => {});
   await page.evaluate(() => localStorage.setItem("lang", "ru"));
   await page.reload({ waitUntil: "networkidle" }).catch(() => {});
 
@@ -17,7 +19,12 @@ async function main() {
 
   // Кнопка Play в строке инстанса (не в hero — у hero просто «Играть»).
   const playBtn = page.locator('button[aria-label^="Играть —"]').first();
-  const rowName = (await playBtn.getAttribute("aria-label")).replace("Играть — ", "");
+  // D62: при нуле инстансов getAttribute вернёт null — раньше падали TypeError на .replace.
+  const playLabel = await playBtn.getAttribute("aria-label");
+  if (!playLabel) {
+    throw new Error("кнопка «Играть — …» не найдена — инстансов ноль? Создайте инстанс перед приёмкой");
+  }
+  const rowName = playLabel.replace("Играть — ", "");
   console.log("инстанс для теста:", rowName);
   await playBtn.click();
   console.log("OK: клик Играть");

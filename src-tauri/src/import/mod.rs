@@ -178,16 +178,17 @@ fn loader_from_uid(uid: &str, version: Option<&str>) -> Option<(String, String)>
     }
 }
 
-/// Импорт архива в новый инстанс: создаёт Instance (без загрузчика — его
-/// ставит вызывающий через install_loader, если распознан) и распаковывает
-/// игровое содержимое. Возвращает (инстанс, подсказка по загрузчику).
+/// Импорт архива в новый инстанс: создаёт Instance, распаковывает игровое
+/// содержимое и ставит распознанный загрузчик — D62: установка загрузчика
+/// живёт ВНУТРИ этой транзакции (сбой откатывает импорт целиком; офлайн —
+/// warn и пропуск). Возвращает (инстанс, подсказка по загрузчику).
 ///
 /// Тяжёлая синхронная часть (zip на тысячи файлов) уезжает в blocking-пул:
 /// в async-контексте она фризила бы рантайм IPC вместе с окном (D14). Сеть
-/// (ссылки на файлы CF) остаётся в async.
+/// (ссылки на файлы CF, загрузчик) остаётся в async.
 pub async fn import_archive(
     paths: &Paths,
-    _settings: &crate::settings::Settings,
+    settings: &crate::settings::Settings,
     client: std::sync::Arc<crate::net::http::HttpClient>,
     archive: &Path,
     name_override: Option<&str>,
@@ -210,6 +211,33 @@ pub async fn import_archive(
             links.join("\n")
         );
         crate::instances::save(&save_paths, &inst)?;
+    }
+
+    // D62: загрузчик ставится под тем же откатом A29, что и распаковка.
+    // Раньше его ставил вызывающий ПОСЛЕ import_archive: сбой install_loader
+    // оставлял сохранённый инстанс при Err — повторный импорт плодил дубль
+    // с копией контента.
+    if let Some((kind, ver)) = &loader {
+        if client.offline() {
+            // F16: офлайн — сеть недоступна, установку пропускаем, инстанс
+            // возвращаем как есть (доустановить загрузчик можно при сети).
+            tracing::warn!("офлайн: загрузчик не установлен, доустановите при сети");
+        } else {
+            // paths уже уехал в spawn_blocking — жив только его клон save_paths.
+            let installed = crate::instances::run::install_loader(
+                &save_paths,
+                settings,
+                client.clone(),
+                &inst,
+                kind,
+                Some(ver.as_str()),
+            )
+            .await;
+            // Err — откат инстанса-«призрака», наружу исходная причина сбоя;
+            // Ok — обновлённый (с загрузчиком) инстанс.
+            let inst = rollback_on_err(&save_paths, &inst, installed)?;
+            return Ok((inst, loader));
+        }
     }
     Ok((inst, loader))
 }
@@ -251,11 +279,20 @@ fn import_archive_blocking(
             // сохранённый инстанс-«призрак» в списке (A29).
             let post_save = || -> Result<(Option<(String, String)>, Vec<CfFileRef>)> {
                 // overrides/ поверх каталога игры (zip-slip защищён).
+                // D62: `"overrides": ""` в манифесте давал strip-префикс "/",
+                // под который не матчится ни одна запись архива → тихий пустой
+                // импорт без ошибок. Пустая (после trim) строка = дефолтный
+                // каталог "overrides", как при отсутствующем поле.
+                let overrides_dir = if manifest.overrides.trim().is_empty() {
+                    "overrides"
+                } else {
+                    manifest.overrides.as_str()
+                };
                 let game_dir = crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
                 let extracted = crate::util::zip::extract_zip_stripping(
                     std::fs::File::open(crate::util::fs::long_path(archive))?,
                     &game_dir,
-                    &format!("{}/", manifest.overrides),
+                    &format!("{overrides_dir}/"),
                     |_| true,
                     |_| {},
                 )?;
@@ -575,5 +612,81 @@ mod tests {
                 "{manifest_name}: каталог несостоявшегося инстанса обязан быть удалён"
             );
         }
+    }
+
+    /// D62: пустой `"overrides": ""` в манифесте — не «тихий пустой импорт»
+    /// (strip-префикс "/" не матчит ни одну запись архива), а дефолтный
+    /// каталог "overrides": содержимое распаковывается как обычно.
+    #[test]
+    fn cf_manifest_with_empty_overrides_uses_default_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(&dir);
+        let manifest =
+            r#"{"name":"CF","minecraft":{"version":"1.20.1"},"overrides":"","files":[]}"#;
+        let zip_path = dir.path().join("cf-empty-overrides.zip");
+        std::fs::write(
+            &zip_path,
+            build_zip(&[
+                ("manifest.json", manifest.as_bytes()),
+                ("overrides/config/x.txt", b"X"),
+                ("overrides/mods/a.jar", b"AAA"),
+            ]),
+        )
+        .unwrap();
+
+        let (inst, loader, cf_files) =
+            import_archive_blocking(&paths, &zip_path, None).unwrap();
+        assert!(loader.is_none(), "modLoaders нет — подсказки нет");
+        assert!(cf_files.is_empty());
+        let mc = crate::instances::minecraft_dir(&crate::instances::instance_dir(&paths, &inst.id));
+        assert_eq!(
+            read_named(&mc, "x.txt").as_deref(),
+            Some(&b"X"[..]),
+            "overrides/ при пустом поле распакованы по дефолтному каталогу"
+        );
+        assert!(read_named(&mc, "a.jar").is_some(), "{:?}", mc);
+    }
+
+    /// D62: офлайн-импорт CF-пака с загрузчиком — установка загрузчика
+    /// пропускается с warn (сети нет, ходить в неё нельзя), инстанс
+    /// возвращается как есть; импорт не падает, overrides на месте.
+    #[tokio::test]
+    async fn offline_import_skips_loader_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(&dir);
+        let manifest = r#"{"name":"CF офлайн","minecraft":{"version":"1.20.1",
+            "modLoaders":[{"id":"fabric-0.15.11"}]},"files":[]}"#;
+        let zip_path = dir.path().join("cf-offline.zip");
+        std::fs::write(
+            &zip_path,
+            build_zip(&[
+                ("manifest.json", manifest.as_bytes()),
+                ("overrides/mods/a.jar", b"AAA"),
+            ]),
+        )
+        .unwrap();
+
+        let client = std::sync::Arc::new(crate::net::http::HttpClient::new(None).unwrap());
+        client.set_offline(true);
+        let (inst, loader) = import_archive(
+            &paths,
+            &crate::settings::Settings::default(),
+            client,
+            &zip_path,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            loader,
+            Some(("fabric".to_string(), "0.15.11".to_string())),
+            "подсказка по загрузчику возвращается как раньше"
+        );
+        assert_eq!(inst.loader, None, "офлайн: загрузчик не установлен");
+        assert_eq!(inst.loader_version, None);
+        assert!(
+            read_named(&crate::instances::instance_dir(&paths, &inst.id), "a.jar").is_some(),
+            "overrides распакованы и без установки загрузчика"
+        );
     }
 }

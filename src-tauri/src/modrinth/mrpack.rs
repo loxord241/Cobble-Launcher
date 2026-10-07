@@ -21,6 +21,12 @@ pub(crate) const MAX_MRPACK_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 /// десятки тысяч — мусор или DoS (перебор таких файлов дороже честного отказа).
 const MAX_INDEX_FILES: usize = 50_000;
 
+/// D62: тишина при чтении стрима дольше двух минут = «сервер не отвечает» —
+/// зеркало READ_IDLE движка загрузок (net/download.rs) и adoptium.rs. Общий
+/// таймаут у HttpClient снят: без этого капа молчащий сервер (отдал заголовки
+/// и замолчал в теле) подвешивал бы установку модпака/скачивание картинки навечно.
+const READ_IDLE: std::time::Duration = std::time::Duration::from_secs(120);
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MrpackIndex {
@@ -305,7 +311,12 @@ async fn fetch_image_capped(
     max_bytes: usize,
 ) -> Result<Option<Vec<u8>>> {
     ensure_allowed_cdn_url(url)?;
-    let resp = client.raw().get(url).send().await?.error_for_status()?;
+    // D62: send «сырого» запроса под предохранителем send_timed (30 с) —
+    // сервер, принявший соединение и молчащий, не подвешивает установку.
+    let resp = client
+        .send_timed(client.raw().get(url))
+        .await?
+        .error_for_status()?;
     // Быстрый путь: Content-Length известен заранее — поток не открываем.
     if let Some(len) = resp.content_length() {
         if len > max_bytes as u64 {
@@ -315,7 +326,19 @@ async fn fetch_image_capped(
     }
     let mut buf: Vec<u8> = Vec::new();
     let mut stream = std::pin::pin!(resp.bytes_stream());
-    while let Some(chunk) = futures::StreamExt::next(&mut stream).await {
+    // D62: каждый шаг чтения ограничен READ_IDLE — тишина дольше двух минут =
+    // «сервер не отвечает», наружу сетевая ошибка (картинка — некритичный шаг,
+    // вызывающий её проглотит), а не вечное висение стрима.
+    while let Some(chunk) =
+        tokio::time::timeout(READ_IDLE, futures::StreamExt::next(&mut stream))
+            .await
+            .map_err(|_| {
+                LauncherError::network(format!(
+                    "сервер не отвечает более {} с: {url}",
+                    READ_IDLE.as_secs()
+                ))
+            })?
+    {
         let chunk = chunk?;
         if buf.len() + chunk.len() > max_bytes {
             tracing::warn!(
@@ -355,21 +378,19 @@ async fn search_mods(
     }
     let facets = serde_json::to_string(&[["project_type:mod"]])?;
     let url = format!("{}/search", api_base());
-    let result: crate::modrinth::api::SearchResult = client
-        .raw()
-        .get(&url)
-        .query(&[
+    // D62: send «сырого» запроса под предохранителем send_timed, JSON-тело —
+    // под json_timed (60 с): заголовки могли прийти, а тело — нет.
+    let resp = client
+        .send_timed(client.raw().get(&url).query(&[
             ("query", query.to_string()),
             ("facets", facets),
             ("index", "relevance".to_string()),
             ("limit", limit.to_string()),
             ("offset", "0".to_string()),
-        ])
-        .send()
+        ]))
         .await?
-        .error_for_status()?
-        .json()
-        .await?;
+        .error_for_status()?;
+    let result: crate::modrinth::api::SearchResult = client.json_timed(resp).await?;
     Ok(result)
 }
 
@@ -802,10 +823,10 @@ pub async fn install_modpack_project(
     if client.offline() {
         return Err(LauncherError::OfflineMode(file.url.clone()));
     }
+    // D62: send «сырого» запроса под предохранителем send_timed (30 с) —
+    // сервер, принявший соединение и молчащий, не подвешивает установку.
     let resp = client
-        .raw()
-        .get(&file.url)
-        .send()
+        .send_timed(client.raw().get(&file.url))
         .await?
         .error_for_status()?;
 
@@ -813,14 +834,36 @@ pub async fn install_modpack_project(
     // целиком в память не берём; sha1 считаем по готовому файлу (sha1_file).
     let tmp_dir = std::env::temp_dir().join("mc-launcher-v2");
     std::fs::create_dir_all(crate::util::fs::long_path(&tmp_dir))?;
-    let tmp_path = crate::util::fs::long_path(&tmp_dir.join(&file.filename));
+    // D62: tmp-имя уникально на установку (uuid4-хвост в имени файла): раньше
+    // две параллельные установки ОДНОГО проекта писали в общий
+    // temp/mc-launcher-v2/{filename} — второй поток усекал недокачанный файл
+    // первого, финальный sha1 ловил гонку. Файл по-прежнему удаляется после
+    // установки и при сбоях ниже — меняется только сам путь, не жизненный цикл.
+    let tmp_tail = uuid::Uuid::new_v4().simple().to_string();
+    let tmp_path = crate::util::fs::long_path(&tmp_dir.join(format!(
+        "{}-{}",
+        &tmp_tail[..8],
+        file.filename
+    )));
     let wrote = async {
         use futures::StreamExt;
         use std::io::Write as _;
         let mut stream = resp.bytes_stream();
         let mut out = std::fs::File::create(&tmp_path)?;
         let mut total: u64 = 0;
-        while let Some(chunk) = stream.next().await {
+        // D62: каждый шаг чтения ограничен READ_IDLE (зеркало движка загрузок
+        // и adoptium.rs) — тишина дольше двух минут = «сервер не отвечает»,
+        // честная сетевая ошибка вместо вечного висения; tmp-файл ниже сносится.
+        while let Some(chunk) = tokio::time::timeout(READ_IDLE, stream.next())
+            .await
+            .map_err(|_| {
+                LauncherError::network(format!(
+                    "сервер не отвечает более {} с: {}",
+                    READ_IDLE.as_secs(),
+                    file.url
+                ))
+            })?
+        {
             let chunk = chunk?;
             out.write_all(&chunk)?;
             total += chunk.len() as u64;

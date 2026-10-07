@@ -22,15 +22,25 @@ const bundle = path.join("src-tauri", "target", "release", "bundle");
 
 // Ищем установщик NSIS с его подписью (updater на Windows ставит nsis/msi;
 // в манифест отдаём NSIS — он умеет перезапуск поверх установленного).
-const candidates = [];
-for (const kind of ["nsis", "msi"]) {
-  const dir = path.join(bundle, kind);
-  if (!fs.existsSync(dir)) continue;
-  for (const f of fs.readdirSync(dir)) {
-    if ((f.endsWith(".exe") || f.endsWith(".msi")) && f.includes(version)) {
-      candidates.push({ kind, dir, file: f });
+const collect = (match) => {
+  const found = [];
+  for (const kind of ["nsis", "msi"]) {
+    const dir = path.join(bundle, kind);
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if ((f.endsWith(".exe") || f.endsWith(".msi")) && match(f)) {
+        found.push({ kind, dir, file: f });
+      }
     }
   }
+  return found;
+};
+// D62: матч сегмента `_<version>_` — голая подстрока ловила 0.2.10-установщик
+// за версию 0.2.1 ('0.2.10'.includes('0.2.1') === true).
+let candidates = collect((f) => f.includes(`_${version}_`));
+if (candidates.length === 0) {
+  console.warn(`WARN: файлы с сегментом _${version}_ не найдены — fallback на подстроку`);
+  candidates = collect((f) => f.includes(version));
 }
 const pick =
   candidates.find((c) => c.kind === "nsis" && c.file.endsWith("-setup.exe")) ||

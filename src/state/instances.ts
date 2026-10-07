@@ -5,6 +5,7 @@ import { api, onCoreEvent } from "../api/client";
 import { apiErrorText } from "../i18n";
 import { useAccounts } from "./accounts";
 import type {
+  CoreEvent,
   Diagnosis,
   Instance,
   LaunchPhase,
@@ -18,6 +19,13 @@ export interface LaunchStatus {
   doneFiles?: number;
   totalFiles?: number;
   exitCode?: number;
+  /**
+   * D62: статус создан dl_progress-ом фоновой операции (установка мода,
+   * «Обновить все», ремонт, смена версии), а не запуском. Такой статус
+   * снимает dl_group_done, а не launch_state/exited; старт запуска
+   * перезаписывает статус без метки — она стирается сама.
+   */
+  virtual?: boolean;
 }
 
 export interface CrashReport {
@@ -266,10 +274,8 @@ export const useInstances = create<InstancesState>((set, get) => ({
     // ENV-10: опрос живучести статусов «running», восстановленных из .lock.
     ensureRunningPoll();
 
-    // A32: unlisten держим модульно — иначе слушатели Tauri не снять.
-    let unlisten: UnlistenFn;
-    try {
-      unlisten = await onCoreEvent((event) => {
+    // D62: dl_group_done входит в CoreEvent — один обработчик на все события.
+    const handleEvent = (event: CoreEvent) => {
         if (event.event === "launch_state") {
           const { instanceId, phase, exitCode } = event;
 
@@ -369,6 +375,10 @@ export const useInstances = create<InstancesState>((set, get) => ({
                     doneFiles: dl.doneFiles,
                     totalFiles: dl.totalFiles,
                     startedAt: Date.now(),
+                    // D62: метка «создан dl_progress-ом, а не запуском» — по
+                    // ней dl_group_done снимает статус сразу по завершении
+                    // фоновой операции (см. ветку dl_group_done ниже).
+                    virtual: true,
                   },
                 },
               }));
@@ -387,13 +397,39 @@ export const useInstances = create<InstancesState>((set, get) => ({
               },
             },
           }));
+        } else if (event.event === "dl_group_done") {
+          // D62: группа задач загрузок дошла до конца (успех/провал/отмена;
+          // failed снимает статус так же — ошибку покажет механизм операции,
+          // откат ядро выполняет сам). Без этого виртуальный статус фоновой
+          // операции снимает только watchdog через ~90с: всё это время кнопка
+          // «Играть» заменена на «Стоп», rename/delete задизейблены.
+          const id = event.instanceId;
+          if (!id) return;
+          const st = get().status[id];
+          // Чистим только виртуальный статус — он создан dl_progress-ом
+          // фоновой операции. Статусу запуска (активные фазы preparing/
+          // downloading/launching/running) нечего снимать здесь: его снимет
+          // launch_state/exited. У запуска метки virtual нет — старт запуска
+          // перезаписывает статус начисто.
+          if (!st || !st.virtual) return;
+          set((s) => {
+            const status = { ...s.status };
+            delete status[id];
+            return { status };
+          });
+          lastDlProgressAt.delete(id);
         } else if (event.event === "account_refresh_failed") {
           // F9: фоновый refresh токена профиля упал — помечаем аккаунт
           // деградировавшим (UI-показ — чужая волна; состояние и API:
           // useAccounts.degradedIds + setDegraded/clearDegraded).
           useAccounts.getState().setDegraded(event.accountId);
         }
-      });
+    };
+
+    // A32: unlisten держим модульно — иначе слушатели Tauri не снять.
+    let unlisten: UnlistenFn;
+    try {
+      unlisten = await onCoreEvent(handleEvent);
     } catch (e) {
       // P1: флаг ставился ДО await onCoreEvent — при ошибке подписки откатываем
       // его (повторный вызов из Shell попробует снова), иначе стор навсегда
@@ -403,13 +439,13 @@ export const useInstances = create<InstancesState>((set, get) => ({
       console.error("[instances] подписка на события ядра не удалась:", e);
       return;
     }
-    // TODO(api/client.ts — чужая полоса): onCoreEvent регистрирует 5 слушателей
-    // через Promise.all; при падении одного из listen() уже зарегистрированные
+    // TODO(api/client.ts): onCoreEvent регистрирует слушателей через
+    // Promise.all; при падении одного из listen() уже зарегистрированные
     // остаются висеть без unlisten (частичная утечка до закрытия окна). Чинится
     // только накоплением unlisten'ов в client.ts.
 
     if (!isSubscribed) {
-      // Отписаться успели, пока шла подписка — снимаем свежие слушатели.
+      // Отписаться успели, пока шла подписка — снимаем свежий слушатель.
       unlisten();
       return;
     }

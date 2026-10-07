@@ -193,7 +193,7 @@ export const api = {
   // Снять зависшую блокировку инстанса (F27): .lock без живого процесса
   instanceForceUnlock: (id: string) => invoke<{ ok: boolean }>("instance_force_unlock", { id }),
 
-  // ---------- Волна D37 (фаза 2 аудита) ----------
+  // ---------- миры, скриншоты, конфиги (аудит паритета D37) ----------
   // Миры инстанса (F24)
   instanceWorlds: (id: string) => invoke<WorldInfo[]>("instance_worlds", { id }),
   worldBackup: (id: string, world: string) => invoke<ArchiveResult>("world_backup", { id, world }),
@@ -222,7 +222,7 @@ export const api = {
   settingsExport: (path: string) => invoke<{ ok: boolean }>("settings_export", { path }),
   settingsImport: (path: string) => invoke<Settings>("settings_import", { path }),
 
-  // ---------- Волна D37-B ----------
+  // ---------- скины и аккаунты (аудит паритета D37-B) ----------
   // Скриншоты инстанса (F3)
   instanceScreens: (id: string) => invoke<ShotInfo[]>("instance_screens", { id }),
   screenshotDelete: (id: string, name: string) =>
@@ -242,7 +242,7 @@ export const api = {
   packArt: (id: string, kinds: ContentKind[]) =>
     invoke<PackArtInfo[]>("pack_art", { id, kinds }),
 
-  // ---------- Волна D37-C ----------
+  // ---------- контент и процессы (аудит паритета D37-C) ----------
   // Конфиги модов (F29)
   instanceConfigs: (id: string) => invoke<ConfigFile[]>("instance_configs", { id }),
   configRead: (id: string, rel: string) => invoke<ConfigContent>("config_read", { id, rel }),
@@ -258,7 +258,7 @@ export const api = {
   applyLogo: (logo: string) => invoke<LogoResult>("apply_logo", { logo }),
 };
 
-/** Подписка на события ядра (dl_progress, launch_state, game_log_line, dl_queue_state, account_refresh_failed). */
+/** Подписка на события ядра (dl_progress, launch_state, game_log_line, dl_queue_state, account_refresh_failed, dl_group_done). */
 export function onCoreEvent(handler: (event: CoreEvent) => void): Promise<UnlistenFn> {
   const unlisteners: Promise<UnlistenFn>[] = [
     listen<CoreEvent>("dl_progress", (e) => handler(e.payload)),
@@ -266,6 +266,7 @@ export function onCoreEvent(handler: (event: CoreEvent) => void): Promise<Unlist
     listen<CoreEvent>("game_log_line", (e) => handler(e.payload)),
     listen<CoreEvent>("dl_queue_state", (e) => handler(e.payload)),
     listen<CoreEvent>("account_refresh_failed", (e) => handler(e.payload)),
+    listen<CoreEvent>("dl_group_done", (e) => handler(e.payload)),
   ];
   return Promise.all(unlisteners).then((uns) => () => uns.forEach((u) => u()));
 }

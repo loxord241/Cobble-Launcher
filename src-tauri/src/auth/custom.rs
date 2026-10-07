@@ -114,12 +114,14 @@ pub async fn server_info(client: &HttpClient, server_url: &str) -> Result<Server
     }
     // Один GET на кандидата без ретраев: кнопка «Проверить» в UI ждёт ответа,
     // backoff против опечатанного адреса — минуты тишины (как POST-логин у ely).
+    // D62: предохранители send_timed/json_timed — молчащий сервер не подвешивает
+    // проверку; send_timed уже вернул LauncherError, метку кандидата не дублируем.
     let mut last_err = LauncherError::NotFound(format!("сервер {base} не отвечает"));
     for candidate in [injector_alias(&base), base.clone()] {
-        let resp = match client.raw().get(&candidate).send().await {
+        let resp = match client.send_timed(client.raw().get(&candidate)).await {
             Ok(r) => r,
             Err(e) => {
-                last_err = LauncherError::network_err(&candidate, &e);
+                last_err = e;
                 continue;
             }
         };
@@ -128,7 +130,7 @@ pub async fn server_info(client: &HttpClient, server_url: &str) -> Result<Server
             last_err = LauncherError::network(format!("HTTP {status} для {candidate}"));
             continue;
         }
-        let value: serde_json::Value = resp.json().await?;
+        let value: serde_json::Value = client.json_timed(resp).await?;
         return Ok(ServerInfo {
             server_url: base,
             server_name: parse_server_name(&value),
@@ -163,17 +165,20 @@ pub async fn login(
     if client.offline() {
         return Err(LauncherError::OfflineMode(format!("вход {base}")));
     }
+    // D62: предохранители send_timed/json_timed — как в ely::authenticate.
     let resp = client
-        .raw()
-        .post(format!("{base}/api/auth/authenticate"))
-        .json(&serde_json::json!({
-            "agent": { "name": "Minecraft", "version": 1 },
-            "username": username,
-            "password": password,
-            "clientToken": CLIENT_TOKEN,
-            "requestUser": false
-        }))
-        .send()
+        .send_timed(
+            client
+                .raw()
+                .post(format!("{base}/api/auth/authenticate"))
+                .json(&serde_json::json!({
+                    "agent": { "name": "Minecraft", "version": 1 },
+                    "username": username,
+                    "password": password,
+                    "clientToken": CLIENT_TOKEN,
+                    "requestUser": false
+                })),
+        )
         .await?;
     if !resp.status().is_success() {
         // 4xx — плохие креды, 5xx — сервер недоступен (аудит 2026-10-06;
@@ -183,7 +188,7 @@ pub async fn login(
             resp.status().as_u16(),
         ));
     }
-    let resp: AuthResp = resp.json().await?;
+    let resp: AuthResp = client.json_timed(resp).await?;
     crate::util::redact::register_secret(&resp.access_token);
     Ok(crate::auth::ely::Session {
         // Как у ely: refreshToken отдельным полем не приходит — при refresh
@@ -218,19 +223,21 @@ pub async fn refresh_session(
     if client.offline() {
         return Err(LauncherError::OfflineMode(format!("refresh {base}")));
     }
-    let resp: RefreshResp = client
-        .raw()
-        .post(format!("{base}/api/auth/refresh"))
-        .json(&serde_json::json!({
-            "accessToken": refresh_token,
-            "clientToken": CLIENT_TOKEN
-        }))
-        .send()
+    // D62: предохранители send_timed/json_timed — как в ely::refresh_session.
+    let resp = client
+        .send_timed(
+            client
+                .raw()
+                .post(format!("{base}/api/auth/refresh"))
+                .json(&serde_json::json!({
+                    "accessToken": refresh_token,
+                    "clientToken": CLIENT_TOKEN
+                })),
+        )
         .await?
         .error_for_status()
-        .map_err(|e| LauncherError::network_err(&format!("{base} refresh"), &e))?
-        .json()
-        .await?;
+        .map_err(|e| LauncherError::network_err(&format!("{base} refresh"), &e))?;
+    let resp: RefreshResp = client.json_timed(resp).await?;
     crate::util::redact::register_secret(&resp.access_token);
     Ok(crate::auth::ely::Session {
         access_token: resp.access_token.clone(),

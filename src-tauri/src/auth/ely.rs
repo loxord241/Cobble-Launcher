@@ -52,22 +52,26 @@ pub async fn authenticate(client: &HttpClient, username: &str, password: &str) -
     if client.offline() {
         return Err(LauncherError::OfflineMode("вход ely.by".into()));
     }
+    // D62: предохранители send_timed/json_timed — после снятия общего таймаута
+    // молчащий authserver не подвешивает логин навечно.
     let resp = client
-        .raw()
-        .post(format!("{AUTHSERVER}/api/auth/authenticate"))
-        .json(&serde_json::json!({
-            "agent": { "name": "Minecraft", "version": 1 },
-            "username": username,
-            "password": password,
-            "clientToken": CLIENT_TOKEN,
-            "requestUser": false
-        }))
-        .send()
+        .send_timed(
+            client
+                .raw()
+                .post(format!("{AUTHSERVER}/api/auth/authenticate"))
+                .json(&serde_json::json!({
+                    "agent": { "name": "Minecraft", "version": 1 },
+                    "username": username,
+                    "password": password,
+                    "clientToken": CLIENT_TOKEN,
+                    "requestUser": false
+                })),
+        )
         .await?;
     if !resp.status().is_success() {
         return Err(classify_login_status("ely.by", resp.status().as_u16()));
     }
-    let resp: AuthResp = resp.json().await?;
+    let resp: AuthResp = client.json_timed(resp).await?;
     crate::util::redact::register_secret(&resp.access_token);
     // ely authserver не выдаёт refresh — refreshToken == accessToken при refresh.
     Ok(Session {
@@ -96,19 +100,21 @@ pub async fn refresh_session(client: &HttpClient, refresh_token: &str) -> Result
         #[serde(rename = "selectedProfile")]
         profile: Profile,
     }
-    let resp: RefreshResp = client
-        .raw()
-        .post(format!("{AUTHSERVER}/api/auth/refresh"))
-        .json(&serde_json::json!({
-            "accessToken": refresh_token,
-            "clientToken": CLIENT_TOKEN
-        }))
-        .send()
+    // D62: предохранители send_timed/json_timed — как в authenticate выше.
+    let resp = client
+        .send_timed(
+            client
+                .raw()
+                .post(format!("{AUTHSERVER}/api/auth/refresh"))
+                .json(&serde_json::json!({
+                    "accessToken": refresh_token,
+                    "clientToken": CLIENT_TOKEN
+                })),
+        )
         .await?
         .error_for_status()
-        .map_err(|e| LauncherError::network_err("ely.by refresh", &e))?
-        .json()
-        .await?;
+        .map_err(|e| LauncherError::network_err("ely.by refresh", &e))?;
+    let resp: RefreshResp = client.json_timed(resp).await?;
     crate::util::redact::register_secret(&resp.access_token);
     Ok(Session {
         access_token: resp.access_token.clone(),
@@ -167,7 +173,9 @@ pub async fn authlib_injector_jar(
     if client.offline() {
         return Err(LauncherError::OfflineMode(asset.url.clone()));
     }
-    let resp = client.raw().get(&asset.url).send().await?;
+    // D62: предохранители send_timed/body_timed_big — jar ~1–2 МБ, телу щедрый
+    // лимит (600 с), send страхуется своими 30 с на TTFB.
+    let resp = client.send_timed(client.raw().get(&asset.url)).await?;
     if !resp.status().is_success() {
         return Err(LauncherError::network(format!(
             "HTTP {} для {}",
@@ -175,7 +183,7 @@ pub async fn authlib_injector_jar(
             asset.url
         )));
     }
-    let bytes = resp.bytes().await?;
+    let bytes = client.body_timed_big(resp).await?;
     use sha2::Digest as _;
     let mut hasher = sha2::Sha256::new();
     hasher.update(&bytes);

@@ -17,8 +17,49 @@ pub const USER_AGENT: &str = concat!(
 const MAX_RETRIES: u32 = 4;
 /// P2-таймаут: у общего клиента таймаута на тело нет; JSON-запросы быстрые,
 /// но каждая попытка (send + чтение тела) страхуется локально, чтобы сервер,
-/// принявший соединение и молчащий, не подвешивал вызов навечно.
+/// принявший соединение и молчащий, не подвешивал вызов навсегда.
 const JSON_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Предохранители для «сырых» запросов (бэклог D61, аудит 2026-10-07):
+/// общий таймаут снят, `get_json_retry` страхует только себя. Константы
+/// ниже — для обёрток `send_timed`/`json_timed`/`body_timed`.
+pub const RAW_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+pub const RAW_BODY_TIMEOUT: Duration = Duration::from_secs(60);
+/// Тела, которые легитимно велики (установщики, архивы через bytes()).
+pub const RAW_BIG_BODY_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Redirect-барьер (бэклог D61): политика по умолчанию следует за Location
+/// без проверок — открытый редирект на доверенном CDN мог увести запрос на
+/// приватный/loopback-адрес (SSRF) или на понижение https→http. Allowlist у
+/// каждого вызова свой и проверяется ДО запроса; сюда переносить его нельзя
+/// (политика глобальная), поэтому барьер минимальный и универсальный.
+/// Целостность скачивемого гарантируют хэши манифеста, конфиденциальность —
+/// reqwest (снимает Authorization при смене хоста).
+fn redirect_allowed(next: &reqwest::Url) -> bool {
+    if next.scheme() != "http" && next.scheme() != "https" {
+        return false;
+    }
+    if let Some(host) = next.host_str() {
+        if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") {
+            return false;
+        }
+        // url-крейт отдаёт IPv6-хост в скобках («[::1]») — снимаем их.
+        let unbracketed = host.trim_start_matches('[').trim_end_matches(']');
+        if let Ok(ip) = unbracketed.parse::<std::net::IpAddr>() {
+            let private = match ip {
+                std::net::IpAddr::V4(v4) => {
+                    v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+                }
+                std::net::IpAddr::V6(v6) => {
+                    v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local()
+                }
+            };
+            if private {
+                return false;
+            }
+        }
+    }
+    true
+}
 
 #[derive(Clone)]
 pub struct HttpClient {
@@ -54,7 +95,21 @@ impl HttpClient {
     fn build(proxy_url: Option<&str>, connect: Duration, total: Option<Duration>) -> Result<Self> {
         let mut builder = reqwest::Client::builder()
             .user_agent(USER_AGENT)
-            .connect_timeout(connect);
+            .connect_timeout(connect)
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 10 {
+                    return attempt.error("слишком много редиректов");
+                }
+                let next = attempt.url().clone();
+                let downgraded = attempt
+                    .previous()
+                    .iter()
+                    .any(|p| p.scheme() == "https" && next.scheme() == "http");
+                if downgraded || !redirect_allowed(&next) {
+                    return attempt.error(format!("редирект на {next} заблокирован политикой"));
+                }
+                attempt.follow()
+            }));
         if let Some(t) = total {
             builder = builder.timeout(t);
         }
@@ -93,6 +148,58 @@ impl HttpClient {
 
     pub fn raw(&self) -> &reqwest::Client {
         &self.inner
+    }
+
+    /// Предохранитель на send «сырого» запроса (TTFB): сервер, принявший
+    /// соединение и молчащий, не подвешивает вызов навечно. Тело читается
+    /// отдельно — стримы движка загрузок живут под своим READ_IDLE.
+    pub async fn send_timed(
+        &self,
+        builder: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response> {
+        match tokio::time::timeout(RAW_SEND_TIMEOUT, builder.send()).await {
+            Ok(r) => r.map_err(LauncherError::from),
+            Err(_) => Err(LauncherError::network(format!(
+                "нет ответа за {RAW_SEND_TIMEOUT:?}"
+            ))),
+        }
+    }
+
+    /// JSON-тело ответа под таймаутом: заголовки могли прийти, а тело — нет.
+    pub async fn json_timed<T: serde::de::DeserializeOwned>(
+        &self,
+        resp: reqwest::Response,
+    ) -> Result<T> {
+        match tokio::time::timeout(RAW_BODY_TIMEOUT, resp.json::<T>()).await {
+            Ok(r) => r.map_err(LauncherError::from),
+            Err(_) => Err(LauncherError::network(format!(
+                "тело не получено за {RAW_BODY_TIMEOUT:?}"
+            ))),
+        }
+    }
+
+    /// Байты тела под таймаутом: для маленьких тел (JSON/иконки/мелкие
+    /// бинарники). Большие тела (установщики) — `body_timed_big`.
+    pub async fn body_timed(&self, resp: reqwest::Response) -> Result<Vec<u8>> {
+        self.body_timed_with(resp, RAW_BODY_TIMEOUT).await
+    }
+
+    /// То же с щедрым лимитом для больших бинарных тел.
+    pub async fn body_timed_big(&self, resp: reqwest::Response) -> Result<Vec<u8>> {
+        self.body_timed_with(resp, RAW_BIG_BODY_TIMEOUT).await
+    }
+
+    async fn body_timed_with(
+        &self,
+        resp: reqwest::Response,
+        limit: Duration,
+    ) -> Result<Vec<u8>> {
+        match tokio::time::timeout(limit, resp.bytes()).await {
+            Ok(r) => r.map(|b| b.to_vec()).map_err(LauncherError::from),
+            Err(_) => Err(LauncherError::network(format!(
+                "тело не получено за {limit:?}"
+            ))),
+        }
     }
 
     /// GET JSON с повторами на 429/5xx и сетевых ошибках (backoff c jitter).
@@ -200,6 +307,67 @@ mod tests {
         assert!(backoff_delay(1) < Duration::from_secs(2));
         assert!(backoff_delay(3) >= Duration::from_secs(4));
         assert!(backoff_delay(10) <= Duration::from_secs(30));
+    }
+
+    /// Барьер редиректов: приватные/loopback/link-local хосты и не-HTTP
+    /// схемы запрещены; публичный DNS-хост и литеральный публичный IP — можно.
+    #[test]
+    fn redirect_policy_blocks_private_and_allows_public() {
+        for blocked in [
+            "http://127.0.0.1/x",
+            "http://localhost/a",
+            "http://10.0.0.5/x",
+            "http://172.16.1.1/x",
+            "http://192.168.1.1/x",
+            "http://169.254.169.254/latest/meta-data",
+            "http://0.0.0.0/x",
+            "http://[::1]/x",
+            "http://[fe80::1]/x",
+            "http://[fc00::1]/x",
+            "ftp://example.com/x",
+            "file:///etc/passwd",
+            "http://printer.local/x",
+        ] {
+            let url: reqwest::Url = blocked.parse().unwrap();
+            assert!(!redirect_allowed(&url), "{blocked} должен быть заблокирован");
+        }
+        for allowed in [
+            "https://cdn.modrinth.com/f.bin",
+            "https://piston-data.mojang.com/v.jar",
+            "http://93.184.216.34/x",
+            "https://api.adoptium.net/v3/assets",
+        ] {
+            let url: reqwest::Url = allowed.parse().unwrap();
+            assert!(redirect_allowed(&url), "{allowed} должен быть разрешён");
+        }
+    }
+
+    /// Интеграция: редирект на loopback блокируется политикой на уровне
+    /// клиента (не только предикатом) — SSRF-барьер работает по факту.
+    #[tokio::test]
+    async fn client_blocks_redirect_to_loopback() {
+        let app = axum::Router::new().route(
+            "/hop",
+            axum::routing::get(|| async {
+                axum::response::Redirect::temporary("http://127.0.0.1:9/inside")
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let c = HttpClient::new(None).unwrap();
+        let err = c
+            .send_timed(c.raw().get(format!("http://{addr}/hop")))
+            .await
+            .expect_err("редирект на loopback обязан падать");
+        // reqwest оборачивает отказ политики в «error following redirect» —
+        // важно, что следования не было (а не текст внутренней причины).
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("following redirect"),
+            "ожидали отказ политики, получили: {msg}"
+        );
     }
 
     #[tokio::test]

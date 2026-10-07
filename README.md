@@ -6,13 +6,13 @@
 
 # Cobble Launcher
 
-**A fast and honest Minecraft launcher for Windows**
+**An honest Minecraft launcher for Windows**
 
 [![Version](https://img.shields.io/github/v/release/loxord241/Cobble-Launcher?style=flat-square&label=version)](https://github.com/loxord241/Cobble-Launcher/releases/latest)
 [![License](https://img.shields.io/github/license/loxord241/Cobble-Launcher?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Windows-10%2F11_x64-blue?style=flat-square&logo=windows)](https://github.com/loxord241/Cobble-Launcher/releases/latest)
 [![Languages](https://img.shields.io/badge/languages-ru%C2%B7en%C2%B7uk%C2%B7pl-green?style=flat-square)](#languages)
-[![Tests](https://img.shields.io/badge/tests-331%2B10-success?style=flat-square)](#building-from-source)
+[![Tests](https://img.shields.io/badge/tests-423%2B10-success?style=flat-square)](#building-from-source)
 
 **[Download the latest release](https://github.com/loxord241/Cobble-Launcher/releases/latest)** ·
 [Report an issue](https://github.com/loxord241/Cobble-Launcher/issues) ·
@@ -32,7 +32,7 @@ interface. No background browser engines, no "boosters" and no game injections:
 official sources only, every file verified by hash, and the sodium stack for
 optimization.
 
-## 🗂 Modrinth catalog
+## Modrinth catalog
 
 - Catalog right on the home page: modpacks and mods, search, sorting
   (downloads / favorites / updates), loader filter, infinite scroll
@@ -40,7 +40,7 @@ optimization.
 - Install modpacks into a new instance and mods into an existing one straight
   from the project window or the instance page; batch-update mods in one click
 
-## 🎮 Instances
+## Instances
 
 - Isolated instances: their own version, loader (Fabric / Quilt / Forge /
   NeoForge), mods and settings
@@ -51,7 +51,7 @@ optimization.
   snapshots with rollback
 - Worlds, screenshots and mod configs — straight from the instance page
 
-## 👤 Profiles
+## Profiles
 
 - Microsoft (browser OAuth), Ely.by (authlib-injector) and offline profiles;
   offline ones are honestly marked as unlicensed
@@ -72,14 +72,14 @@ optimization.
   </table>
 </div>
 
-## 🔄 Automatic updates
+## Automatic updates
 
 The launcher checks releases on its own (once per session, silently) and shows
 an "Update available" badge. Installing takes one click: a signed update
 (minisign), download progress, automatic relaunch. Your instances, profiles and
 settings stay in place.
 
-## 🛡 Security and privacy
+## Security and privacy
 
 - **Official sources only**: Mojang, Modrinth, Adoptium — every file is
   verified against the hash from the server. Mirrors without hash verification
@@ -90,19 +90,19 @@ settings stay in place.
 - **Secrets never leave the machine**: tokens live in the Windows keyring, and
   the logs automatically redact secrets.
 
-## 🌍 Languages
+## Languages
 
 Русский · English · Українська · Polski — picked during onboarding or in
 settings, applied across the whole interface, error messages and date formats.
 
-## ⬇️ Download
+## Download
 
 Ready-made installers (NSIS and MSI, Windows 10/11 x64) are on the
 [releases](https://github.com/loxord241/Cobble-Launcher/releases/latest) page.
 After installation updates arrive on their own; you can also use the "Check
 for updates" button in settings.
 
-## 🧑‍💻 Building from source
+## Building from source
 
 Requires Node.js 20+, Rust (stable) and npm.
 
@@ -121,10 +121,10 @@ Quality checks:
 
 ```bash
 npm run build                # TypeScript strict + Vite
-cd src-tauri && cargo test   # 331 core tests + 10 integration
+cd src-tauri && cargo test   # 423 core tests + 10 integration
 ```
 
-## 🧱 Stack and structure
+## Stack and structure
 
 | Layer | Technologies |
 |---|---|
@@ -141,7 +141,7 @@ cd src-tauri && cargo test   # 331 core tests + 10 integration
 - `scripts/` — acceptance tests: end-to-end UI checks, process lifecycle,
   Modrinth integration
 
-## 📄 License and trademarks
+## License and trademarks
 
 The project code is licensed under **MIT** (see [LICENSE](LICENSE)); direct
 dependencies and their licenses are listed in

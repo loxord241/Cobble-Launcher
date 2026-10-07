@@ -32,7 +32,16 @@ export const useAccounts = create<AccountsState>((set, get) => ({
   loaded: false,
   degradedIds: new Set<string>(),
   load: async () => {
-    const list = await api.accountList().catch(() => []);
+    // D62: сбой IPC не должен выглядеть как «профилей нет»: прежний
+    // `.catch(() => [])` + безусловный `loaded: true` молча врали UI. При
+    // ошибке — лог и выход, state (list/loaded) не трогаем.
+    let list: Account[];
+    try {
+      list = await api.accountList();
+    } catch (e) {
+      console.error("[accounts] accountList недоступен:", e);
+      return;
+    }
     set((s) => {
       // F9: метки удалённых профилей чистим, живых — держим: load() дёргается
       // многими действиями, и стирать свежую метку нельзя (refresh/логин/
@@ -58,11 +67,17 @@ export const useAccounts = create<AccountsState>((set, get) => ({
   addMsaBrowser: async () => {
     const acc = await api.accountAddMsaBrowser();
     await get().load();
+    // D62: успешный вход снимает метку деградации — повторный вход тем же
+    // профилем переиспользует id в ядре. Новый профиль (другой uuid) — вызов
+    // безвреден: такого id в наборе нет.
+    get().clearDegraded(acc.id);
     return acc;
   },
   addEly: async (username: string, password: string) => {
     const acc = await api.accountAddEly(username, password);
     await get().load();
+    // D62: как в addMsaBrowser — успешный перелогин снимает метку деградации.
+    get().clearDegraded(acc.id);
     return acc;
   },
   remove: async (id: string) => {

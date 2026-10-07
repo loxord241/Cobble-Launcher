@@ -24,6 +24,7 @@ import {
   UserPlus,
   Wifi,
   WifiOff,
+  AlertTriangle,
 } from "lucide-react";
 import { apiErrorText, t } from "../../i18n";
 import { api } from "../../api/client";
@@ -104,7 +105,15 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     })),
   );
   const { settings, loaded: loadedSettings, update: updateSettings, load: loadSettings } = useSettings();
-  const { list: accounts, load: loadAccounts, setActive, addOffline } = useAccounts();
+  // D62: degradedIds — профили с упавшим фоновым refresh токена ядра
+  // (account_refresh_failed); непустой набор включает плашку «перелогин».
+  const {
+    list: accounts,
+    degradedIds,
+    load: loadAccounts,
+    setActive,
+    addOffline,
+  } = useAccounts();
 
   const showNotice = useCallback((kind: "ok" | "error", text: string) => {
     setNotice({ kind, text });
@@ -504,6 +513,24 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
           </button>
         </div>
       </header>
+
+      {/* D62: «требуется перелогин» — тонкая полоса под титлбаром, тот же
+          паттерн, что у notice-баннера ниже. «Нет данных — нет элемента»:
+          деградировавших профилей нет — плашка не рендерится вовсе. Клик
+          открывает модалку аккаунтов тем же механизмом, что и чип. */}
+      {degradedIds.size > 0 && (
+        <button
+          type="button"
+          data-testid="relogin-banner"
+          aria-label={t("accounts.reloginBanner")}
+          title={t("accounts.reloginBanner")}
+          onClick={() => setAccountsModalOpen(true)}
+          className="anim-slide-down mx-3 mt-3 flex items-center gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-left text-sm text-warning hover:bg-warning/15"
+        >
+          <AlertTriangle size={16} aria-hidden className="shrink-0" />
+          {t("accounts.reloginBanner")}
+        </button>
+      )}
 
       {/* Результат drop-установки .mrpack: тот же инлайн-баннер, что в страницах. */}
       {notice && (

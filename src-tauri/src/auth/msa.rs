@@ -40,16 +40,18 @@ pub async fn device_code_start(client: &HttpClient, azure_client_id: &str) -> Re
     if client.offline() {
         return Err(LauncherError::OfflineMode("вход Microsoft".into()));
     }
-    let resp: DeviceCodeStart = client
-        .raw()
-        .post(format!("{AUTH_BASE}/devicecode"))
-        .form(&[("client_id", azure_client_id), ("scope", SCOPE)])
-        .send()
+    // D62: «сырой» запрос под предохранителями (30 с TTFB, 60 с тело) —
+    // молчащий сервер не подвешивает старт входа навечно.
+    let resp = client
+        .send_timed(
+            client
+                .raw()
+                .post(format!("{AUTH_BASE}/devicecode"))
+                .form(&[("client_id", azure_client_id), ("scope", SCOPE)]),
+        )
         .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    Ok(resp)
+        .error_for_status()?;
+    client.json_timed::<DeviceCodeStart>(resp).await
 }
 
 /// Готовая сессия после входа.
@@ -83,35 +85,33 @@ pub async fn device_code_poll(
     if client.offline() {
         return Err(LauncherError::OfflineMode("device-code MSA".into()));
     }
+    // D62: сам poll-send тоже под предохранителем — внешняя обёртка ниже
+    // покрывала только ветку успеха (xbox_chain), а молчащий /token подвешивал
+    // опрос навечно.
     let resp = client
-        .raw()
-        .post(format!("{AUTH_BASE}/token"))
-        .form(&[
+        .send_timed(client.raw().post(format!("{AUTH_BASE}/token")).form(&[
             ("client_id", azure_client_id),
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ("device_code", device_code),
-        ])
-        .send()
+        ]))
         .await?;
     if resp.status().is_success() {
-        let token: TokenResponse = resp.json().await?;
+        // D62: тело ответа читаем под таймаутом (заголовки могли прийти без тела).
+        let token: TokenResponse = client.json_timed(resp).await?;
         let refresh = token
             .refresh_token
             .ok_or_else(|| LauncherError::Internal("MSA не вернул refresh_token".into()))?;
-        // Предохранитель: xbox-цепочка — три подряд JSON-запроса; молчащий
-        // сервер без общего таймаута (аудит 2026-10-06) подвесил бы вход
-        // навечно. 120 с на всю цепочку — с запасом.
-        let session = tokio::time::timeout(
-            std::time::Duration::from_secs(120),
-            xbox_chain(client, &token.access_token, refresh),
-        )
-        .await
-        .map_err(|_| LauncherError::network("Xbox Live не отвечает"))??;
+        // D62: внешняя обёртка 120 с снята — xbox_chain теперь страхует каждый
+        // свой send/json сам; здесь она покрывала лишь один из путей вызова,
+        // а refresh и web-login идут в цепочку без неё. Дубли не нужны.
+        let session = xbox_chain(client, &token.access_token, refresh).await?;
         crate::util::redact::register_secret(&session.access_token);
         crate::util::redact::register_secret(&session.refresh_token);
         return Ok(Some(session));
     }
-    let err: TokenError = resp.json().await.unwrap_or(TokenError {
+    // D62: тело ошибки тоже под таймаутом; сбой чтения — прежний запасной
+    // «unknown» (семантика unwrap_or сохранена).
+    let err: TokenError = client.json_timed(resp).await.unwrap_or(TokenError {
         error: "unknown".into(),
     });
     match err.error.as_str() {
@@ -136,16 +136,14 @@ pub async fn refresh_session(
     }
     // client_id передаёт вызывающий — из ФАКТИЧЕСКОГО корня данных,
     // а не default_root (ломалось при кастомном каталоге, D4).
+    // D62: refresh — «сырой» запрос под предохранителями (30 с TTFB / 60 с тело).
     let resp = client
-        .raw()
-        .post(format!("{AUTH_BASE}/token"))
-        .form(&[
+        .send_timed(client.raw().post(format!("{AUTH_BASE}/token")).form(&[
             ("client_id", azure_client_id),
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
             ("scope", SCOPE),
-        ])
-        .send()
+        ]))
         .await?;
     if !resp.status().is_success() {
         return Err(LauncherError::network(format!(
@@ -153,7 +151,8 @@ pub async fn refresh_session(
             resp.status()
         )));
     }
-    let token: TokenResponse = resp.json().await?;
+    // D62: тело под таймаутом — сервер мог отдать заголовки и замолчать.
+    let token: TokenResponse = client.json_timed(resp).await?;
     let refresh = token
         .refresh_token
         .unwrap_or_else(|| refresh_token.to_string());
@@ -163,6 +162,10 @@ pub async fn refresh_session(
 }
 
 async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) -> Result<Session> {
+    // D62: предохранители стоят на КАЖДОМ send/json цепочки, а не снаружи у
+    // одного вызывающего: refresh (запуск игры) и web-login идут сюда без
+    // внешних обёрток, дублировать таймауты не нужно. Худший случай —
+    // 4×(30 с TTFB + 60 с тело).
     // 1. XBL
     #[derive(Deserialize)]
     struct XblResp {
@@ -171,26 +174,27 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
         #[serde(rename = "DisplayClaims")]
         claims: serde_json::Value,
     }
-    let xbl: XblResp = client
-        .raw()
-        .post(XBL_URL)
-        // Вики (Microsoft authentication): эти эндпоинты «ругаются», если нет
-        // Content-Type: application/json (даёт .json()) и Accept.
-        .header("Accept", "application/json")
-        .json(&serde_json::json!({
-            "Properties": {
-                "AuthMethod": "RPS",
-                "SiteName": "user.auth.xboxlive.com",
-                "RpsTicket": format!("d={ms_token}")
-            },
-            "RelyingParty": "http://auth.xboxlive.com",
-            "TokenType": "JWT"
-        }))
-        .send()
+    let resp = client
+        .send_timed(
+            client
+                .raw()
+                .post(XBL_URL)
+                // Вики (Microsoft authentication): эти эндпоинты «ругаются», если нет
+                // Content-Type: application/json (даёт .json()) и Accept.
+                .header("Accept", "application/json")
+                .json(&serde_json::json!({
+                    "Properties": {
+                        "AuthMethod": "RPS",
+                        "SiteName": "user.auth.xboxlive.com",
+                        "RpsTicket": format!("d={ms_token}")
+                    },
+                    "RelyingParty": "http://auth.xboxlive.com",
+                    "TokenType": "JWT"
+                })),
+        )
         .await?
-        .error_for_status()?
-        .json()
-        .await?;
+        .error_for_status()?;
+    let xbl: XblResp = client.json_timed(resp).await?;
     let uhs = xbl.claims["xui"][0]["uhs"]
         .as_str()
         .ok_or_else(|| LauncherError::Internal("XBL: нет uhs".into()))?
@@ -203,22 +207,25 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
         xerr: u64,
     }
     let resp = client
-        .raw()
-        .post(XSTS_URL)
-        .header("Accept", "application/json")
-        .json(&serde_json::json!({
-            "Properties": {
-                "SandboxId": "RETAIL",
-                "UserTokens": [xbl.token]
-            },
-            "RelyingParty": "rp://api.minecraftservices.com/",
-            "TokenType": "JWT"
-        }))
-        .send()
+        .send_timed(
+            client
+                .raw()
+                .post(XSTS_URL)
+                .header("Accept", "application/json")
+                .json(&serde_json::json!({
+                    "Properties": {
+                        "SandboxId": "RETAIL",
+                        "UserTokens": [xbl.token]
+                    },
+                    "RelyingParty": "rp://api.minecraftservices.com/",
+                    "TokenType": "JWT"
+                })),
+        )
         .await?;
     if !resp.status().is_success() {
         let status = resp.status();
-        if let Ok(e) = resp.json::<XstsError>().await {
+        // D62: тело ошибки читаем под таймаутом.
+        if let Ok(e) = client.json_timed::<XstsError>(resp).await {
             let human = match e.xerr {
                 2148916233 => "нет аккаунта Xbox у этого Microsoft-аккаунта",
                 2148916238 => "детский аккаунт — Minecraft недоступен",
@@ -232,7 +239,7 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
         }
         return Err(LauncherError::network(format!("XSTS: HTTP {status}")));
     }
-    let xsts: XblResp = resp.json().await?;
+    let xsts: XblResp = client.json_timed(resp).await?;
     let xsts_token = xsts.token;
     let uhs = xsts.claims["xui"][0]["uhs"].as_str().map(String::from)
         .unwrap_or(uhs);
@@ -245,13 +252,15 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
         access_token: String,
     }
     let resp = client
-        .raw()
-        .post(MC_LOGIN_URL)
-        .header("Accept", "application/json")
-        .json(&serde_json::json!({
-            "identityToken": format!("XBL3.0 x={uhs};{xsts_token}")
-        }))
-        .send()
+        .send_timed(
+            client
+                .raw()
+                .post(MC_LOGIN_URL)
+                .header("Accept", "application/json")
+                .json(&serde_json::json!({
+                    "identityToken": format!("XBL3.0 x={uhs};{xsts_token}")
+                })),
+        )
         .await?;
     if !resp.status().is_success() {
         let status = resp.status();
@@ -262,7 +271,12 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
                 "Xbox Live отклонил приложение (HTTP 403). Повтори вход позже; если повторится — сообщи разработчику",
             ));
         }
-        let body = resp.text().await.unwrap_or_default();
+        // D62: тело ошибки под таймаутом; сбой чтения — прежняя пустая строка.
+        let body = client
+            .body_timed(resp)
+            .await
+            .map(|b| String::from_utf8_lossy(&b).to_string())
+            .unwrap_or_default();
         let hint = if status.as_u16() == 401 {
             " (частая причина — у аккаунта нет Minecraft: Java Edition)"
         } else {
@@ -272,7 +286,7 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
             "login_with_xbox: HTTP {status}, тело ответа: {body}{hint}"
         )));
     }
-    let mc: McLogin = resp.json().await?;
+    let mc: McLogin = client.json_timed(resp).await?;
     crate::util::redact::register_secret(&mc.access_token);
 
     // 4. Профиль (uuid, ник; 404 = лицензии нет — честная ошибка).
@@ -281,21 +295,22 @@ async fn xbox_chain(client: &HttpClient, ms_token: &str, refresh_token: String) 
         id: String,
         name: String,
     }
-    let profile: Profile = client
-        .raw()
-        .get(MC_PROFILE_URL)
-        .bearer_auth(&mc.access_token)
-        .header("Accept", "application/json")
-        .send()
+    let resp = client
+        .send_timed(
+            client
+                .raw()
+                .get(MC_PROFILE_URL)
+                .bearer_auth(&mc.access_token)
+                .header("Accept", "application/json"),
+        )
         .await?
         .error_for_status()
         .map_err(|_| {
             LauncherError::InvalidInput(
                 "у этого Microsoft-аккаунта нет профиля Minecraft (лицензия не куплена)".into(),
             )
-        })?
-        .json()
-        .await?;
+        })?;
+    let profile: Profile = client.json_timed(resp).await?;
 
     Ok(Session {
         access_token: mc.access_token,
@@ -403,50 +418,87 @@ pub async fn wait_auth_code_async(
 }
 
 /// Принять redirect браузера на локальном порту и извлечь ?code=.
-/// Блокирующий вариант для CLI (`mcl auth-msa-web`): там процесс живёт до
-/// ответа браузера, закрывать сокет по таймауту не требуется.
+/// Блокирующий вариант для CLI (`mcl auth-msa-web`).
 /// Проверка state — как в `wait_auth_code_async`.
 pub async fn wait_auth_code(
     listener: std::net::TcpListener,
     // String, а не &str: уезжает в spawn_blocking (нужен 'static).
     expected_state: String,
+    // D62: дедлайн ожидания подключений — раньше accept крутился без таймаута
+    // и молчаливый браузер/файрвол подвешивал CLI навечно.
+    accept_timeout: std::time::Duration,
 ) -> Result<String> {
     tokio::task::spawn_blocking(move || {
-        for stream in listener.incoming() {
-            let mut stream = match stream {
-                Ok(s) => s,
-                Err(e) => return Err(LauncherError::network(format!("accept: {e}"))),
-            };
-            let mut buf = vec![0u8; 8192];
-            let n = match std::io::Read::read(&mut stream, &mut buf) {
-                Ok(0) => continue,
-                Ok(n) => n,
-                Err(e) => return Err(LauncherError::network(format!("read: {e}"))),
-            };
-            let req = String::from_utf8_lossy(&buf[..n]).to_string();
-            let code = extract_query_param(&req, "code");
-            let state_ok =
-                extract_query_param(&req, "state").as_deref() == Some(expected_state.as_str());
-            // SEC-3: как в async-варианте — error от провайдера прерывает ожидание.
-            if state_ok {
-                if let Some(err) = extract_query_param(&req, "error") {
-                    let _ = std::io::Write::write_all(&mut stream, OAUTH_DONE_PAGE.as_bytes());
+        // D62: accept неблокирующий — цикл сам спит 200 мс между попытками и
+        // проверяет дедлайн. Чтение уже подключённого потока оставлено
+        // блокирующим (клиент уже подключился), но с read_timeout 10 с, чтобы
+        // полуоткрытое соединение не держало ожидание вечно.
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| LauncherError::network(format!("listener: {e}")))?;
+        let deadline = std::time::Instant::now() + accept_timeout;
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    // Наследование неблокирующего режима от listener'а
+                    // платформозависимо — чтение делаем блокирующим явно.
+                    stream
+                        .set_nonblocking(false)
+                        .map_err(|e| LauncherError::network(format!("stream: {e}")))?;
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                        .map_err(|e| LauncherError::network(format!("stream: {e}")))?;
+                    let mut buf = vec![0u8; 8192];
+                    let n = match std::io::Read::read(&mut stream, &mut buf) {
+                        Ok(0) => continue,
+                        Ok(n) => n,
+                        // Истёк read_timeout — соединение полуоткрытое: не
+                        // роняем всё ожидание, бросаем поток и ждём дальше.
+                        Err(e)
+                            if e.kind() == std::io::ErrorKind::WouldBlock
+                                || e.kind() == std::io::ErrorKind::TimedOut =>
+                        {
+                            continue;
+                        }
+                        Err(e) => return Err(LauncherError::network(format!("read: {e}"))),
+                    };
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let code = extract_query_param(&req, "code");
+                    let state_ok = extract_query_param(&req, "state").as_deref()
+                        == Some(expected_state.as_str());
+                    // SEC-3: как в async-варианте — error от провайдера прерывает ожидание.
+                    if state_ok {
+                        if let Some(err) = extract_query_param(&req, "error") {
+                            let _ =
+                                std::io::Write::write_all(&mut stream, OAUTH_DONE_PAGE.as_bytes());
+                            let _ = stream.shutdown(std::net::Shutdown::Both);
+                            return Err(LauncherError::InvalidInput(format!("OAuth: {err}")));
+                        }
+                    }
+                    let page = if state_ok {
+                        OAUTH_DONE_PAGE
+                    } else {
+                        OAUTH_STATE_REJECTED_PAGE
+                    };
+                    let _ = std::io::Write::write_all(&mut stream, page.as_bytes());
                     let _ = stream.shutdown(std::net::Shutdown::Both);
-                    return Err(LauncherError::InvalidInput(format!("OAuth: {err}")));
+                    if let (Some(code), true) = (code, state_ok) {
+                        return Ok(code);
+                    }
                 }
-            }
-            let page = if state_ok {
-                OAUTH_DONE_PAGE
-            } else {
-                OAUTH_STATE_REJECTED_PAGE
-            };
-            let _ = std::io::Write::write_all(&mut stream, page.as_bytes());
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-            if let (Some(code), true) = (code, state_ok) {
-                return Ok(code);
+                // Никто не подключился: короткая пауза, затем проверка дедлайна.
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    if std::time::Instant::now() >= deadline {
+                        return Err(LauncherError::network("таймаут ожидания ответа браузера"));
+                    }
+                }
+                Err(e) => return Err(LauncherError::network(format!("accept: {e}"))),
             }
         }
-        Err(LauncherError::network("listener закрыт без code"))
     })
     .await
     .map_err(|e| LauncherError::network(format!("join: {e}")))?
@@ -483,26 +535,30 @@ pub async fn finish_web_login(
         return Err(LauncherError::OfflineMode("вход Microsoft (web)".into()));
     }
     let redirect = format!("http://localhost:{port}");
+    // D62: обмен кода — «сырой» запрос под предохранителями (30 с TTFB / 60 с тело).
     let resp = client
-        .raw()
-        .post(format!("{AUTH_BASE}/token"))
-        .form(&[
+        .send_timed(client.raw().post(format!("{AUTH_BASE}/token")).form(&[
             ("client_id", client_id),
             ("grant_type", "authorization_code"),
             ("code", code),
             ("redirect_uri", redirect.as_str()),
             ("scope", SCOPE),
-        ])
-        .send()
+        ]))
         .await?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        // D62: тело ошибки под таймаутом; сбой чтения — прежняя пустая строка.
+        let body = client
+            .body_timed(resp)
+            .await
+            .map(|b| String::from_utf8_lossy(&b).to_string())
+            .unwrap_or_default();
         return Err(LauncherError::network(format!(
             "MSA code exchange: HTTP {status}, {body}"
         )));
     }
-    let token: TokenResponse = resp.json().await?;
+    // D62: тело под таймаутом.
+    let token: TokenResponse = client.json_timed(resp).await?;
     let refresh = token.refresh_token.clone().ok_or_else(|| {
         LauncherError::InvalidInput("MSA не вернул refresh_token (нужен offline_access)".into())
     })?;

@@ -218,6 +218,9 @@ export default function HomePage({ query }: { query: string }) {
   // Дозагрузка следующей страницы (offset = сколько уже загрузили, дедуп по project_id).
   const loadMore = useCallback(async () => {
     if (loadingMore || busy || !searched || hits.length >= total) return
+    // D62: поколение запроса — как в doSearch: смена tab/sort/loader/category
+    // в полёте дозагрузки не должна аппендить страницы старой выдачи к новой.
+    const mySeq = ++searchSeqRef.current
     setLoadingMore(true)
     setError(null)
     try {
@@ -231,12 +234,16 @@ export default function HomePage({ query }: { query: string }) {
         hits.length,
         category ? [category] : undefined,
       )
+      if (searchSeqRef.current !== mySeq) return // ответ устарел — не аппендим
       const known = new Set(hits.map((h) => h.project_id))
       setHits((prev) => [...prev, ...r.hits.filter((h) => !known.has(h.project_id))])
       setTotal(r.total_hits)
     } catch (e) {
+      if (searchSeqRef.current !== mySeq) return
       setError(apiErrorText(e))
     } finally {
+      // loadingMore снимаем безусловно: параллельного loadMore нет (гард
+      // выше), а устаревший ответ не должен навсегда блокировать дозагрузку.
       setLoadingMore(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

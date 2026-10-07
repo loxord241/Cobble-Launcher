@@ -39,7 +39,8 @@ async function main() {
   // Установка в выбранный инстанс (первая карточка)
   await page.getByRole("button", { name: /^Установить в инстанс/ }).first().click();
   await page.waitForSelector("text=Установлено:", { timeout: 60000 });
-  const info = await page.locator("text=Установлено:").textContent();
+  // D62: .first() — при двух совпадениях strict mode ронял textContent().
+  const info = await page.locator("text=Установлено:").first().textContent();
   console.log("OK:", info);
   await page.screenshot({ path: `${OUT}/4-installed.png` });
 

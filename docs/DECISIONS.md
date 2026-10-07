@@ -1346,3 +1346,83 @@ modrinth+import, auth/, mojang/loaders/java/process, IPC-поверхность 
 маскирует CF-ключ, мёртвые i18n-ключи (~98), CI permissions/SHA-пины/полная
 тег-сверка, UI-CONTRACT.md отстал (82 vs 91 команда — обновить отдельным
 коммитом), sitemap-гигиена site/.
+
+## D62 — «фиксь всё»: бэклог D61 целиком + 4 новых P2 + чистка текстов (2026-10-07)
+
+Волна по команде владельца после аудита-2026-10-07 (CLEANUP_REPORT.md): 14
+кодер-агентов полосами по файлам + интеграция оркестратора. Бэклог D61 закрыт
+полностью (7/7 подтверждён актуальным перед фиксом).
+
+- Сеть: redirect-барьер на HttpClient (reqwest Policy::custom — приватные/
+  loopback/link-local/не-HTTP хосты и https→http блокируются; IPv6 в скобках
+  учитван; целостность — хэши манифеста, конфиденциальность — стриппинг
+  Authorization у reqwest при смене хоста). Предохранители send/json/body
+  (30/60/600 с) на все «сырые» вызовы: ely (auth/refresh/authlib-jar), custom,
+  MSA devicecode/poll/refresh + xbox_chain изнутри (все пути, без дублей),
+  skins GET/PUT, adoptium send (стрим под READ_IDLE как был), forge/neoforge
+  (installer — big), mrpack image/search/installer (+READ_IDLE на стримы),
+  mclogs-тело. CLI-accept (wait_auth_code) — неблокирующий с дедлайном.
+- Изоляция: .lock = JSON {"pid","startTime"} (camelCase, атомарно); легаси-
+  голый-PID читается по-старому (debug-лог); running_pid строгий (пара
+  pid+start_time через sysinfo) — taskkill чужого PID при переиспользовании
+  исключён; InstanceLock::Drop снимает оба формата; кража протухшего лока
+  тоже строгая.
+- Секреты: settings_get отдаёт Value без curseforge_api_key, но с
+  hasCurseforgeKey; settings_set: None = «не менялось», "" = сброс, значение
+  = установка. azure_client_id остаётся (публичный ID, нужен фронту).
+- Транзакции импорта: установка загрузчика перенесена ВНУТРЬ import_archive
+  под откат A29 (офлайн-клиент — честный пропуск с warning; чинит и CLI);
+  группы mrpack-install уникальны на установку (uuid-хвост) + tmp-файл
+  модпака уникален — параллельные установки не калечат друг друга; CF-манифест
+  с "overrides":"" больше не даёт тихий пустой импорт.
+- События: dl_group_done {group, instanceId?, failed} — эмиссия ровно один
+  раз (группа атомарно уходит из тикера), фронт снимает виртуальные статусы
+  занятости сразу (метка virtual в LaunchStatus) вместо watchdog-90с;
+  проброшен в CoreEvent/onCoreEvent. Отсюда: после установки мода/«Обновить
+  все» кнопка «Играть» возвращается сразу.
+- Сторы: accounts.load не глотает ошибки IPC (нет вранья «профилей нет»);
+  clearDegraded вызывается после успешного перелогина; skins.refresh —
+  цепочкой за inflight (stale-скин не затирает свежий); HomePage.loadMore —
+  seq-гард; InstancesPage import-catch делает load().
+- CLI mcl: auth-msa-web печатает URL до спавна браузера + таймаут 600 с;
+  auth-msa-poll незавершён → exit 2; запись в latest.log убрана (свой
+  mcl-launch.log, полный лог читается с диска после завершения); kill_tree
+  только живому процессу; find_instance — неоднозначность = ошибка, юникодное
+  сравнение имён; no_run квотит пробельные аргументы; auth-offline без дублей.
+- Скрипты: e2e_features полный откат (аккаунт/активный/JVM-флаги/заметки/
+  имя инстанса) в finally; wave2 skip без CRASH; make_latest_json сегментный
+  матч «_ver_» (0.2.1 ≠ 0.2.10); record_anim кликает карточку темы и
+  восстанавливает настройки; content existsSync первым; kill_acceptance
+  goto+null-гарды; m5 .first(); gen-keys.ps1 пишет в %LOCALAPPDATA%\
+  cobble-updater-keys (не в репо); build.ps1 не Trim-ит пароль.
+- CI: permissions (ci: contents read; release: contents write — иначе 403
+  на gh release после сборки), SHA-пины 5 экшенов, тег-сверка против
+  package.json + tauri.conf.json + Cargo.toml ДО сборки, timeout 45/60 мин,
+  concurrency, Swatinem/rust-cache.
+- Контракт: UI-CONTRACT.md переписан по коду — 91 команда (+4 добавлены),
+  dl_group_done и shortcut_launch в событиях, account.kind + authlib,
+  Settings-зеркало 23 поля + контракт D62 ключа, 16 кодов ошибок, 4 языка.
+- Чистка «вайбкодинга» (решения Р1–Р5 применены по рекомендациям аудита,
+  владелец делегировал командой «фиксь всё»): README×4 — 40 эмодзи-заголовков
+  убраны, слоган «Честный лаунчер…» (был «Быстрый и честный»), тесты 423+10;
+  сайт — слоган ×7 мест + заголовки «Что внутри»/«Темы, языки, память» ×4
+  языка; i18n — −32 мёртвых ключа (итог 478×4), 73 правки тона/терминов
+  (тон «вы», Незер, «инстанс» вместо «сборка», «Обновить всё», «Моноширинный»,
+  «Переместить в корзину», «Игра вылетела» и др.), errors.json: сломанные
+  pl.zip «Błąd archive.» и hints.hash_retry починены, hash_mismatch.pl,
+  en invalid_input; ru/uk дисклеймер восстановлен с «Не одобрен…» (зеркало
+  en); комментарии: −6 строк «Агент B1/C4/…», дубль-блок i18n/index.ts,
+  заголовки «волна D37» → доменные (commands/types/client); в Shell — плашка
+  relogin-banner (accounts.reloginBanner, warning-палитра, data-testid).
+- Верификация: clippy -D warnings 0; cargo 423+10 (+12 тестов: redirect-
+  барьер, lock-форматы, offline-импорт, пустой overrides, dl_group_done,
+  events-сериализация); tsc/vite чисто; i18n 478×4 паритет; приёмки живьём:
+  m4 (легаси-хвост «Играть —» зачтён по правилу D61), e2e (откат работает:
+  аккаунт/флаги/имя восстановлены), wave2, cards_skins — зелёные; m5/content/
+  kill/parity — на релизном прогоне 12/12.
+- Осознанно не в волне: uk/pl строки с пометкой «проверить носителем»
+  (перекачано/промальовка/«Облікові записи» и др. — список в CLEANUP_REPORT);
+  частичная утечка listen в onCoreEvent (TODO в client.ts); retry_failed не
+  переэмитит dl_group_done (защита от двойной эмиссии); правка селекторов
+  e2e/wave2 под новые подписи («Оперативная память (МБ)», «Последний
+  запуск:») — сделана в этой же волне.

@@ -89,10 +89,13 @@ async function main() {
   await page.waitForSelector("text=Экспорт готов:", { timeout: 600000 });
   const exportMsg = await page.getByText(/Экспорт готов: (.+)/).first().textContent();
   const exportPath = exportMsg.replace("Экспорт готов: ", "").trim();
-  const head = fs.readFileSync(exportPath).subarray(0, 2).toString("latin1");
-  fs.existsSync(exportPath) && head === "PK"
+  // D62: сначала existsSync — иначе readFileSync по отсутствующему пути даёт CRASH вместо FAIL.
+  const head = fs.existsSync(exportPath)
+    ? fs.readFileSync(exportPath).subarray(0, 2).toString("latin1")
+    : null;
+  head === "PK"
     ? ok(`экспорт валидный zip: ${exportPath}`)
-    : fail(`экспорт не zip: ${exportPath}`);
+    : fail(`экспорт не zip или файла нет на диске: ${exportPath}`);
 
   console.log(failed === 0 ? "ALL CONTENT-FEATURE CHECKS PASSED" : `FAILED: ${failed}`);
   process.exit(failed === 0 ? 0 : 1);

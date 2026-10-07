@@ -6,13 +6,13 @@
 
 # Cobble Launcher
 
-**Быстрый и честный лаунчер Minecraft для Windows**
+**Честный лаунчер Minecraft для Windows**
 
 [![Версия](https://img.shields.io/github/v/release/loxord241/Cobble-Launcher?style=flat-square&label=версия)](https://github.com/loxord241/Cobble-Launcher/releases/latest)
 [![Лицензия](https://img.shields.io/github/license/loxord241/Cobble-Launcher?style=flat-square)](LICENSE)
 [![Платформа](https://img.shields.io/badge/Windows-10%2F11_x64-blue?style=flat-square&logo=windows)](https://github.com/loxord241/Cobble-Launcher/releases/latest)
 [![Языки](https://img.shields.io/badge/языки-ru·en·uk·pl-green?style=flat-square)](#языки)
-[![Тесты](https://img.shields.io/badge/тесты-331%2B10-success?style=flat-square)](#сборка-из-исходников)
+[![Тесты](https://img.shields.io/badge/тесты-423%2B10-success?style=flat-square)](#сборка-из-исходников)
 
 **[Скачать последнюю версию](https://github.com/loxord241/Cobble-Launcher/releases/latest)** ·
 [Сообщить о проблеме](https://github.com/loxord241/Cobble-Launcher/issues) ·
@@ -32,7 +32,7 @@ React. Никаких браузерных движков в фоне, ника�
 игру: только официальные источники, проверка каждого файла по хэшу и
 sodium-стек для оптимизации.
 
-## 🗂 Каталог Modrinth
+## Каталог Modrinth
 
 - Каталог на главной: модпаки и моды, поиск, сортировки (загрузки / избранное /
   обновления), фильтр загрузчика, бесконечный скролл
@@ -40,7 +40,7 @@ sodium-стек для оптимизации.
 - Установка модпаков в новый инстанс и модов — прямо из окна проекта или со
   страницы инстанса; пакетное обновление модов в один клик
 
-## 🎮 Инстансы
+## Инстансы
 
 - Изолированные инстансы: своя версия, загрузчик (Fabric / Quilt / Forge /
   NeoForge), моды и настройки
@@ -51,7 +51,7 @@ sodium-стек для оптимизации.
   снапшоты модов с откатом
 - Миры, скриншоты и конфиги модов — прямо со страницы инстанса
 
-## 👤 Профили
+## Профили
 
 - Microsoft (браузерный OAuth), Ely.by (authlib-injector) и офлайн-профили;
   офлайн — честно помечены как нелицензионные
@@ -73,14 +73,14 @@ sodium-стек для оптимизации.
   </table>
 </div>
 
-## 🔄 Автообновления
+## Автообновления
 
 Лаунчер сам проверяет релизы (раз за сессию, тихо) и показывает бейдж
 «Доступно обновление». Установка — одной кнопкой: подписанный апдейт
 (minisign), прогресс скачивания, автоматический перезапуск. Ваши инстансы,
 профили и настройки остаются на месте.
 
-## 🛡 Безопасность и приватность
+## Безопасность и приватность
 
 - **Только официальные источники**: Mojang, Modrinth, Adoptium — каждый файл
   сверяется по хэшу с сервера. Зеркала без проверки хэшей запрещены принципами
@@ -91,19 +91,19 @@ sodium-стек для оптимизации.
 - **Секреты не покидают систему**: токены — в keyring Windows, в логах
   включено автоматическое скрытие секретов.
 
-## 🌍 Языки
+## Языки
 
 Русский · English · Українська · Polski — переключаются в онбординге и
 настройках, применяются ко всему интерфейсу, ошибкам и форматам дат.
 
-## ⬇️ Скачать
+## Скачать
 
 Готовые установщики (NSIS и MSI, Windows 10/11 x64) — на странице
 [релизов](https://github.com/loxord241/Cobble-Launcher/releases/latest).
 После установки обновления приходят сами; вручную — кнопка «Проверить
 обновления» в настройках.
 
-## 🧑‍💻 Сборка из исходников
+## Сборка из исходников
 
 Требуется Node.js 20+, Rust (stable) и npm.
 
@@ -122,10 +122,10 @@ npm run tauri build
 
 ```bash
 npm run build                # TypeScript strict + Vite
-cd src-tauri && cargo test   # 331 тест ядра + 10 интеграционных
+cd src-tauri && cargo test   # 423 теста ядра + 10 интеграционных
 ```
 
-## 🧱 Стек и структура
+## Стек и структура
 
 | Слой | Технологии |
 |---|---|
@@ -142,7 +142,7 @@ cd src-tauri && cargo test   # 331 тест ядра + 10 интеграцион
 - `scripts/` — приёмочные тесты: сквозные проверки UI, жизненного цикла
   процесса, интеграции Modrinth
 
-## 📄 Лицензия и бренды
+## Лицензия и бренды
 
 Код проекта — под лицензией **MIT** (см. [LICENSE](LICENSE)); прямые
 зависимости и их лицензии — в [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md),
@@ -150,7 +150,7 @@ cd src-tauri && cargo test   # 331 тест ядра + 10 интеграцион
 
 **Не официальный продукт Minecraft. Не связан с Mojang и Microsoft.**
 
-Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.
+**Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.**
 
 **Не офіційний продукт Minecraft. Не пов'язаний з Mojang та Microsoft.**
 

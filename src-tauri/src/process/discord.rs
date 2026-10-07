@@ -1,4 +1,4 @@
-//! Discord Rich Presence без инъекций (F26, D37-C). Агент C5.
+//! Discord Rich Presence без инъекций (F26, D37-C).
 //!
 //! Протокол (упрощённый официальный discord-rpc): кадр = 4 байта LE opcode +
 //! 4 байта LE длина тела + JSON-тело.

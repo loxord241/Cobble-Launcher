@@ -60,6 +60,15 @@ pub struct DlQueueState {
 pub enum LauncherEvent {
     DlProgress(DlProgress),
     DlQueueState(DlQueueState),
+    /// Группа задач дошла до конца (успех/ошибка/отмена) — D62: фронт раньше
+    /// узнавал об этом по тишине (watchdog 90 с чистил «висящий» статус
+    /// занятости инстанса). `failed` = в группе есть проваленные задачи.
+    DlGroupDone {
+        group: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        instance_id: Option<String>,
+        failed: bool,
+    },
     LaunchState {
         instance_id: String,
         phase: LaunchPhase,
@@ -161,5 +170,30 @@ mod tests {
         let json = serde_json::to_string(&dl).unwrap();
         assert!(json.contains("\"event\":\"dl_progress\""));
         assert!(!json.contains("instanceId"));
+    }
+
+    /// D62: контракт события завершения группы — фронт снимает виртуальный
+    /// статус занятости по нему, а не watchdog-тишиной.
+    #[test]
+    fn dl_group_done_serializes() {
+        let ev = LauncherEvent::DlGroupDone {
+            group: "instance:abc:content".into(),
+            instance_id: Some("abc".into()),
+            failed: false,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"event\":\"dl_group_done\""));
+        assert!(json.contains("\"group\":\"instance:abc:content\""));
+        assert!(json.contains("\"instanceId\":\"abc\""));
+        assert!(json.contains("\"failed\":false"));
+
+        let ev2 = LauncherEvent::DlGroupDone {
+            group: "jre:2".into(),
+            instance_id: None,
+            failed: true,
+        };
+        let json2 = serde_json::to_string(&ev2).unwrap();
+        assert!(json2.contains("\"event\":\"dl_group_done\""));
+        assert!(!json2.contains("instanceId"));
     }
 }
