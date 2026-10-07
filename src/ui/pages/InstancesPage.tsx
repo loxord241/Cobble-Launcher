@@ -226,9 +226,11 @@ export default function InstancesPage({
   ]);
 
   return (
-    <div className="mx-auto flex max-w-[980px] flex-col gap-4">
-      <div className="mt-1 flex items-baseline gap-2">
-        <h2 className="text-xl font-bold tracking-tight">{t("nav.instances")}</h2>
+    // D65: сетка GD-«библиотеки» — шире (3 плитки в ряд на ~1280); паддинги
+    // даёт Shell (p-6). Компактный ряд управления сверху, ниже — плитки.
+    <div className="mx-auto flex max-w-[1280px] flex-col gap-4">
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold tracking-tight">{t("nav.instances")}</h2>
         <span className="chip-mono">{list.length}</span>
         <button onClick={importArchive} className="btn-ghost btn-sm ml-auto">
           <Import size={16} aria-hidden />
@@ -242,7 +244,7 @@ export default function InstancesPage({
           value={sort}
           onChange={(e) => setSort(e.target.value as "recent" | "name" | "created")}
           aria-label={t("instances.sort.label")}
-          className="h-9 rounded-lg border border-border-strong bg-card px-3 text-sm"
+          className="h-8 rounded-lg border border-border-strong bg-card px-2.5 text-[13px]"
         >
           <option value="recent">{t("instances.sort.recent")}</option>
           <option value="name">{t("instances.sort.name")}</option>
@@ -280,7 +282,9 @@ export default function InstancesPage({
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-3">
+        // D65: плитки ~300px высотой (высота задаёт InstanceCard) — auto-fill
+        // даёт ровно 3 колонки на ~1280 и остаётся адаптивным на худших ширинах.
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3">
           {visible.map((inst) => {
             const callbacks = rowCallbacks.get(inst.id);
             return callbacks ? (

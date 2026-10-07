@@ -499,5 +499,16 @@
   "slug.transportation": "Transportation",
   "slug.utility": "Utility",
   "slug.vanilla+": "Vanilla+",
-  "slug.worldgen": "World generation"
+  "slug.worldgen": "World generation",
+  "nav.downloads": "Downloads",
+  "downloads.title": "Downloads",
+  "downloads.pending": "Pending: {n}",
+  "downloads.downloading": "Downloading: {n}",
+  "downloads.failed": "Failed: {n}",
+  "downloads.hint": "Game, modpack and mod files",
+  "status.java": "Java {n}",
+  "status.disclaimerShort": "Not approved by Mojang",
+  "status.language": "Interface language",
+  "home.featured": "Popular right now",
+  "home.found": "Found: {n}"
 }

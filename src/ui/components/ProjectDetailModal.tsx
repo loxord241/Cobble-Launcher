@@ -1,9 +1,12 @@
-// Окно проекта Modrinth (D39, стиль CurseForge): шапка с установкой, чипы
-// категорий, статистика и табы «Обзор / Журнал / Галерея / Версии». Тело
-// проекта грузим при открытии, версии — лениво при первом открытии табов
-// «Журнал»/«Версии» (кэш в состоянии на всё время жизни модалки).
+// Окно проекта Modrinth (D39 → D65, анатомия GDLauncher): арт-хедер на всю
+// ширину модалки с вуалью снизу, поверх — chip-mono версии, название и строка
+// «автор · скачивания · обновлён»; ✕ в углу арта. Ниже — крупная установка,
+// чипы категорий и табы «Обзор / Версии / Журнал изменений / Галерея» с
+// 2px-подчёркиванием. Тело проекта грузим при открытии, версии — лениво при
+// первом открытии табов «Журнал»/«Версии» (кэш в состоянии на всё время
+// жизни модалки).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Clock, Download, ExternalLink, HardDrive, Heart, LoaderCircle, Scale, X } from "lucide-react";
+import { Download, ExternalLink, HardDrive, Heart, LoaderCircle, Scale, X } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, onCoreEvent } from "../../api/client";
 import { formatSize } from "../format";
@@ -20,9 +23,10 @@ import type {
   SearchHit,
 } from "../../api/types";
 
-type Tab = "overview" | "changelog" | "gallery" | "versions";
+// Порядок табов — как в GD-макете (экран 3): Обзор / Версии / Журнал / Галерея.
+type Tab = "overview" | "versions" | "changelog" | "gallery";
 
-const TABS: Tab[] = ["overview", "changelog", "gallery", "versions"];
+const TABS: Tab[] = ["overview", "versions", "changelog", "gallery"];
 
 
 /** Относительная дата («5 дней назад») для чипа «Обновлено»; пусто — не дата. */
@@ -239,7 +243,11 @@ export default function ProjectDetailModal({
 
   const when = relWhen(detail?.dateModified ?? hit.date_modified);
   const cats = detail?.categories ?? hit.categories;
-  const cover = detail ? (detail.gallery.find((g) => g.featured) ?? detail.gallery[0]) : undefined;
+  // Арт-хедер (GD): приоритет — широкая картинка галереи (featured, затем
+  // любая), fallback — иконка проекта; пока detail не дошёл — иконка из hit.
+  const headerArt =
+    (detail ? (detail.gallery.find((g) => g.featured) ?? detail.gallery[0])?.url : undefined) ??
+    hit.icon_url;
   const changelogList = versions?.filter((v) => v.changelog && v.changelog.trim()) ?? [];
 
   // Общий вид «не загрузилось + повторить» для страницы и для версий.
@@ -272,26 +280,42 @@ export default function ProjectDetailModal({
         role="dialog"
         aria-modal="true"
         aria-label={hit.title}
-        className="anim-dialog-in flex max-h-[85vh] w-full max-w-3xl flex-col rounded-lg border border-border-app bg-card shadow-2xl"
+        className="anim-dialog-in flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-border-app bg-card shadow-2xl"
       >
-        {/* Шапка: иконка, название/автор/описание, инстанс + установка. */}
-        <div className="flex items-start gap-3 border-b border-border-app p-5">
-          {hit.icon_url ? (
+        {/* ── Арт-хедер на всю ширину (GD): картинка/иконка, вуаль снизу,
+            поверх — версия, название, «автор · скачивания · обновлён»;
+            ✕ в углу арта (доступна и при busy, D64). ─────────────────── */}
+        <div className="relative h-[150px] shrink-0">
+          {headerArt ? (
             <img
-              src={hit.icon_url}
+              src={headerArt}
               alt=""
-              className="size-16 shrink-0 rounded-lg border border-border-app object-cover"
+              aria-hidden
+              draggable={false}
+              className="absolute inset-0 size-full object-cover"
             />
           ) : (
-            <span
+            // Арта нет вовсе: спокойный градиент вместо пустого пятна.
+            <div
               aria-hidden
-              className="grid size-16 shrink-0 place-items-center rounded-lg bg-surface-2 text-2xl font-semibold text-text-muted"
-            >
-              {hit.title.slice(0, 1)}
-            </span>
+              className="absolute inset-0 bg-[linear-gradient(120deg,#2c3c50,#151c26_55%,#1a2330)]"
+            />
           )}
-          <div className="min-w-0 flex-1">
-            <h2 className="truncate text-xl font-bold leading-tight">
+          {/* Вуаль: сверху почти прозрачная, к низу темнеет — текст читается. */}
+          <div
+            aria-hidden
+            className="absolute inset-0 bg-[linear-gradient(180deg,rgba(7,11,16,0.05)_30%,rgba(7,11,16,0.55)_62%,rgba(7,11,16,0.88)_96%)]"
+          />
+          <button
+            onClick={requestClose}
+            aria-label={t("common.close")}
+            className="absolute right-3 top-3 grid size-8 place-items-center rounded-md bg-black/60 text-white/85 transition-colors hover:bg-black/80 hover:text-white"
+          >
+            <X size={16} aria-hidden />
+          </button>
+          <div className="absolute inset-x-5 bottom-3 flex min-w-0 flex-col gap-1">
+            {hit.versions[0] && <span className="chip-mono self-start">{hit.versions[0]}</span>}
+            <h2 className="truncate text-xl font-bold leading-tight text-white drop-shadow-[0_2px_12px_rgba(0,0,0,0.55)]">
               {hit.title}
               {/* Установка идёт — спиннер прямо в заголовке: окно «живое». */}
               {busy && (
@@ -302,21 +326,79 @@ export default function ProjectDetailModal({
                 />
               )}
             </h2>
-            <div className="mt-0.5 text-[13px] text-text-muted">
-              {t("mods.by", { author: hit.author })}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[13px] text-white/85 drop-shadow-[0_1px_6px_rgba(0,0,0,0.6)]">
+              <span>{t("mods.by", { author: hit.author })}</span>
+              <span aria-hidden className="text-white/40">
+                ·
+              </span>
+              <span className="tabular-nums">
+                {plural("mods.downloads", detail?.downloads ?? hit.downloads, {
+                  n: (detail?.downloads ?? hit.downloads).toLocaleString(currentLanguage()),
+                })}
+              </span>
+              {when && (
+                <>
+                  <span aria-hidden className="text-white/40">
+                    ·
+                  </span>
+                  <span>{t("project.updated", { when })}</span>
+                </>
+              )}
             </div>
-            {hit.description && (
-              <p className="mt-1 line-clamp-2 text-[13px] leading-snug text-text-muted">
-                {hit.description}
-              </p>
-            )}
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 pb-5">
+          {/* Баннер установки: успех (зелёный) / ошибка (красный). */}
+          {banner && (
+            <p
+              role={banner.ok ? "status" : "alert"}
+              className={`mt-4 rounded-lg border p-3 text-sm ${
+                banner.ok
+                  ? "border-success/40 bg-success/10 text-success"
+                  : "border-error/40 bg-error/10 text-error"
+              }`}
+            >
+              {banner.text}
+            </p>
+          )}
+
+          {/* Действия (GD): крупная «Установить», рядом цель (моды) либо
+              прогресс + «Отменить» (модпак, D64 — логика прежняя). */}
+          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+            <button
+              onClick={() => void install()}
+              disabled={busy || (!isPack && !targetId)}
+              aria-busy={busy}
+              className={`btn-primary h-11 min-w-40 px-6 text-[15px] ${busy ? "anim-pulse-soft" : ""}`}
+            >
+              {busy ? (
+                <LoaderCircle size={16} aria-hidden className="animate-spin" />
+              ) : (
+                <Download size={16} aria-hidden />
+              )}
+              {busy ? t("project.installing") : t("project.install")}
+            </button>
+            {!isPack && (
+              <select
+                value={targetId}
+                onChange={(e) => setTargetId(e.target.value)}
+                disabled={busy || instances.length === 0}
+                aria-label={t("project.chooseInstance")}
+                className="h-10 max-w-52 rounded-lg border border-border-strong bg-card px-2.5 text-sm disabled:opacity-40"
+              >
+                {instances.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {i.name} [{i.mcVersion}]
+                  </option>
+                ))}
+              </select>
+            )}
             {/* D64: прогресс скачивания модпака — проценты + полоска рядом
                 с кнопкой; totalBytes ещё неизвестен ядру — показываем без %. */}
             {isPack && busy && packProgress && (
-              <div className="flex w-36 flex-col gap-1" role="status">
-                <span className="flex justify-between font-mono text-[11px] text-text-muted">
+              <div className="flex w-44 flex-col gap-1" role="status">
+                <span className="flex justify-between font-mono text-[11px] text-text-muted tabular-nums">
                   <span>
                     {packProgress.total > 0
                       ? `${Math.min(Math.floor((packProgress.done / packProgress.total) * 100), 100)}%`
@@ -342,34 +424,6 @@ export default function ProjectDetailModal({
                 </div>
               </div>
             )}
-            {!isPack && (
-              <select
-                value={targetId}
-                onChange={(e) => setTargetId(e.target.value)}
-                disabled={busy || instances.length === 0}
-                aria-label={t("project.chooseInstance")}
-                className="h-9 max-w-44 rounded-lg border border-border-strong bg-card px-2 text-sm disabled:opacity-40"
-              >
-                {instances.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.name} [{i.mcVersion}]
-                  </option>
-                ))}
-              </select>
-            )}
-            <button
-              onClick={() => void install()}
-              disabled={busy || (!isPack && !targetId)}
-              aria-busy={busy}
-              className={`btn-primary h-9 ${busy ? "anim-pulse-soft" : ""}`}
-            >
-              {busy ? (
-                <LoaderCircle size={15} aria-hidden className="animate-spin" />
-              ) : (
-                <Download size={15} aria-hidden />
-              )}
-              {busy ? t("project.installing") : t("project.install")}
-            </button>
             {/* D64: «Отменить» видна сразу, но активна, только когда известна
                 точная группа (пришло событие dl_progress): отменять нечего,
                 пока группа не зарегистрирована ядром. */}
@@ -378,38 +432,13 @@ export default function ProjectDetailModal({
                 onClick={cancelPack}
                 disabled={!packGroupRef.current}
                 aria-label={t("common.cancel")}
-                className="btn-ghost h-9 px-3 text-sm"
+                className="btn-ghost px-4 text-sm"
               >
                 {t("common.cancel")}
               </button>
             )}
-            <button
-              onClick={requestClose}
-              aria-label={t("common.close")}
-              className="icon-btn text-text-muted hover:text-text"
-            >
-              <X size={18} aria-hidden />
-            </button>
           </div>
-        </div>
 
-        {/* Баннер установки: успех (зелёный) / ошибка (красный), внутри модалки. */}
-        {banner && (
-          <div className="px-5 pt-3">
-            <p
-              role={banner.ok ? "status" : "alert"}
-              className={`rounded-lg border p-3 text-sm ${
-                banner.ok
-                  ? "border-success/40 bg-success/10 text-success"
-                  : "border-error/40 bg-error/10 text-error"
-              }`}
-            >
-              {banner.text}
-            </p>
-          </div>
-        )}
-
-        <div className="flex-1 overflow-y-auto px-5 pb-5">
           {/* Чипы: категории (первые 4 + «+N») и загрузчики отдельно. */}
           {(cats.length > 0 || (detail?.loaders.length ?? 0) > 0) && (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -427,57 +456,70 @@ export default function ProjectDetailModal({
             </div>
           )}
 
-          {/* Статистика; чип рисуем только когда данные есть. */}
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span className="chip-mono flex items-center gap-1 text-xs">
-              <Download size={12} aria-hidden />
-              {plural("mods.downloads", detail?.downloads ?? hit.downloads, {
-                n: (detail?.downloads ?? hit.downloads).toLocaleString(currentLanguage()),
-              })}
-            </span>
-            {detail && (
-              <span className="chip-mono flex items-center gap-1 text-xs">
-                <Heart size={12} aria-hidden />
-                {t("project.follows", { n: detail.follows.toLocaleString(currentLanguage()) })}
-              </span>
-            )}
-            {when && (
-              <span className="chip-mono flex items-center gap-1 text-xs">
-                <Clock size={12} aria-hidden />
-                {t("project.updated", { when })}
-              </span>
-            )}
-            {packSize !== null && (
-              <span className="chip-mono flex items-center gap-1 text-xs">
-                <HardDrive size={12} aria-hidden />
-                {formatSize(packSize)}
-              </span>
-            )}
-            {detail?.license && (
-              <span className="chip-mono flex items-center gap-1 text-xs">
-                <Scale size={12} aria-hidden />
-                {t("project.license", { name: detail.license })}
-              </span>
-            )}
-          </div>
+          {/* Оставшаяся статистика (скачивания/обновление — в арт-хедере);
+              чип рисуем только когда данные есть. */}
+          {(detail || packSize !== null) && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {detail && (
+                <span className="chip-mono flex items-center gap-1 text-xs">
+                  <Heart size={12} aria-hidden />
+                  {t("project.follows", { n: detail.follows.toLocaleString(currentLanguage()) })}
+                </span>
+              )}
+              {packSize !== null && (
+                <span className="chip-mono flex items-center gap-1 text-xs">
+                  <HardDrive size={12} aria-hidden />
+                  {formatSize(packSize)}
+                </span>
+              )}
+              {detail?.license && (
+                <span className="chip-mono flex items-center gap-1 text-xs">
+                  <Scale size={12} aria-hidden />
+                  {t("project.license", { name: detail.license })}
+                </span>
+              )}
+            </div>
+          )}
 
-          {/* Табы — стиль вкладок ModsPage. */}
-          <div role="tablist" className="mt-3 flex gap-1">
-            {TABS.map((x) => (
-              <button
-                key={x}
-                role="tab"
-                aria-selected={tab === x}
-                onClick={() => setTab(x)}
-                className={`h-9 rounded-lg px-3 text-sm font-medium transition-colors ${
-                  tab === x
-                    ? "bg-accent text-on-accent"
-                    : "text-text-muted hover:bg-surface-2 hover:text-text"
-                }`}
-              >
-                {t(`project.tab.${x}`)}
-              </button>
-            ))}
+          {/* Табы (GD): 2px-подчёркивание под активным, счётчики — в бейджах
+              (появляются, только когда данные уже загружены). */}
+          <div role="tablist" className="mt-4 flex gap-1 border-b border-border-app">
+            {TABS.map((x) => {
+              const count =
+                x === "versions"
+                  ? versions !== null
+                    ? versions.length
+                    : undefined
+                  : x === "changelog"
+                    ? versions !== null
+                      ? changelogList.length
+                      : undefined
+                    : x === "gallery"
+                      ? detail
+                        ? detail.gallery.length
+                        : undefined
+                      : undefined;
+              return (
+                <button
+                  key={x}
+                  role="tab"
+                  aria-selected={tab === x}
+                  onClick={() => setTab(x)}
+                  className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 pb-2.5 pt-2 text-sm font-medium transition-colors ${
+                    tab === x
+                      ? "border-accent text-accent"
+                      : "border-transparent text-text-muted hover:text-text"
+                  }`}
+                >
+                  {t(`project.tab.${x}`)}
+                  {count !== undefined && (
+                    <span className="rounded-full bg-surface-2 px-1.5 text-[11px] font-semibold leading-[18px] text-text-muted tabular-nums">
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           {/* Контент таба. key={tab}: при смене вкладки ремоунт переигрывает
@@ -490,15 +532,10 @@ export default function ProjectDetailModal({
                 loadingBlock
               ) : (
                 <div className="flex flex-col gap-3">
-                  {cover && (
-                    <img
-                      src={cover.url}
-                      alt={cover.title ?? ""}
-                      loading="lazy"
-                      // Естественные пропорции вместо crop: подложка — на время
-                      // загрузки и для прозрачных PNG.
-                      className="max-h-[380px] w-full rounded-lg object-contain bg-surface-2"
-                    />
+                  {hit.description && (
+                    <p className="max-w-2xl text-[13px] leading-relaxed text-text-muted">
+                      {hit.description}
+                    </p>
                   )}
                   {detail.body && <Markdown text={detail.body} />}
                 </div>
@@ -586,11 +623,11 @@ export default function ProjectDetailModal({
               ) : versionsBusy || versions === null ? (
                 loadingBlock
               ) : (
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-col">
                   {/* Для модов — выбор инстанса и кнопка у каждой версии;
                       у остальных типов установка только главной кнопкой. */}
                   {isMod ? (
-                    <label className="flex items-center gap-2 text-[13px] text-text-muted">
+                    <label className="flex items-center gap-2 pb-1 text-[13px] text-text-muted">
                       {t("project.chooseInstance")}
                       <select
                         value={targetId}
@@ -606,7 +643,7 @@ export default function ProjectDetailModal({
                       </select>
                     </label>
                   ) : (
-                    <p className="text-[13px] text-text-muted">{t("project.installPackNote")}</p>
+                    <p className="pb-1 text-[13px] text-text-muted">{t("project.installPackNote")}</p>
                   )}
                   {versions.length === 0 ? (
                     <p className="py-8 text-sm text-text-muted">{t("project.versions.empty")}</p>
@@ -618,13 +655,13 @@ export default function ProjectDetailModal({
                         v.gameVersions.slice(0, 3).join(", ") +
                         (v.gameVersions.length > 3 ? ` +${v.gameVersions.length - 3}` : "");
                       return (
+                        // Компактная строка (GD .vrow): номер — mono, дата/размер
+                        // справа, tabular-nums; граница снизу вместо карточек.
                         <div
                           key={v.id}
-                          className="flex flex-wrap items-center gap-2 rounded-lg border border-border-app px-3 py-2"
+                          className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border-app py-2 text-[13px] tabular-nums last:border-b-0"
                         >
-                          <span className="inline-block min-w-36 font-mono text-[13px] font-semibold">
-                            {v.versionNumber}
-                          </span>
+                          <span className="min-w-32 font-mono font-semibold">{v.versionNumber}</span>
                           {/* min-w-14: колонки «версия / тип» идут ровно по всем строкам;
                               justify-center — потому что .badge-soft это inline-flex. */}
                           {badge && (
@@ -632,26 +669,26 @@ export default function ProjectDetailModal({
                               {t(badge.key)}
                             </span>
                           )}
-                          {gv && <span className="text-[13px] text-text-muted">{gv}</span>}
+                          {gv && <span className="text-text-muted">{gv}</span>}
                           {v.loaders.length > 0 && (
                             <span className="badge-soft">{v.loaders.join(", ")}</span>
                           )}
-                          {/* Дата/размер — правый край строки: слева тип и версии игры. */}
-                          {v.datePublished && (
-                            <span className="ml-auto text-[13px] text-text-muted">
-                              {new Date(v.datePublished).toLocaleDateString(currentLanguage())}
-                            </span>
-                          )}
-                          {primary && (
-                            <span className={`chip-mono text-xs ${v.datePublished ? "" : "ml-auto"}`}>
-                              {formatSize(primary.size)}
-                            </span>
-                          )}
+                          {/* Дата/размер — правый край строки. */}
+                          <span className="ml-auto flex items-center gap-2 text-text-muted">
+                            {v.datePublished && (
+                              <span>
+                                {new Date(v.datePublished).toLocaleDateString(currentLanguage())}
+                              </span>
+                            )}
+                            {primary && (
+                              <span className="chip-mono text-xs">{formatSize(primary.size)}</span>
+                            )}
+                          </span>
                           {isMod && (
                             <button
                               onClick={() => void install(v.id)}
                               disabled={busy || !targetId}
-                              className="btn-ghost btn-sm ml-auto"
+                              className="btn-ghost btn-sm"
                             >
                               {t("project.versions.install", { version: v.versionNumber })}
                             </button>

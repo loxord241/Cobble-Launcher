@@ -499,5 +499,16 @@
   "slug.transportation": "Транспорт",
   "slug.utility": "Утиліти",
   "slug.vanilla+": "Ваніль+",
-  "slug.worldgen": "Генерація світу"
+  "slug.worldgen": "Генерація світу",
+  "nav.downloads": "Завантаження",
+  "downloads.title": "Завантаження",
+  "downloads.pending": "У черзі: {n}",
+  "downloads.downloading": "Завантажується: {n}",
+  "downloads.failed": "Помилки: {n}",
+  "downloads.hint": "Файли клієнта, модпаків і модів",
+  "status.java": "Java {n}",
+  "status.disclaimerShort": "Не схвалено Mojang",
+  "status.language": "Мова інтерфейсу",
+  "home.featured": "Популярне зараз",
+  "home.found": "Знайдено: {n}"
 }

@@ -7,26 +7,28 @@
 @import "tailwindcss";
 
 :root {
-  /* Тёмная тема «Сланец» (по умолчанию; = slate-pro :root) */
-  --bg: #16181c;
-  --card: #1d2026;
-  --card-hover: #252a31;
-  --surface-2: #252a31;
-  --border: #2b313a;
-  --border-strong: #3b424d;
-  --text: #e9ebee;
-  --text-muted: #a3abb5;
-  --accent: #6cb2fa;
-  --accent-hover: #85bffb;
-  --accent-soft: rgba(108, 178, 250, 0.12);
-  --on-accent: #0d1117;
+  /* Тёмная тема (по умолчанию); палитра макета GD-редизайна (D65):
+     redesign-mockups/gdlauncher.html :root */
+  --rail: #0c1117;
+  --bg: #10151c;
+  --card: #151c26;
+  --card-hover: #1a2330;
+  --surface-2: #1a2330;
+  --border: #212c3a;
+  --border-strong: #2c3c50;
+  --text: #dfe6ee;
+  --text-muted: #93a1b2;
+  --accent: #79aae0;
+  --accent-hover: #8fbbe8;
+  --accent-soft: rgba(121, 170, 224, 0.13);
+  --on-accent: #0c1117;
   --accent-contrast: var(--on-accent);
-  --success: #5ac48f;
-  --ok: #5ac48f;
-  --warning: #f0a52c;
-  --error: #f28b82;
-  --danger: #f28b82;
-  --on-danger: #1a0f0d;
+  --success: #6fbf8f;
+  --ok: #6fbf8f;
+  --warning: #d9b65c;
+  --error: #e08a80;
+  --danger: #e08a80;
+  --on-danger: #160f0e;
 
   --radius-sm: 4px;
   --radius-md: 8px;

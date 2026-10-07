@@ -499,5 +499,16 @@
   "slug.transportation": "Transport",
   "slug.utility": "Narzędzia",
   "slug.vanilla+": "Vanilla+",
-  "slug.worldgen": "Generacja świata"
+  "slug.worldgen": "Generacja świata",
+  "nav.downloads": "Pobieranie",
+  "downloads.title": "Pobieranie",
+  "downloads.pending": "W kolejce: {n}",
+  "downloads.downloading": "Pobieranie: {n}",
+  "downloads.failed": "Błędy: {n}",
+  "downloads.hint": "Pliki gry, modpacków i modów",
+  "status.java": "Java {n}",
+  "status.disclaimerShort": "Nie zatwierdzone przez Mojang",
+  "status.language": "Język interfejsu",
+  "home.featured": "Popularne teraz",
+  "home.found": "Znaleziono: {n}"
 }

@@ -70,13 +70,13 @@ async function main() {
     typeTabs >= 2 ? ok(`переключатель типа каталога (${typeTabs} таба)`) : fail("нет табов типа каталога");
   }
 
-  // 2. Скины: голова персонажа в чипе титлбара + «Персонаж» в модалке аккаунтов.
+  // 2. Скины: голова персонажа у аватара (D65: переехала из титбара в низ рельса) + «Персонаж» в модалке.
   const chipHead = await page.evaluate(() => {
-    // SkinHead — span с двумя вложенными span-слоями и background-image
-    const el = document.querySelector("header span[style*='background-image']");
+    // SkinHead — span с background-image; ищем в рельсе или титбаре (design D65)
+    const el = document.querySelector("nav span[style*='background-image'], header span[style*='background-image']");
     return !!el;
   });
-  chipHead ? ok("голова персонажа в чипе титлбара") : fail("в чипе титлбара нет головы скина");
+  chipHead ? ok("голова персонажа у аватара (рельс)") : fail("нигде нет головы скина");
 
   await page.getByRole("button", { name: /, сменить$/ }).click();
   await page.waitForTimeout(400);

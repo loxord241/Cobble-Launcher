@@ -1,7 +1,9 @@
-// Главная — каталог Modrinth в стиле CurseForge App: переключатель типа
-// (модпаки/моды), поиск, сортировка, фильтр загрузчика, бесконечный скролл
-// строк. Клик по строке/кнопке «Установить» открывает окно проекта —
-// установка происходит внутри окна. Инстансы живут на странице «Инстансы».
+// Главная — каталог Modrinth в стиле GDLauncher (D65): hero «Популярное
+// сейчас» (лидер по скачиваниям среди уже загруженных строк), сетка плиток
+// с артом во всю плитку, переключатель типа (модпаки/моды), поиск, сортировка,
+// фильтр загрузчика, бесконечный скролл. Клик по плитке/кнопке «Установить»
+// открывает окно проекта — установка происходит внутри окна. Инстансы живут
+// на странице «Инстансы».
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Dices, Download, Search, SearchX } from "lucide-react"
 import { api } from "../../api/client"
@@ -36,104 +38,171 @@ function relativeDate(iso: string): string {
   return rtf.format(-Math.round(days / 365), "year")
 }
 
+/** Компактный счётчик («838 тыс.» / «1.2M») — для подписей на арте плиток. */
+function compactCount(n: number): string {
+  return new Intl.NumberFormat(currentLanguage(), {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(n)
+}
+
 /**
- * Строка каталога в стиле CurseForge App: иконка 56px, заголовок + автор,
- * описание в 2 строки, метаданные (категории, загрузки, обновление, версии).
- * Клик по строке И по кнопке «Установить» не качает — обе открывают окно
- * проекта, установка живёт внутри окна (явное требование владельца).
+ * HERO «Популярное сейчас» (D65): широкая плитка на всю ширину контента с
+ * артом пака-лидера по скачиваниям среди УЖЕ загруженных строк (icon_url той
+ * же выдачи — никакого нового API и выдуманных данных). Снизу градиент-вуаль
+ * (как .veil макета), поверх — chip-mono версии, надзаголовок, название,
+ * «автор · скачивания · обновлён N» и ghost-кнопка «Установить»: и клик по
+ * плитке, и клик по кнопке открывают окно проекта — установка не отсюда.
  */
-function CatalogRow({ hit, idx, onOpen }: { hit: SearchHit, idx: number, onOpen: () => void }) {
+function HeroTile({ hit, onOpen }: { hit: SearchHit, onOpen: () => void }) {
   return (
-    <div
+    <section
       role="button"
       tabIndex={0}
-      // Каскад появления: задержка по индексу с кэпом 20 строк (~440ms) —
-      // внутри каждой догруженной партии; backwards держит строку прозрачной
-      // до старта, элемент в DOM и кликабелен с первого кадра.
-      style={{ animationDelay: `${(idx % 20) * 22}ms` }}
       onClick={onOpen}
       onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return // Enter/Space на кнопке внутри строки
+        if (e.target !== e.currentTarget) return // Enter/Space на кнопке внутри
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault()
           onOpen()
         }
       }}
-      className="anim-fade-up grid min-h-[76px] cursor-pointer grid-cols-[56px_1fr_auto] items-center gap-3 rounded-lg border border-border-app bg-card px-3 py-2.5 transition-all duration-200 hover:-translate-y-px hover:border-accent/70 hover:bg-card-hover hover:shadow-lg hover:shadow-black/20"
+      className="anim-fade-up relative flex h-48 cursor-pointer flex-col overflow-hidden rounded-xl border border-border-app bg-surface-2 shadow-lg shadow-black/25 transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/70"
+    >
+      {hit.icon_url && (
+        <img
+          src={hit.icon_url}
+          alt=""
+          loading="lazy"
+          className="absolute inset-0 size-full object-cover"
+        />
+      )}
+      {/* Вуаль, как .veil макета: арт темнеет книзу — текст читается на любом арте.
+          Верх тоже притемнён: на светлых баннерах бейдж версии тонул. */}
+      <div
+        aria-hidden
+        className="absolute inset-0 bg-gradient-to-b from-black/25 via-black/55 to-black/90"
+      />
+      {hit.versions[0] && (
+        <span className="chip-mono absolute left-3 top-3 bg-bg/85">{hit.versions[0]}</span>
+      )}
+      <div className="relative mt-auto flex items-end gap-4 p-4">
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/75">
+            {t("home.featured")}
+          </div>
+          <div className="mt-0.5 truncate text-[17px] font-bold leading-tight text-white [text-shadow:0_2px_8px_rgb(0_0_0_/_0.6)]">
+            {hit.title}
+          </div>
+          <div className="mt-1 truncate text-[12px] text-white/90 [text-shadow:0_1px_6px_rgb(0_0_0_/_0.55)]">
+            {hit.author}
+            {" · "}
+            {plural("mods.downloads", hit.downloads, { n: compactCount(hit.downloads) })}
+            {" · "}
+            {t("project.updated", { when: relativeDate(hit.date_modified) })}
+          </div>
+        </div>
+        <button
+          onClick={(e) => {
+            e.stopPropagation() // клик hero и так открывает окно — действие то же
+            onOpen()
+          }}
+          aria-label={`${t("project.install")} — ${hit.title}`}
+          className="ml-auto inline-flex h-10 shrink-0 items-center gap-2 rounded-lg border border-white/25 bg-black/55 px-4 text-sm font-semibold text-white backdrop-blur-sm transition-colors hover:border-accent hover:text-accent"
+        >
+          <Download size={15} aria-hidden />
+          {t("home.installPack")}
+        </button>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * Плитка каталога в стиле GDLauncher (D65): арт во всю плитку (пропорция
+ * макета ~280×238), chip-mono версии слева-сверху и ПОСТОЯННАЯ плашка имени
+ * снизу (название + «скачивания · загрузчик») — имя видно всегда, требование
+ * владельца, hover не единственный путь к нему. По hover/фокусу над плашкой
+ * проявляются доп-метаданные (автор, обновление) и мини-кнопка «Установить»
+ * (ghost). Клик по плитке И по кнопке открывает окно проекта (D39).
+ */
+function CatalogTile({ hit, idx, onOpen }: { hit: SearchHit, idx: number, onOpen: () => void }) {
+  // Загрузчик для подписи под именем: Modrinth кладёт его в categories.
+  const loader = hit.categories.find((c) => LOADERS.includes(c))
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      // Каскад появления: задержка по индексу с кэпом 20 строк (~440ms) —
+      // внутри каждой догруженной партии; backwards держит плитку прозрачной
+      // до старта, элемент в DOM и кликабелен с первого кадра.
+      style={{ animationDelay: `${(idx % 20) * 22}ms` }}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return // Enter/Space на кнопке внутри
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          onOpen()
+        }
+      }}
+      className="anim-fade-up group relative aspect-[280/238] cursor-pointer overflow-hidden rounded-xl border border-border-app bg-surface-2 shadow-md shadow-black/20 transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/70 hover:shadow-lg hover:shadow-black/25"
     >
       {hit.icon_url ? (
         <img
           src={hit.icon_url}
           alt=""
           loading="lazy"
-          className="size-14 rounded-lg border border-border-app object-cover"
+          className="absolute inset-0 size-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
         />
       ) : (
-        // Без иконки — заглушка с первой буквой названия.
+        // Без иконки — честная заглушка с первой буквой названия.
         <span
           aria-hidden
-          className="grid size-14 place-items-center rounded-lg bg-surface-2 text-lg font-semibold text-text-muted"
+          className="absolute inset-0 grid place-items-center bg-gradient-to-br from-surface-2 to-bg text-4xl font-bold text-text-muted"
         >
           {hit.title.slice(0, 1).toUpperCase()}
         </span>
       )}
-      <div className="min-w-0">
-        <div className="flex min-w-0 items-baseline gap-2">
-          <span className="min-w-0 truncate text-[15px] font-semibold leading-tight">
-            {hit.title}
-          </span>
-          <span className="truncate text-[12px] text-text-muted">
-            {t("mods.by", { author: hit.author })}
-          </span>
+      {/* Вуаль снизу — подложка постоянной плашки имени. */}
+      <div
+        aria-hidden
+        className="absolute inset-0 bg-gradient-to-b from-black/10 via-transparent to-black/80"
+      />
+      {hit.versions[0] && (
+        <span className="chip-mono absolute left-2.5 top-2.5">{hit.versions[0]}</span>
+      )}
+      {/* Hover/фокус: автор, обновление и мини-кнопка «Установить». Проявляется
+          и с клавиатуры (group-focus-within) — не только мышью; pointer-events
+          не дают кликать по невидимому слою вне hover. */}
+      <div className="pointer-events-none absolute inset-x-3 bottom-[52px] flex translate-y-1 flex-col opacity-0 transition-all duration-200 group-hover:pointer-events-auto group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:translate-y-0 group-focus-within:opacity-100">
+        <div className="truncate text-[11.5px] text-white/85">
+          {t("mods.by", { author: hit.author })}
         </div>
-        {/* Описание всегда занимает две строки (min-h + line-clamp-2): без
-            этого строки каталога «прыгают» по высоте — мета-чипы съезжают.
-            Пустое описание рисуем пустым блоком той же высоты, сохраняя ритм. */}
-        <div className="mt-0.5 line-clamp-2 min-h-[2.6em] text-[13px] leading-snug text-text-muted">
-          {hit.description}
+        <div className="truncate text-[11px] text-white/70">
+          {t("project.updated", { when: relativeDate(hit.date_modified) })}
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-          {/* Modrinth кладёт в categories и категории, и загрузчики —
-              возможны повторы (fabric дважды), дедуплицируем. */}
-          {(() => {
-            const cats = [...new Set(hit.categories)];
-            return (
-              <>
-                {cats.slice(0, 3).map((c) => (
-                  <span key={c} className="badge-soft">
-                    {prettySlug(c)}
-                  </span>
-                ))}
-                {cats.length > 3 && <span className="chip-mono">+{cats.length - 3}</span>}
-              </>
-            );
-          })()}
-          <span className="font-mono text-[13px] text-text-muted">
-            {plural("mods.downloads", hit.downloads, {
-              n: hit.downloads.toLocaleString(currentLanguage()),
-            })}
-          </span>
-          <span className="text-[12px] text-text-muted">
-            {t("project.updated", { when: relativeDate(hit.date_modified) })}
-          </span>
-          {hit.versions.slice(0, 2).map((v) => (
-            <span key={v} className="chip-mono">
-              {v}
-            </span>
-          ))}
+        <button
+          onClick={(e) => {
+            e.stopPropagation() // клик плитки и так открывает окно — действие то же
+            onOpen()
+          }}
+          aria-label={`${t("project.install")} — ${hit.title}`}
+          className="mt-1.5 inline-flex h-8 w-fit items-center gap-1.5 rounded-lg border border-white/25 bg-black/60 px-3 text-xs font-semibold text-white backdrop-blur-sm transition-colors hover:border-accent hover:text-accent"
+        >
+          <Download size={13} aria-hidden />
+          {t("home.installPack")}
+        </button>
+      </div>
+      {/* Постоянная плашка имени: название + «скачивания · загрузчик». */}
+      <div className="absolute inset-x-3 bottom-2.5 min-w-0">
+        <h3 className="truncate text-[13.5px] font-semibold leading-tight text-white drop-shadow">
+          {hit.title}
+        </h3>
+        <div className="truncate text-[11.5px] text-white/80">
+          {compactCount(hit.downloads)}
+          {loader ? ` · ${prettySlug(loader)}` : ""}
         </div>
       </div>
-      <button
-        onClick={(e) => {
-          e.stopPropagation() // клик строки и так открывает окно — действие то же
-          onOpen()
-        }}
-        className="btn-primary"
-        aria-label={`${t("project.install")} — ${hit.title}`}
-      >
-        <Download size={15} aria-hidden />
-        {t("home.installPack")}
-      </button>
     </div>
   )
 }
@@ -285,6 +354,17 @@ export default function HomePage({ query }: { query: string }) {
     (h) => !q || h.title.toLowerCase().includes(q) || h.author.toLowerCase().includes(q),
   )
 
+  // HERO «Популярное сейчас»: лид по скачиваниям среди УЖЕ загруженных строк
+  // (клиентский max — без нового запроса, это честно). Только для модпаков;
+  // на «Модах» и пока строк нет — hero не рисуется (и без скелета: просто
+  // пусто до первого ответа).
+  const featured = useMemo(() => {
+    if (tab !== "modpack") return null
+    let best: SearchHit | null = null
+    for (const h of visibleHits) if (!best || h.downloads > best.downloads) best = h
+    return best
+  }, [tab, visibleHits])
+
   // Динамический union категорий текущей выдачи (для селекта фильтра):
   // загрузчики исключаем — у них отдельный селект выше.
   const categories = useMemo(() => {
@@ -300,7 +380,7 @@ export default function HomePage({ query }: { query: string }) {
   }, [category, categories, searched])
 
   return (
-    <div className="mx-auto flex max-w-[1100px] flex-col gap-4">
+    <div className="mx-auto flex max-w-[1240px] flex-col gap-4">
       {/* Маркер залипания sticky-панели: 0-высоты, невидим; когда панель
           прилипает к верху main, маркер покидает viewport — это ловит
           IntersectionObserver выше. */}
@@ -310,7 +390,7 @@ export default function HomePage({ query }: { query: string }) {
           проекта рендерится с z-50 и остаётся поверх. -mx-2/px-2 не дают фону
           обрываться по краям страницы, flex+gap-4 сохраняют прежний ритм
           блоков (раньше их разносил gap родителя). */}
-      <div className="sticky -top-6 z-10 -mx-2 flex flex-col gap-4 bg-bg/95 px-2 pt-8 pb-3 backdrop-blur-sm">
+      <div className="sticky -top-6 z-10 -mx-2 flex flex-col gap-3 bg-bg/95 px-2 pt-8 pb-3 backdrop-blur-sm">
       <div className="mt-1 flex items-baseline gap-2">
         <h2 className="text-lg font-semibold tracking-tight">{t("home.catalog.title")}</h2>
         {searched && (
@@ -318,8 +398,11 @@ export default function HomePage({ query }: { query: string }) {
         )}
       </div>
 
-      {/* Переключатель типа каталога. */}
-      <div role="tablist" className="flex gap-1">
+      {/* Переключатель типа каталога — сегмент, как .seg в макете GD. */}
+      <div
+        role="tablist"
+        className="flex h-10 w-fit items-center gap-0.5 rounded-lg border border-border-strong bg-card p-1"
+      >
         {(["modpack", "mod"] as CatalogType[]).map((x) => (
           <button
             key={x}
@@ -331,10 +414,10 @@ export default function HomePage({ query }: { query: string }) {
               setTab(x)
               setCategory("")
             }}
-            className={`h-9 rounded-lg px-3 text-sm font-medium transition-colors ${
+            className={`h-8 rounded-md px-3.5 text-sm font-medium transition-colors ${
               tab === x
-                ? "bg-accent text-on-accent"
-                : "text-text-muted hover:bg-surface-2 hover:text-text"
+                ? "bg-surface-2 text-text"
+                : "text-text-muted hover:text-text"
             }`}
           >
             {t(`mods.tab.${x}`)}
@@ -343,7 +426,7 @@ export default function HomePage({ query }: { query: string }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex h-11 min-w-72 flex-1 max-w-[460px] items-center gap-2 rounded-lg border border-border-strong bg-card px-3 text-text-muted">
+        <div className="flex h-10 min-w-56 flex-1 max-w-[420px] items-center gap-2 rounded-lg border border-border-strong bg-card px-3 text-text-muted">
           <Search size={16} aria-hidden />
           <input
             value={localQuery}
@@ -359,7 +442,7 @@ export default function HomePage({ query }: { query: string }) {
           onChange={(e) => setSort(e.target.value as SortIndex)}
           disabled={busy}
           aria-label={t("home.sort.label")}
-          className="h-11 min-w-40 rounded-lg border border-border-strong bg-card px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+          className="h-10 min-w-40 rounded-lg border border-border-strong bg-card px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40"
         >
           <option value="downloads">{t("home.sort.downloads")}</option>
           <option value="follows">{t("home.sort.follows")}</option>
@@ -377,7 +460,7 @@ export default function HomePage({ query }: { query: string }) {
           }}
           disabled={busy}
           aria-label={t("home.filter.loader")}
-          className="h-11 min-w-36 rounded-lg border border-border-strong bg-card px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+          className="h-10 min-w-36 rounded-lg border border-border-strong bg-card px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40"
         >
           <option value="">{t("home.filter.any")}</option>
           {LOADERS.map((l) => (
@@ -391,7 +474,7 @@ export default function HomePage({ query }: { query: string }) {
           onChange={(e) => setCategory(e.target.value)}
           disabled={busy}
           aria-label={t("home.filter.category")}
-          className="h-11 min-w-36 rounded-lg border border-border-strong bg-card px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+          className="h-10 min-w-36 rounded-lg border border-border-strong bg-card px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40"
         >
           <option value="">{t("home.filter.categoryAny")}</option>
           {categories.map((c) => (
@@ -401,9 +484,9 @@ export default function HomePage({ query }: { query: string }) {
             </option>
           ))}
         </select>
-        {/* Та же высота, что поиск/селекты (h-11 = .btn 44px) — раньше был
-            btn-sm 40px, кнопка «Найти» выглядела чужой в ряду (владелец). */}
-        <button onClick={() => void doSearch()} disabled={busy} className="btn-primary">
+        {/* Та же высота, что поиск/селекты (h-10 = btn-sm 40px) — компактный
+            ряд фильтров над сеткой (D65). */}
+        <button onClick={() => void doSearch()} disabled={busy} className="btn-primary btn-sm">
           <Search size={15} aria-hidden />
           {t("mods.search")}
         </button>
@@ -413,7 +496,7 @@ export default function HomePage({ query }: { query: string }) {
         <button
           onClick={() => void feelingLucky()}
           disabled={busy || luckyBusy}
-          className="btn"
+          className="btn btn-sm"
           aria-label={t("home.lucky")}
         >
           <Dices size={15} aria-hidden />
@@ -432,22 +515,17 @@ export default function HomePage({ query }: { query: string }) {
       )}
 
       {!searched ? (
-        // До первого ответа — скелет-строки в ритме реальных строк каталога
-        // (иконка, три полоски текста, место кнопки); пустое состояние —
-        // только после поиска.
-        <div className="flex flex-col gap-2">
-          {Array.from({ length: 6 }, (_, i) => (
+        // До первого ответа — скелет-плитки в ритме реальной сетки (арт-заглушка
+        // + две полоски текста у низа); пустое состояние — только после поиска.
+        // Своего скелета у hero нет (D65): пока строк нет — просто пусто.
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+          {Array.from({ length: 8 }, (_, i) => (
             <div
               key={i}
-              className="grid min-h-[76px] grid-cols-[56px_1fr_auto] items-center gap-3 rounded-lg border border-border-app bg-card px-3 py-2.5"
+              className="flex aspect-[280/238] flex-col justify-end gap-2 rounded-xl border border-border-app bg-card p-3"
             >
-              <div className="size-14 rounded-lg bg-surface-2 animate-pulse" />
-              <div className="flex min-w-0 flex-col gap-2">
-                <div className="h-3 w-2/3 rounded bg-surface-2 animate-pulse" />
-                <div className="h-3 w-full rounded bg-surface-2 animate-pulse" />
-                <div className="h-3 w-1/2 rounded bg-surface-2 animate-pulse" />
-              </div>
-              <div className="h-10 w-28 rounded-lg bg-surface-2 animate-pulse" />
+              <div className="h-3 w-3/4 rounded bg-surface-2 animate-pulse" />
+              <div className="h-3 w-1/2 rounded bg-surface-2 animate-pulse" />
             </div>
           ))}
         </div>
@@ -459,10 +537,14 @@ export default function HomePage({ query }: { query: string }) {
           <div className="max-w-sm text-[13px] text-text-muted">{t("mods.empty.desc")}</div>
         </div>
       ) : (
-        <div className="flex flex-col gap-2">
-          {visibleHits.map((h, idx) => (
-            <CatalogRow key={h.project_id} hit={h} idx={idx} onOpen={() => setDetail(h)} />
-          ))}
+        <div className="flex flex-col gap-3">
+          {/* HERO «Популярное сейчас»: лид выдачи по скачиваниям, только модпаки. */}
+          {featured && <HeroTile hit={featured} onOpen={() => setDetail(featured)} />}
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+            {visibleHits.map((h, idx) => (
+              <CatalogTile key={h.project_id} hit={h} idx={idx} onOpen={() => setDetail(h)} />
+            ))}
+          </div>
           {hits.length < total && (
             <div ref={sentinelRef} className="anim-fade-in flex justify-center py-2">
               <button

@@ -1,5 +1,7 @@
-// Shell: титлбар 52px + сайдбар 216px + контент — каркас «Сланца»
-// (variant-01-slate.html). Компоненты — только презентация; данные из сторов/IPC.
+// Shell (D65, GD-редизайн): узкий титлбар + вертикальный рельс 62px слева +
+// контент + статус-бар внизу — каркас по redesign-mockups/gdlauncher.html
+// (.tbar / .rail / .content / .fbar). Компоненты — только презентация;
+// данные из сторов/IPC.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -21,12 +23,13 @@ import {
   Check,
   Download,
   LoaderCircle,
+  User,
   UserPlus,
   Wifi,
   WifiOff,
   AlertTriangle,
 } from "lucide-react";
-import { apiErrorText, t } from "../../i18n";
+import { apiErrorText, currentLanguage, t } from "../../i18n";
 import { api } from "../../api/client";
 import { useInstances, unsubscribeEvents } from "../../state/instances";
 import { useSettings } from "../../state/settings";
@@ -59,13 +62,42 @@ const NAV: { id: Page; icon: typeof House; label: string }[] = [
   { id: "settings", icon: SettingsIcon, label: "nav.settings" },
 ];
 
+// D65: языки статус-бара — те же эндонимы, что в селекте Настроек (F7);
+// смена — тот же механизм (settings.update({ language }) → i18n.setLanguage).
+const LANGS: { code: string; name: string }[] = [
+  { code: "en", name: "English" },
+  { code: "ru", name: "Русский" },
+  { code: "uk", name: "Українська" },
+  { code: "pl", name: "Polski" },
+];
+
 const win = () => getCurrentWindow();
 
-/** F12: ник офлайн-профиля — латиница/цифры/подчёркивание, 3–16 символов. */
+/** F12: ник офлайн-профиля — латиница/цифры/подчеркивание, 3–16 символов. */
 const NICK_RE = /^[A-Za-z0-9_]{3,16}$/;
 
 /** Сколько живёт баннер результата drop-установки .mrpack (D5b). */
 const NOTICE_MS = 6000;
+
+/** D65: имя файла из url загрузки (последний сегмент пути) — для списка
+ * ошибок в поповере «Загрузки»; невалидный url показываем как есть. */
+function dlFileName(url: string): string {
+  try {
+    const seg = new URL(url).pathname.split("/").filter(Boolean).pop();
+    return seg ? decodeURIComponent(seg) : url;
+  } catch {
+    return url;
+  }
+}
+
+/** Кнопка рельса (образец .ritem макета): 40x40, иконка 20px штриховая. */
+const RITEM_BTN =
+  "relative grid h-10 w-10 place-items-center rounded-lg transition-colors";
+const RITEM_ON = "bg-accent-soft text-accent";
+const RITEM_OFF = "text-text-muted hover:bg-surface-2 hover:text-text";
+/** Компактная иконка-кнопка титлбара/статус-бара (образец .wbtn макета). */
+const TBAR_BTN =
+  "grid h-8 w-8 place-items-center rounded-lg text-text-muted hover:bg-surface-2 hover:text-text";
 
 export default function Shell({ onLogout }: { onLogout: () => void }) {
   const [page, setPage] = useState<Page>("home");
@@ -74,6 +106,12 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   const [openInstanceId, setOpenInstanceId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [version, setVersion] = useState("");
+  // D65: максимальный major обнаруженной ядром Java — строка «Java N» футера.
+  // null (список пуст/запрос упал) — элемента нет: не выдумываем данные.
+  const [javaMajor, setJavaMajor] = useState<number | null>(null);
+  // D65: поповер «Загрузки» у рельса и меню языка у статус-бара.
+  const [dlOpen, setDlOpen] = useState(false);
+  const [langOpen, setLangOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   // F12: черновик быстрого офлайн-ника в открытом меню профиля.
   const [quickNick, setQuickNick] = useState("");
@@ -84,7 +122,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   const searchRef = useRef<HTMLInputElement>(null);
   const updateInfo = useUpdateStore((s) => s.info);
   const silentUpdateCheck = useUpdateStore((s) => s.silentCheck);
-  // D54: попап установки у бейджа в футере (состояние общее со стором).
+  // D54: попап установки у бейджа обновлений (переехал с сайдбара в рельс).
   const [updateOpen, setUpdateOpen] = useState(false);
   const updateInstalling = useUpdateStore((s) => s.installing);
   const updateProgress = useUpdateStore((s) => s.progress);
@@ -123,8 +161,11 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   // D64: готовность сторов — ярлычный запуск ждёт её (см. launchFromShortcut).
   const instancesLoaded = useInstances((s) => s.loaded);
   const accountsLoaded = useAccounts((s) => s.loaded);
-  // D64: активные загрузки ядра (чип в титлбаре); null — ничего не качается.
+  // D64→D65: активные загрузки ядра переехали из чипа титлбара в рельс
+  // (точка-индикатор + поповер). queueState — полные счётчики (failed,
+  // failedItems) для поповера; null — ядро ещё ничего не присылало.
   const dlQueue = useInstances((s) => s.dlQueue);
+  const queueState = useInstances((s) => s.queueState);
 
   const showNotice = useCallback((kind: "ok" | "error", text: string) => {
     setNotice({ kind, text });
@@ -203,8 +244,16 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     // D64: при сбое getVersion версии в футере просто нет — выдумывать
     // «0.2.0» нечестно.
     getVersion().then(setVersion).catch(() => setVersion(""));
+    // D65: «Java N» статус-бара — один запрос на монтирование; максимальный
+    // major из обнаруженных ядром установок. Пусто/ошибка — строки не будет.
+    api
+      .javaList()
+      .then((installs) =>
+        setJavaMajor(installs.length ? Math.max(...installs.map((j) => j.major)) : null),
+      )
+      .catch(() => setJavaMajor(null));
     // D46: тихая проверка обновлений — один раз за сессию (задержка внутри
-    // стора); результат — бейдж в футере и раздел в Настройках, без тостов.
+    // стора); результат — бейдж в рельсе и раздел в Настройках, без тостов.
     silentUpdateCheck();
     // A32: слушатели событий ядра живут ровно пока смонтирован Shell.
     return () => unsubscribeEvents();
@@ -255,6 +304,12 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
 
   const active =
     accounts.find((a) => a.id === accountsActiveId) ?? accounts[0] ?? null;
+
+  // D65: пункт «Загрузки» жив, только пока есть что показывать (не мёртвая
+  // кнопка): идёт скачивание (dlQueue) или в последнем состоянии очереди
+  // есть ошибки (queueState.failed). Точка-индикатор — только на активную
+  // закачку, как в макете (.rdot).
+  const downloadsVisible = dlQueue !== null || (!!queueState && queueState.failed > 0);
 
   // D48: ярлык рабочего стола — single-instance пересылает `--id` вторым
   // процессом: либо событием shortcut_launch, либо через shortcut_take_pending
@@ -322,7 +377,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   }, [queueShortcutLaunch]);
 
 
-  // Скины профилей (D34): голова персонажа в чипе титлбара и в меню профилей.
+  // Скины профилей (D34): голова персонажа в аватаре рельса и в меню профилей.
   const skinsById = useSkins((s) => s.byId);
   const loadSkin = useSkins((s) => s.load);
   useEffect(() => {
@@ -353,7 +408,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     [setActive],
   );
 
-  // F12: быстрый офлайн-профиль прямо из меню чипа; успех — активируем и
+  // F12: быстрый офлайн-профиль прямо из меню аватара; успех — активируем и
   // закрываем меню, ошибка — баннером (error) через apiErrorText.
   const addQuickNick = () => {
     const nick = quickNick.trim();
@@ -367,6 +422,33 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
       .catch((e) => showNotice("error", apiErrorText(e)));
   };
 
+  // D65: смена языка из статус-бара — тем же механизмом, что и селект в
+  // Настройках (F7): settings.update кладёт язык и в ядро, и в localStorage
+  // (i18n.setLanguage внутри). Перерисовка текстов — через обновление стора
+  // настроек (App перерисовывает дерево).
+  const pickLanguage = (code: string) => {
+    setLangOpen(false);
+    if (code === currentLanguage()) return;
+    void updateSettings({ language: code }).catch((e) =>
+      showNotice("error", apiErrorText(e)),
+    );
+  };
+
+  const activeLang = currentLanguage();
+
+  // Счётчики поповера «Загрузки»: живые pending/downloading — из dlQueue,
+  // ошибки и список файлов — из последнего queueState. Ряды с нулём не
+  // показываем (честные данные без «Скачивается: 0»).
+  const dlCounters: { key: string; n: number }[] = [];
+  if (dlQueue) {
+    if (dlQueue.pending > 0)
+      dlCounters.push({ key: "downloads.pending", n: dlQueue.pending });
+    if (dlQueue.downloading > 0)
+      dlCounters.push({ key: "downloads.downloading", n: dlQueue.downloading });
+  }
+  if (queueState && queueState.failed > 0)
+    dlCounters.push({ key: "downloads.failed", n: queueState.failed });
+
   return (
     <div
       className="flex h-screen flex-col overflow-hidden bg-bg text-text"
@@ -375,24 +457,29 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => e.preventDefault()}
     >
+      {/* Титлбар (.tbar): бренд-чип + поиск; справа — палитра, офлайн, окно. */}
       <header
         data-tauri-drag-region
-        className="flex h-[52px] flex-none items-center gap-4 border-b border-border-app pl-4 pr-3"
+        className="flex h-10 flex-none items-center gap-3 border-b border-border-app bg-[var(--rail)] pl-3 pr-2"
       >
-        <div data-tauri-drag-region className="flex items-center gap-2 text-[15px] font-semibold">
+        <div
+          data-tauri-drag-region
+          className="flex h-8 items-center gap-2 rounded-lg px-1 text-[13px] font-semibold"
+        >
           {/* D38: выбранный логотип; встроенный — дефолтная плашка. */}
           {brandLogoUrl ? (
             <img src={brandLogoUrl} alt="" className="size-6 rounded-md object-cover" />
           ) : (
             <span className="grid size-6 place-items-center rounded-md bg-accent text-on-accent">
-              <Box size={15} aria-hidden />
+              <Box size={14} aria-hidden />
             </span>
           )}
           {t("app.name")}
         </div>
 
-        <div className="ml-2 flex h-9 w-[360px] max-w-[36vw] items-center gap-2 rounded-lg border border-border-app bg-card px-3 text-text-muted">
-          <Search size={16} aria-hidden />
+        {/* Компактный поиск (Ctrl+K — фокус). aria/placeholder не менялись. */}
+        <div className="flex h-8 w-[300px] max-w-[32vw] items-center gap-2 rounded-lg border border-border-app bg-bg px-2.5 text-text-muted">
+          <Search size={14} aria-hidden />
           <input
             ref={searchRef}
             type="text"
@@ -401,14 +488,14 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
             onKeyDown={onSearchKeyDown}
             placeholder={t("shell.search.instances")}
             aria-label={t("shell.search.instances")}
-            className="min-w-0 flex-1 bg-transparent text-text outline-none placeholder:text-text-muted"
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-text outline-none placeholder:text-text-muted"
           />
-          <kbd className="rounded border border-border-strong px-1.5 font-mono text-xs leading-[18px] text-text-muted">
+          <kbd className="rounded border border-border-strong px-1.5 font-mono text-[10px] leading-4 text-text-muted">
             Ctrl K
           </kbd>
         </div>
 
-        <div data-tauri-drag-region className="flex-1" />
+        <div data-tauri-drag-region className="min-w-4 flex-1" />
 
         {/* F19: палитра команд (Ctrl+P); обычная кнопка — под drag-region
             не попадает, клики работают. */}
@@ -416,7 +503,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
           onClick={() => setPaletteOpen(true)}
           aria-label={t("shell.palette.open")}
           title={t("shell.palette.open")}
-          className="icon-btn"
+          className={TBAR_BTN}
         >
           <Command size={16} aria-hidden />
         </button>
@@ -433,7 +520,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
               showNotice("error", apiErrorText(e)),
             )
           }
-          className="icon-btn"
+          className={TBAR_BTN}
         >
           {workOffline ? (
             <WifiOff key="off" size={16} aria-hidden className="anim-fade-in" />
@@ -442,231 +529,165 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
           )}
         </button>
 
-        {/* D64: активные загрузки ядра — маленький чип «иконка + сколько»
-            (pending+downloading из dlQueue стора инстансов), без кликов и
-            переходов. Нечего качать (dlQueue null) — элемента нет вовсе. */}
-        {dlQueue && (
-          <div
-            role="status"
-            title={t("shell.dl.active", { count: dlQueue.pending + dlQueue.downloading })}
-            aria-label={t("shell.dl.active", { count: dlQueue.pending + dlQueue.downloading })}
-            className="flex h-8 items-center gap-1.5 rounded-lg border border-border-app bg-card px-2 text-xs text-text-muted"
-          >
-            <Download size={13} aria-hidden className="text-accent" />
-            <span className="font-mono">{dlQueue.pending + dlQueue.downloading}</span>
-          </div>
-        )}
+        <div className="mx-0.5 h-4 w-px bg-border-app" />
 
-        {/* Чип аккаунта: реальный активный профиль из ядра (M8) */}
-        {active ? (
-          <div className="relative">
-            <button
-              onClick={() => setAccountOpen((v) => !v)}
-              aria-label={t("account.chip.label", {
-                name: active.name,
-                kind: t(accountKindLabelKey[active.kind]),
-              })}
-              aria-expanded={accountOpen}
-              className="flex h-10 items-center gap-2 rounded-lg px-1 hover:bg-surface-2"
-            >
-              <SkinHead name={active.name} skin={skinsById[active.id]} size={32} />
-              <span className="text-left leading-tight">
-                <span className="block text-sm font-semibold">{active.name}</span>
-                <span className="block text-xs text-text-muted">
-                  {t(accountKindLabelKey[active.kind])}
-                </span>
-              </span>
-              <ChevronDown
-                size={14}
-                aria-hidden
-                className={`text-text-muted transition-transform ${accountOpen ? "rotate-180" : ""}`}
-              />
-            </button>
-            {accountOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setAccountOpen(false)} />
-                <div
-                  role="menu"
-                  aria-label={t("shell.account.profile")}
-                  className="anim-menu-in origin-top-right absolute right-0 top-11 z-50 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
-                >
-                  {/* Тот же порядок, что в модалке аккаунтов: активный первый,
-                      дальше по предвыбранной сортировке (D53). Список длинный —
-                      свой скролл с потолком, «Управление аккаунтами» и быстрый
-                      ник закреплены под ним (жалоба владельца: без максимизации
-                      окна до действий было не дотянуться). */}
-                  <div className="max-h-[45vh] overflow-y-auto overscroll-contain">
-                    {sortAccounts(accounts, accountSortPref(), active?.id).map((a) => (
-                    <button
-                      key={a.id}
-                      role="menuitemradio"
-                      aria-checked={a.id === active.id}
-                      onClick={() => pickAccount(a.id)}
-                      className="flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-surface-2"
-                    >
-                      <span className="w-4">
-                        {a.id === active.id && <Check size={14} aria-hidden />}
-                      </span>
-                      <SkinHead name={a.name} skin={skinsById[a.id]} size={16} />
-                      <span className="font-semibold">{a.name}</span>
-                      <span className="ml-auto text-xs text-text-muted">
-                        {t(accountKindLabelKey[a.kind])}
-                      </span>
-                    </button>
-                  ))}
-                  </div>
-                  <div className="my-1 border-t border-border-app" />
-                  <button
-                    role="menuitem"
-                    onClick={() => {
-                      setAccountOpen(false);
-                      setAccountsModalOpen(true);
-                    }}
-                    className="flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-sm text-accent hover:bg-surface-2"
-                  >
-                    <UserPlus size={15} aria-hidden />
-                    <span className="font-semibold">{t("shell.account.manage")}</span>
-                  </button>
-                  {/* F12: быстрый офлайн-ник. Input внутри меню (z-50) — клики
-                      по нему не задевают закрывающий overlay (z-40). */}
-                  <div className="my-1 border-t border-border-app" />
-                  <div className="flex items-center gap-1 p-1">
-                    <input
-                      type="text"
-                      value={quickNick}
-                      onChange={(e) => setQuickNick(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") addQuickNick();
-                      }}
-                      placeholder={t("accounts.quickNick")}
-                      aria-label={t("accounts.quickNick")}
-                      className="h-8 min-w-0 flex-1 rounded-md border border-border-strong bg-bg px-2 text-sm outline-none focus:border-accent"
-                    />
-                    <button
-                      type="button"
-                      onClick={addQuickNick}
-                      disabled={!NICK_RE.test(quickNick.trim())}
-                      className="flex h-8 shrink-0 items-center rounded-md px-2 text-sm font-semibold text-accent hover:bg-surface-2 disabled:cursor-not-allowed disabled:text-text-muted/40"
-                    >
-                      {t("accounts.quickNick.add")}
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        ) : (
-          <button
-            onClick={() => setAccountsModalOpen(true)}
-            aria-label={t("shell.account.profile")}
-            className="flex h-10 items-center gap-2 rounded-lg px-2 text-sm font-semibold text-text-muted hover:bg-surface-2 hover:text-text"
-          >
-            <UserPlus size={16} aria-hidden />
-            {t("shell.account.addProfile")}
-          </button>
-        )}
-
-        <div className="flex gap-1">
+        <div className="flex gap-0.5">
           <button
             onClick={() => void win().minimize()}
             aria-label={t("shell.window.minimize")}
-            className="icon-btn"
+            title={t("shell.window.minimize")}
+            className={`${TBAR_BTN} w-9 rounded-md`}
           >
-            <Minus size={16} aria-hidden />
+            <Minus size={15} aria-hidden />
           </button>
           <button
             onClick={() => void win().toggleMaximize()}
             aria-label={t("shell.window.maximize")}
-            className="icon-btn"
+            title={t("shell.window.maximize")}
+            className={`${TBAR_BTN} w-9 rounded-md`}
           >
-            <Square size={14} aria-hidden />
+            <Square size={13} aria-hidden />
           </button>
           <button
             onClick={() => void win().close()}
             aria-label={t("shell.window.close")}
-            className="icon-btn hover:!bg-error hover:!text-on-danger"
+            title={t("shell.window.close")}
+            className={`${TBAR_BTN} w-9 rounded-md hover:!bg-error hover:!text-on-danger`}
           >
-            <X size={16} aria-hidden />
+            <X size={15} aria-hidden />
           </button>
         </div>
       </header>
 
-      {/* D62: «требуется перелогин» — тонкая полоса под титлбаром, тот же
-          паттерн, что у notice-баннера ниже. «Нет данных — нет элемента»:
-          деградировавших профилей нет — плашка не рендерится вовсе. Клик
-          открывает модалку аккаунтов тем же механизмом, что и чип. */}
-      {degradedIds.size > 0 && (
-        <button
-          type="button"
-          data-testid="relogin-banner"
-          aria-label={t("accounts.reloginBanner")}
-          title={t("accounts.reloginBanner")}
-          onClick={() => setAccountsModalOpen(true)}
-          className="anim-slide-down mx-3 mt-3 flex items-center gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-left text-sm text-warning hover:bg-warning/15"
-        >
-          <AlertTriangle size={16} aria-hidden className="shrink-0" />
-          {t("accounts.reloginBanner")}
-        </button>
-      )}
-
-      {/* Результат drop-установки .mrpack: тот же инлайн-баннер, что в страницах. */}
-      {notice && (
-        <div
-          role={notice.kind === "error" ? "alert" : "status"}
-          className={`anim-slide-down mx-3 mt-3 rounded-lg border p-3 text-sm ${
-            notice.kind === "error"
-              ? "border-error/40 bg-error/10 text-error"
-              : "border-success/40 bg-success/10 text-success"
-          }`}
-        >
-          {notice.text}
-        </div>
-      )}
-
-      <div className="grid min-h-0 flex-1 grid-cols-[216px_1fr]">
+      <div className="flex min-h-0 flex-1">
+        {/* Рельс (.rail): узкая вертикальная навигация 62px. */}
         <nav
           aria-label={t("app.name")}
-          className="flex min-h-0 flex-col gap-0.5 border-r border-border-app p-3"
+          className="flex w-[62px] flex-none flex-col items-center gap-1 border-r border-border-app bg-[var(--rail)] py-3"
         >
-          {NAV.map(({ id, icon: Icon, label }) => (
+          {NAV.slice(0, 2).map(({ id, icon: Icon, label }) => (
             <button
               key={id}
               onClick={() => goToPage(id)}
               aria-current={page === id ? "page" : undefined}
-              className={`relative flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium ${
-                page === id
-                  ? "bg-accent-soft text-text"
-                  : "text-text-muted hover:bg-surface-2 hover:text-text"
-              }`}
+              title={t(label)}
+              className={`${RITEM_BTN} ${page === id ? RITEM_ON : RITEM_OFF}`}
             >
               {page === id && (
                 <span
                   aria-hidden
-                  className="anim-fade-in absolute -left-3 top-2 bottom-2 w-[3px] rounded-r bg-accent"
+                  className="anim-fade-in absolute -left-[9px] inset-y-2 w-[3px] rounded-r bg-accent"
                 />
               )}
-              <Icon size={18} aria-hidden />
-              {t(label)}
+              <Icon size={20} strokeWidth={1.7} aria-hidden />
+              <span className="sr-only">{t(label)}</span>
               {id === "instances" && list.length > 0 && (
-                <span className="ml-auto font-mono text-xs text-text-muted">{list.length}</span>
+                <span
+                  aria-hidden
+                  className="absolute bottom-0 right-1 font-mono text-[10px] leading-none text-text-muted"
+                >
+                  {list.length}
+                </span>
               )}
             </button>
           ))}
-          <div className="mt-auto border-t border-border-app p-3 text-xs text-text-muted">
+
+          {/* D65: «Загрузки» — точка-индикатор при активной закачке, клик —
+              поповер со счётчиками ядра. Нет данных — кнопки нет вовсе. */}
+          {downloadsVisible && (
+            <div className="relative">
+              <button
+                onClick={() => setDlOpen((v) => !v)}
+                aria-expanded={dlOpen}
+                aria-label={t("nav.downloads")}
+                title={t("nav.downloads")}
+                className={`${RITEM_BTN} ${dlOpen ? "bg-surface-2 text-text" : RITEM_OFF}`}
+              >
+                <Download size={20} strokeWidth={1.7} aria-hidden />
+                {dlQueue && (
+                  <span
+                    aria-hidden
+                    className="anim-fade-in absolute right-1 top-1 size-1.5 rounded-full bg-success"
+                  />
+                )}
+              </button>
+              {dlOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setDlOpen(false)} aria-hidden />
+                  <div
+                    role="dialog"
+                    aria-label={t("downloads.title")}
+                    className="anim-menu-in absolute left-full top-0 z-50 ml-2 w-72 origin-top-left rounded-lg border border-border-app bg-card p-3 shadow-lg"
+                  >
+                    <div className="flex items-center gap-2 text-sm font-semibold text-text">
+                      <Download size={14} aria-hidden className="text-accent" />
+                      {t("downloads.title")}
+                    </div>
+                    <div className="mt-2 flex flex-col gap-1 text-xs text-text-muted">
+                      {dlCounters.map(({ key, n }) => (
+                        <div key={key} className="flex items-center justify-between gap-2">
+                          <span>{t(key)}</span>
+                          <span className="font-mono text-text">{n}</span>
+                        </div>
+                      ))}
+                      {/* Ошибочные файлы: url → имя файла, до 5 строк. */}
+                      {queueState && queueState.failedItems.length > 0 && (
+                        <ul className="mt-1 flex flex-col gap-0.5 border-t border-border-app pt-1.5">
+                          {queueState.failedItems.slice(0, 5).map(([url]) => (
+                            <li
+                              key={url}
+                              title={url}
+                              className="truncate font-mono text-[11px] text-warning"
+                            >
+                              {dlFileName(url)}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      <p className="mt-1 text-[11px] leading-relaxed text-text-muted/80">
+                        {t("downloads.hint")}
+                      </p>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {NAV.slice(2).map(({ id, icon: Icon, label }) => (
+            <button
+              key={id}
+              onClick={() => goToPage(id)}
+              aria-current={page === id ? "page" : undefined}
+              title={t(label)}
+              className={`${RITEM_BTN} ${page === id ? RITEM_ON : RITEM_OFF}`}
+            >
+              {page === id && (
+                <span
+                  aria-hidden
+                  className="anim-fade-in absolute -left-[9px] inset-y-2 w-[3px] rounded-r bg-accent"
+                />
+              )}
+              <Icon size={20} strokeWidth={1.7} aria-hidden />
+              <span className="sr-only">{t(label)}</span>
+            </button>
+          ))}
+
+          {/* Низ рельса: бейдж обновления (D54) и аватар профиля. */}
+          <div className="mt-auto flex flex-col items-center gap-1">
             {/* D54: клик по бейджу открывает попап установки прямо здесь —
                 раньше перекидывал в настройки, владелец просил «не кидать». */}
             {updateInfo?.updateAvailable && updateInfo.latest && (
-              <div className="relative mb-2">
+              <div className="relative">
                 <button
                   type="button"
                   onClick={() => setUpdateOpen((v) => !v)}
                   aria-expanded={updateOpen}
-                  className="flex w-full items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2 py-1.5 text-accent hover:bg-accent/15"
                   title={t("updates.availableBadge")}
+                  className={`${RITEM_BTN} text-accent hover:bg-surface-2`}
                 >
-                  <Download size={12} aria-hidden />
-                  <span className="truncate">{t("updates.availableBadge")}</span>
-                  <span className="ml-auto font-mono">{updateInfo.latest}</span>
+                  <Download size={20} strokeWidth={1.7} aria-hidden />
+                  <span className="sr-only">{t("updates.availableBadge")}</span>
                 </button>
                 {updateOpen && (
                   <>
@@ -682,7 +703,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
                     <div
                       role="dialog"
                       aria-label={t("updates.availableBadge")}
-                      className="anim-fade-up absolute bottom-full left-0 z-50 mb-2 w-72 rounded-lg border border-border-app bg-card p-4 shadow-2xl"
+                      className="anim-fade-up absolute bottom-0 left-full z-50 mb-1 ml-2 w-72 origin-bottom-left rounded-lg border border-border-app bg-card p-4 shadow-2xl"
                     >
                       <div className="flex items-center gap-2 text-sm font-semibold text-text">
                         <Download size={14} aria-hidden className="text-accent" />
@@ -742,40 +763,241 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
                 )}
               </div>
             )}
-            {version && (
-              <span>
-                {t("shell.footer.version")} <span className="font-mono">{version}</span>
-              </span>
+            <div className="h-px w-6 bg-border-app" />
+
+            {/* Аватар аккаунта: тот же чип, что был в титлбаре (M8), — меню
+                с быстрым переключением/офлайн-ником; «Управление аккаунтами…»
+                открывает модалку. Нет профилей — нейтральная иконка user и
+                сразу модалка. */}
+            {active ? (
+              <div className="relative">
+                <button
+                  onClick={() => setAccountOpen((v) => !v)}
+                  aria-label={t("account.chip.label", {
+                    name: active.name,
+                    kind: t(accountKindLabelKey[active.kind]),
+                  })}
+                  aria-expanded={accountOpen}
+                  title={active.name}
+                  className={`${RITEM_BTN} ${RITEM_OFF}`}
+                >
+                  <SkinHead name={active.name} skin={skinsById[active.id]} size={24} />
+                  {/* Ник текстом (в т.ч. скрытым): по нему приёмки ждут
+                      появление нового активного профиля в каркасе. */}
+                  <span className="sr-only">{active.name}</span>
+                </button>
+                {accountOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setAccountOpen(false)} />
+                    <div
+                      role="menu"
+                      aria-label={t("shell.account.profile")}
+                      className="anim-menu-in origin-bottom-left absolute bottom-0 left-full z-50 ml-2 min-w-48 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
+                    >
+                      {/* Тот же порядок, что в модалке аккаунтов: активный первый,
+                          дальше по предвыбранной сортировке (D53). Список длинный —
+                          свой скролл с потолком, «Управление аккаунтами» и быстрый
+                          ник закреплены под ним (жалоба владельца: без максимизации
+                          окна до действий было не дотянуться). */}
+                      <div className="max-h-[45vh] overflow-y-auto overscroll-contain">
+                        {sortAccounts(accounts, accountSortPref(), active?.id).map((a) => (
+                        <button
+                          key={a.id}
+                          role="menuitemradio"
+                          aria-checked={a.id === active.id}
+                          onClick={() => pickAccount(a.id)}
+                          className="flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-surface-2"
+                        >
+                          <span className="w-4">
+                            {a.id === active.id && <Check size={14} aria-hidden />}
+                          </span>
+                          <SkinHead name={a.name} skin={skinsById[a.id]} size={16} />
+                          <span className="font-semibold">{a.name}</span>
+                          <span className="ml-auto text-xs text-text-muted">
+                            {t(accountKindLabelKey[a.kind])}
+                          </span>
+                        </button>
+                      ))}
+                      </div>
+                      <div className="my-1 border-t border-border-app" />
+                      <button
+                        role="menuitem"
+                        onClick={() => {
+                          setAccountOpen(false);
+                          setAccountsModalOpen(true);
+                        }}
+                        className="flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-sm text-accent hover:bg-surface-2"
+                      >
+                        <UserPlus size={15} aria-hidden />
+                        <span className="font-semibold">{t("shell.account.manage")}</span>
+                      </button>
+                      {/* F12: быстрый офлайн-ник. Input внутри меню (z-50) — клики
+                          по нему не задевают закрывающий overlay (z-40). */}
+                      <div className="my-1 border-t border-border-app" />
+                      <div className="flex items-center gap-1 p-1">
+                        <input
+                          type="text"
+                          value={quickNick}
+                          onChange={(e) => setQuickNick(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") addQuickNick();
+                          }}
+                          placeholder={t("accounts.quickNick")}
+                          aria-label={t("accounts.quickNick")}
+                          className="h-8 min-w-0 flex-1 rounded-md border border-border-strong bg-bg px-2 text-sm outline-none focus:border-accent"
+                        />
+                        <button
+                          type="button"
+                          onClick={addQuickNick}
+                          disabled={!NICK_RE.test(quickNick.trim())}
+                          className="flex h-8 shrink-0 items-center rounded-md px-2 text-sm font-semibold text-accent hover:bg-surface-2 disabled:cursor-not-allowed disabled:text-text-muted/40"
+                        >
+                          {t("accounts.quickNick.add")}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
+              <button
+                onClick={() => setAccountsModalOpen(true)}
+                aria-label={t("shell.account.profile")}
+                title={t("shell.account.profile")}
+                className={RITEM_BTN + " " + RITEM_OFF}
+              >
+                <User size={20} strokeWidth={1.7} aria-hidden />
+              </button>
             )}
-            {/* A14: обязательный дисклеймер Mojang об неофициальном статусе. */}
-            <div className="mt-1 text-balance">{t("shell.disclaimer")}</div>
           </div>
         </nav>
 
-        <main className="min-h-0 overflow-y-auto p-6">
-          {/* D41: смена страницы/инстанса — remount по key переигрывает вход.
-              Обычный див: main не flex, max-w держат сами страницы. */}
-          <div key={openInstanceId ?? page} className="anim-page-in">
-            {openInstanceId ? (
-              // Добавление модов — прямо на странице инстанса (D39), без
-              // перекидывания на страницу «Моды».
-              <InstanceDetailPage
-                instanceId={openInstanceId}
-                onBack={() => setOpenInstanceId(null)}
-              />
-            ) : (
-              <>
-                {page === "home" && <HomePage query={query} />}
-                {page === "instances" && (
-                  <InstancesPage query={query} onOpenInstance={setOpenInstanceId} />
-                )}
-                {page === "skins" && <SkinsPage />}
-                {page === "settings" && <SettingsPage onOnboardingReset={onLogout} />}
-              </>
-            )}
-          </div>
-        </main>
+        {/* Контентная колонка: баннеры + скролл-область страниц. */}
+        <div className="flex min-w-0 flex-1 flex-col">
+          {/* D62: «требуется перелогин» — тонкая плашка над контентом, тот же
+              паттерн, что у notice-баннера ниже. «Нет данных — нет элемента»:
+              деградировавших профилей нет — плашка не рендерится вовсе. Клик
+              открывает модалку аккаунтов тем же механизмом, что и аватар. */}
+          {degradedIds.size > 0 && (
+            <button
+              type="button"
+              data-testid="relogin-banner"
+              aria-label={t("accounts.reloginBanner")}
+              title={t("accounts.reloginBanner")}
+              onClick={() => setAccountsModalOpen(true)}
+              className="anim-slide-down mx-4 mt-3 flex items-center gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-left text-sm text-warning hover:bg-warning/15"
+            >
+              <AlertTriangle size={16} aria-hidden className="shrink-0" />
+              {t("accounts.reloginBanner")}
+            </button>
+          )}
+
+          {/* Результат drop-установки .mrpack: тот же инлайн-баннер, что в страницах. */}
+          {notice && (
+            <div
+              role={notice.kind === "error" ? "alert" : "status"}
+              className={`anim-slide-down mx-4 mt-3 rounded-lg border p-3 text-sm ${
+                notice.kind === "error"
+                  ? "border-error/40 bg-error/10 text-error"
+                  : "border-success/40 bg-success/10 text-success"
+              }`}
+            >
+              {notice.text}
+            </div>
+          )}
+
+          <main className="min-h-0 flex-1 overflow-y-auto p-6">
+            {/* D41: смена страницы/инстанса — remount по key переигрывает вход.
+                Обычный див: main не flex, max-w держат сами страницы. */}
+            <div key={openInstanceId ?? page} className="anim-page-in">
+              {openInstanceId ? (
+                // Добавление модов — прямо на странице инстанса (D39), без
+                // перекидывания на страницу «Моды».
+                <InstanceDetailPage
+                  instanceId={openInstanceId}
+                  onBack={() => setOpenInstanceId(null)}
+                />
+              ) : (
+                <>
+                  {page === "home" && <HomePage query={query} />}
+                  {page === "instances" && (
+                    <InstancesPage query={query} onOpenInstance={setOpenInstanceId} />
+                  )}
+                  {page === "skins" && <SkinsPage />}
+                  {page === "settings" && <SettingsPage onOnboardingReset={onLogout} />}
+                </>
+              )}
+            </div>
+          </main>
+        </div>
       </div>
+
+      {/* Статус-бар (.fbar): версия · Java · дисклеймер; справа — язык. */}
+      <footer className="flex h-7 flex-none items-center gap-4 border-t border-border-app bg-[var(--rail)] px-3 text-[11px] leading-none text-text-muted">
+        {version && (
+          <span>
+            {t("shell.footer.version")} <span className="font-mono">{version}</span>
+          </span>
+        )}
+        {javaMajor !== null && <span className="font-mono">{t("status.java", { n: javaMajor })}</span>}
+        {/* A14: обязательный дисклеймер Mojang — компактно, полный текст
+            в title/aria-label (shell.disclaimer). */}
+        <span
+          className="max-w-[38ch] truncate"
+          title={t("shell.disclaimer")}
+          aria-label={t("shell.disclaimer")}
+        >
+          {t("status.disclaimerShort")}
+        </span>
+
+        <div className="flex-1" />
+
+        {/* Переключатель языка: «RU ▾» + 4 пункта, текущий отмечен. */}
+        <div className="relative">
+          <button
+            onClick={() => setLangOpen((v) => !v)}
+            aria-expanded={langOpen}
+            aria-label={t("status.language")}
+            title={t("status.language")}
+            className="flex h-6 items-center gap-1 rounded px-1.5 text-[11px] font-semibold uppercase tracking-wide hover:bg-surface-2 hover:text-text"
+          >
+            {activeLang}
+            <ChevronDown
+              size={12}
+              aria-hidden
+              className={`transition-transform ${langOpen ? "rotate-180" : ""}`}
+            />
+          </button>
+          {langOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setLangOpen(false)} aria-hidden />
+              <div
+                role="menu"
+                aria-label={t("status.language")}
+                className="anim-menu-in origin-bottom-right absolute bottom-full right-0 z-50 mb-2 min-w-36 rounded-lg border border-border-strong bg-card p-1 shadow-lg"
+              >
+                {LANGS.map(({ code, name }) => (
+                  <button
+                    key={code}
+                    role="menuitemradio"
+                    aria-checked={code === activeLang}
+                    onClick={() => pickLanguage(code)}
+                    className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs hover:bg-surface-2"
+                  >
+                    <span className="w-3.5">
+                      {code === activeLang && <Check size={12} aria-hidden />}
+                    </span>
+                    <span className="font-semibold text-text">{name}</span>
+                    <span className="ml-auto font-mono text-[10px] uppercase text-text-muted">
+                      {code}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </footer>
 
       {accountsModalOpen && (
         <AccountsModal onClose={() => setAccountsModalOpen(false)} />

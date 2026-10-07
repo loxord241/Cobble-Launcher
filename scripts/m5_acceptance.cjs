@@ -17,10 +17,16 @@ async function main() {
   await page.waitForSelector("text=Главная", { timeout: 15000 });
   await page.screenshot({ path: `${OUT}/1-home.png` });
 
-  // Открыть страницу инстанса и модалку добавления
+  // Открыть страницу инстанса и модалку добавления.
+  // D64: мод в ванильный инстанс честно отклоняется ядром — берём инстанс
+  // с загрузчиком (fabric), а не просто первый в списке.
   await page.getByRole("navigation").getByRole("button", { name: /^Инстансы/ }).click();
   await page.waitForTimeout(600);
-  const card = page.locator('[role="button"][aria-label^="Открыть "]').first();
+  const loaderCard =
+    page.locator('[role="button"][aria-label^="Открыть "][aria-label*="Спринт"]').first();
+  const card = (await loaderCard.count()) > 0
+    ? loaderCard
+    : page.locator('[role="button"][aria-label^="Открыть "]').first();
   await card.locator("img").first().click({ position: { x: 10, y: 60 } });
   await page.waitForTimeout(700);
   await page.getByRole("tab", { name: /^Моды/ }).click();

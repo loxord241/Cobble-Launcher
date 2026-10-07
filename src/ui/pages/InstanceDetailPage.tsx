@@ -417,20 +417,24 @@ export default function InstanceDetailPage({
         </div>
       )}
 
-      {/* Арт модпака из галереи (если есть): широкий баннер над шапкой.
-          Иконка в шапке остаётся — баннер её не заменяет, а украшает сверху. */}
-      {inst.art && (
-        <img
-          src={inst.art}
-          alt=""
-          aria-hidden
-          draggable={false}
-          className="anim-fade-in h-36 w-full shrink-0 rounded-lg border border-border-app object-cover"
-        />
-      )}
-
-      {/* Шапка в стиле CurseForge: иконка, имя, чипы и большая кнопка запуска. */}
-      <section className="flex flex-wrap items-center gap-4 rounded-lg border border-border-app bg-card p-5">
+      {/* Шапка в GD-ритме (экран 3 макета): широкий арт-баннер (если есть)
+          на всю ширину карточки, под ним — иконка/панорама, имя, чипы и
+          большая кнопка запуска (паддинги 20, спокойная тень). Внутренности
+          прежние: тир арта иконки/панорамы (D64), aria и тексты не тронуты. */}
+      <section
+        className={`relative flex flex-wrap items-center gap-4 rounded-lg border border-border-app bg-card shadow-sm ${
+          inst.art ? "px-5 pb-5 pt-40" : "p-5"
+        }`}
+      >
+        {inst.art && (
+          <img
+            src={inst.art}
+            alt=""
+            aria-hidden
+            draggable={false}
+            className="anim-fade-in absolute inset-x-0 top-0 h-40 w-full rounded-t-lg object-cover"
+          />
+        )}
         <img
           src={
             inst.icon && !heroIconBroken
