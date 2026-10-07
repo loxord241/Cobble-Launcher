@@ -372,7 +372,10 @@ function SkinCard({
         className="flex w-full flex-col items-center gap-1.5"
       >
         <SkinHead name={label} skin={previewOf({ dataUrl })} size={40} />
-        <span className="w-full truncate text-center text-xs text-text" title={label}>
+        <span
+          className="w-full text-center text-xs leading-tight text-text break-words"
+          title={label}
+        >
           {label}
         </span>
       </button>

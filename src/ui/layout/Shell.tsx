@@ -667,7 +667,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
             )}
             {t("shell.footer.version")} <span className="font-mono">{version}</span>
             {/* A14: обязательный дисклеймер Mojang об неофициальном статусе. */}
-            <div className="mt-1">{t("shell.disclaimer")}</div>
+            <div className="mt-1 text-balance">{t("shell.disclaimer")}</div>
           </div>
         </nav>
 

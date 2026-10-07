@@ -1,8 +1,8 @@
 // Настройки → Темы: карточки как в CurseForge (slate-pro). Выбор применяется
-// мгновенно через theme.ts; премиум — некликабельные карточки с замком.
+// мгновенно через theme.ts.
 import { useState } from "react";
-import { Check, Lock, Crown } from "lucide-react";
-import { getTheme, setTheme, THEMES, PREMIUM_THEMES, type ThemeId, type ThemeGroup } from "../../theme/theme";
+import { Check } from "lucide-react";
+import { getTheme, setTheme, THEMES, type ThemeId, type ThemeGroup } from "../../theme/theme";
 import { useSettings } from "../../state/settings";
 import { t } from "../../i18n";
 
@@ -70,59 +70,13 @@ export default function ThemeCards() {
                         <Check size={12} aria-hidden strokeWidth={2.5} />
                       </span>
                     )}
-                  </span>
-                </span>
-              </button>
-            ))}
-          </div>
-        </section>
-      ))}
-
-      {/* Премиум: карточки с замком, кликабельны НЕ — фейковой оплаты нет */}
-      <section className="mb-6">
-        <h3 className="mb-3 flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
-          <Crown size={15} aria-hidden />
-          {t("themes.group.premium")}
-        </h3>
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3">
-          {PREMIUM_THEMES.map((th) => (
-            <div
-              key={th.nameKey}
-              aria-disabled="true"
-              title={t("themes.premium.locked", { name: t(th.nameKey) })}
-              className="flex min-h-24 cursor-default flex-col gap-2 rounded-lg border border-border-app bg-card p-2 opacity-90"
-            >
-              <span
-                aria-hidden
-                className="flex h-11 items-center gap-2 rounded-md px-3"
-                style={{ background: th.swatches[0], border: `1px solid ${th.swatches[1]}` }}
-              >
-                <span className="size-3 rounded-full" style={{ background: th.swatches[2] }} />
-                <span className="h-1 flex-1 rounded-full" style={{ background: th.swatches[1] }} />
-                <span className="h-1 w-4 rounded-full" style={{ background: th.swatches[1] }} />
-              </span>
-              <span className="flex items-center gap-2 px-1 pb-1">
-                <span className="text-sm font-semibold leading-tight">{t(th.nameKey)}</span>
-                <span className="ml-auto text-text-muted">
-                  <Lock size={16} aria-hidden />
                 </span>
               </span>
-            </div>
+            </button>
           ))}
         </div>
-        <div className="mt-4 flex items-center gap-4 rounded-lg border border-border-app bg-card p-4">
-          <span>
-            <span className="text-[15px] font-semibold">{t("themes.premium.title")}</span>
-            <br />
-            <span className="text-[13px] text-text-muted">{t("themes.premium.desc")}</span>
-          </span>
-          {/* URL страницы подписки не согласован — кнопка честно disabled с тултипом */}
-          <button disabled className="btn-primary ml-auto" title={t("themes.premium.subscribe.unavailable")}>
-            <Crown size={16} aria-hidden />
-            {t("themes.premium.subscribe")}
-          </button>
-        </div>
       </section>
+    ))}
     </div>
   );
 }

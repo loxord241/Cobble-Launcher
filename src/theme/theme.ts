@@ -5,7 +5,7 @@
  */
 export type ThemeId = "dark" | "light" | "cb-dark" | "cb-light" | "mc";
 
-export type ThemeGroup = "classic" | "colorblind" | "game" | "premium";
+export type ThemeGroup = "classic" | "colorblind" | "game";
 
 export interface ThemeMeta {
   id: ThemeId;
@@ -27,14 +27,6 @@ export const THEMES: ThemeMeta[] = [
   { id: "cb-dark", nameKey: "themes.cbDark", group: "colorblind", swatches: ["#1d2026", "#3b424d", "#5aa2ff"] },
   { id: "cb-light", nameKey: "themes.cbLight", group: "colorblind", swatches: ["#ffffff", "#c3cad3", "#2b6fb8"] },
   { id: "mc", nameKey: "themes.mc", group: "game", swatches: ["#1e2023", "#3c4148", "#7cbd4b"] },
-];
-
-/** Премиум-темы: только карточки с замком, палитр в приложении нет. */
-export const PREMIUM_THEMES: { nameKey: string; swatches: [string, string, string] }[] = [
-  { nameKey: "themes.premium.storm", swatches: ["#23203a", "#3a3660", "#9a86ff"] },
-  { nameKey: "themes.premium.conifer", swatches: ["#16211c", "#244033", "#4fc487"] },
-  { nameKey: "themes.premium.carmine", swatches: ["#2a1618", "#4a2426", "#ff7a6e"] },
-  { nameKey: "themes.premium.amber", swatches: ["#2a2118", "#463622", "#f0a52c"] },
 ];
 
 export function isThemeId(v: string): v is ThemeId {

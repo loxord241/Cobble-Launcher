@@ -35,7 +35,7 @@ window.siteI18n = (() => {
       'feature.instances.title': 'Инстансы и профили', 'feature.instances.text': 'Свои версии, моды и настройки для каждой сборки.',
       'feature.updates.title': 'Подписанные обновления', 'feature.updates.text': 'Автоматическая проверка. Установка одной кнопкой.',
       'feature.offline.title': 'Офлайн-режим', 'feature.offline.text': 'Запускайте уже скачанные сборки без подключения.',
-      'feature.accounts.title': 'Три способа входа', 'feature.accounts.text': 'Microsoft, ely.by или офлайн. Статус Microsoft — в FAQ.',
+      'feature.accounts.title': 'Три способа входа', 'feature.accounts.text': 'Microsoft, Ely.by или офлайн.',
       'feature.discord.title': 'Discord RPC', 'feature.discord.text': 'Название активного инстанса в вашем статусе Discord.',
       'feature.languages.title': 'Четыре языка', 'feature.languages.text': 'Русский, English, українська и polski во всём интерфейсе.',
       'safety.title': 'Доверие можно проверить', 'safety.description': 'Понятные источники. Проверяемые файлы. Доступный код.',
@@ -47,8 +47,11 @@ window.siteI18n = (() => {
       'faq.safe.q': 'Это безопасно?', 'faq.safe.a': 'Лаунчер использует официальные источники и проверяет хэши скачанных файлов. Обновления лаунчера подписаны. Код открыт для проверки. Выбирайте моды внимательно: лаунчер не может гарантировать безопасность стороннего кода.',
       'faq.path.q': 'Где хранятся данные?', 'faq.path.before': 'По умолчанию инстансы, кэш и настройки находятся в ', 'faq.path.after': '. Это каталог данных, а не путь установщика.',
       'faq.updates.q': 'Как обновлять лаунчер?', 'faq.updates.a': 'Лаунчер сам проверяет новые версии и сообщает об обновлении. Нажмите кнопку установки: подпись проверяется, затем лаунчер перезапускается. Инстансы и профили сохраняются. Проверить вручную можно в настройках.',
-      'faq.microsoft.q': 'Почему вход Microsoft может не работать?', 'faq.microsoft.a': 'Приложению требуется одобрение Mojang для доступа к Minecraft API. Заявка подана, одобрение ожидается. Пока доступны ely.by и офлайн-профили; они не заменяют лицензию Minecraft и доступ к серверам с проверкой Microsoft.',
+      'faq.microsoft.q': 'Почему вход Microsoft может не работать?', 'faq.microsoft.a': 'Вход через Microsoft одобрен Mojang и работает. Если он не удаётся — проверьте время системы и настройки прокси. Также доступны Ely.by и офлайн-профили; они не заменяют лицензию Minecraft.',
       'faq.cost.q': 'Сколько это стоит?', 'faq.cost.a': 'Cobble Launcher бесплатен и распространяется под лицензией MIT. Лицензия Minecraft приобретается отдельно. Платных функций в лаунчере нет.',
+      'faq.cf.q': "А CurseForge?", 'faq.cf.a': "Каталог и обновления — Modrinth: открытый API и хэши файлов. Модпаки CurseForge устанавливаются из .mrpack-архивов (кнопка «Импорт» или перетаскивание файла в окно) — загрузчик и моды подтянутся автоматически.",
+      'faq.os.q': "Будут версии для Linux или macOS?", 'faq.os.a': "Сейчас лаунчер работает только на Windows. Linux и macOS в планах, но без обещаний по срокам — лучше честно, чем «скоро».",
+      'faq.license.q': "Офлайн-профиль — это пиратство?", 'faq.license.a': "Файлы игры загружаются только с официальных серверов Mojang. Для серверов с проверкой Microsoft нужна купленная копия игры; офлайн-профили честно помечены как нелицензионные и не притворяются лицензионными.",
       'footer.disclaimer': 'Не является официальным продуктом Minecraft. Не одобрено и не связано с Mojang или Microsoft.', 'footer.license': 'Лицензия MIT', 'footer.links': 'Ссылки проекта'
     },
     en: {
@@ -80,7 +83,7 @@ window.siteI18n = (() => {
       'feature.instances.title': 'Instances and profiles', 'feature.instances.text': 'Separate versions, mods and settings for every setup.',
       'feature.updates.title': 'Signed updates', 'feature.updates.text': 'Automatic checks. Install with one click.',
       'feature.offline.title': 'Offline mode', 'feature.offline.text': 'Launch already downloaded instances without a connection.',
-      'feature.accounts.title': 'Three ways to sign in', 'feature.accounts.text': 'Microsoft, ely.by or offline. See the FAQ for Microsoft status.',
+      'feature.accounts.title': 'Three ways to sign in', 'feature.accounts.text': 'Microsoft, Ely.by or offline.',
       'feature.discord.title': 'Discord RPC', 'feature.discord.text': 'Show your active instance in your Discord status.',
       'feature.languages.title': 'Four languages', 'feature.languages.text': 'Русский, English, українська and polski throughout the interface.',
       'safety.title': 'Trust you can verify', 'safety.description': 'Clear sources. Checked files. Code you can read.',
@@ -92,8 +95,11 @@ window.siteI18n = (() => {
       'faq.safe.q': 'Is it safe?', 'faq.safe.a': 'The launcher uses official sources and checks downloaded file hashes. Launcher updates are signed. The code is open for inspection. Choose mods carefully: the launcher cannot guarantee the safety of third-party code.',
       'faq.path.q': 'Where is my data stored?', 'faq.path.before': 'By default, instances, cache and settings are stored in ', 'faq.path.after': '. This is the data directory, not the installer location.',
       'faq.updates.q': 'How do I update the launcher?', 'faq.updates.a': 'The launcher checks for new versions automatically and tells you when an update is available. Click install: it verifies the signature, then restarts. Your instances and profiles stay in place. You can also check manually in settings.',
-      'faq.microsoft.q': 'Why might Microsoft sign-in fail?', 'faq.microsoft.a': 'The application needs Mojang approval to access the Minecraft API. The request has been submitted and approval is pending. ely.by and offline profiles are available meanwhile; they do not replace a Minecraft licence or access to servers that verify Microsoft accounts.',
+      'faq.microsoft.q': 'Why might Microsoft sign-in fail?', 'faq.microsoft.a': 'Microsoft sign-in is approved by Mojang and works. If it fails, check your system clock and proxy settings. Ely.by and offline profiles are also available; they do not replace a Minecraft licence.',
       'faq.cost.q': 'How much does it cost?', 'faq.cost.a': 'Cobble Launcher is free and distributed under the MIT licence. A Minecraft licence is purchased separately. The launcher has no paid features.',
+      'faq.cf.q': "What about CurseForge?", 'faq.cf.a': "The catalogue and updates use Modrinth: an open API and file hashes. CurseForge modpacks install from .mrpack archives (the “Import” button or dropping the file onto the window) — the loader and mods are pulled in automatically.",
+      'faq.os.q': "Will there be Linux or macOS versions?", 'faq.os.a': "The launcher currently runs on Windows only. Linux and macOS are planned, but with no promise of dates — honest rather than “soon”.",
+      'faq.license.q': "Is an offline profile piracy?", 'faq.license.a': "Game files are downloaded only from official Mojang servers. Servers with Microsoft authentication require a purchased copy of the game; offline profiles are honestly marked as unlicensed and never pretend otherwise.",
       'footer.disclaimer': 'Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.', 'footer.license': 'MIT licence', 'footer.links': 'Project links'
     },
     uk: {
@@ -125,7 +131,7 @@ window.siteI18n = (() => {
       'feature.instances.title': 'Інстанси та профілі', 'feature.instances.text': 'Власні версії, моди й налаштування для кожної збірки.',
       'feature.updates.title': 'Підписані оновлення', 'feature.updates.text': 'Автоматична перевірка. Встановлення однією кнопкою.',
       'feature.offline.title': 'Офлайн-режим', 'feature.offline.text': 'Запускайте вже завантажені збірки без підключення.',
-      'feature.accounts.title': 'Три способи входу', 'feature.accounts.text': 'Microsoft, ely.by або офлайн. Статус Microsoft — у FAQ.',
+      'feature.accounts.title': 'Три способи входу', 'feature.accounts.text': 'Microsoft, Ely.by або офлайн.',
       'feature.discord.title': 'Discord RPC', 'feature.discord.text': 'Назва активного інстансу у вашому статусі Discord.',
       'feature.languages.title': 'Чотири мови', 'feature.languages.text': 'Русский, English, українська та polski в усьому інтерфейсі.',
       'safety.title': 'Довіру можна перевірити', 'safety.description': 'Зрозумілі джерела. Перевірені файли. Доступний код.',
@@ -137,8 +143,11 @@ window.siteI18n = (() => {
       'faq.safe.q': 'Це безпечно?', 'faq.safe.a': 'Лаунчер використовує офіційні джерела й перевіряє хеші завантажених файлів. Оновлення лаунчера підписані. Код відкритий для перевірки. Обирайте моди уважно: лаунчер не може гарантувати безпеку стороннього коду.',
       'faq.path.q': 'Де зберігаються дані?', 'faq.path.before': 'За замовчуванням інстанси, кеш і налаштування містяться в ', 'faq.path.after': '. Це каталог даних, а не шлях встановлення.',
       'faq.updates.q': 'Як оновлювати лаунчер?', 'faq.updates.a': 'Лаунчер сам перевіряє нові версії та повідомляє про оновлення. Натисніть кнопку встановлення: підпис перевіряється, потім лаунчер перезапускається. Інстанси й профілі зберігаються. Перевірити вручну можна в налаштуваннях.',
-      'faq.microsoft.q': 'Чому вхід Microsoft може не працювати?', 'faq.microsoft.a': 'Застосунку потрібне схвалення Mojang для доступу до Minecraft API. Заявку подано, схвалення очікується. Поки доступні ely.by та офлайн-профілі; вони не замінюють ліцензію Minecraft і доступ до серверів із перевіркою Microsoft.',
+      'faq.microsoft.q': 'Чому вхід Microsoft може не працювати?', 'faq.microsoft.a': 'Вхід через Microsoft ухвалено Mojang і працює. Якщо не виходить — перевірте час системи і налаштування проксі. Також доступні Ely.by та офлайн-профілі; вони не замінюють ліцензію Minecraft.',
       'faq.cost.q': 'Скільки це коштує?', 'faq.cost.a': 'Cobble Launcher безкоштовний і поширюється за ліцензією MIT. Ліцензія Minecraft купується окремо. Платних функцій у лаунчері немає.',
+      'faq.cf.q': "А CurseForge?", 'faq.cf.a': "Каталог і оновлення — Modrinth: відкритий API і хеші файлів. Модпаки CurseForge встановлюються з .mrpack-архівів (кнопка «Імпорт» або перетягування файла у вікно) — завантажувач і моди підтягнуться автоматично.",
+      'faq.os.q': "Чи будуть версії для Linux чи macOS?", 'faq.os.a': "Зараз лаунчер працює лише на Windows. Linux і macOS у планах, але без обіцянок щодо термінів — краще чесно, ніж «скоро».",
+      'faq.license.q': "Офлайн-профіль — це піратство?", 'faq.license.a': "Файли гри завантажуються лише з офіційних серверів Mojang. Для серверів із перевіркою Microsoft потрібна куплена копія гри; офлайн-профілі чесно позначені як неліцензійні і не прикидаються ліцензійними.",
       'footer.disclaimer': 'Не є офіційним продуктом Minecraft. Не схвалено й не пов’язано з Mojang або Microsoft.', 'footer.license': 'Ліцензія MIT', 'footer.links': 'Посилання проєкту'
     },
     pl: {
@@ -170,7 +179,7 @@ window.siteI18n = (() => {
       'feature.instances.title': 'Instancje i profile', 'feature.instances.text': 'Osobne wersje, mody i ustawienia dla każdego zestawu.',
       'feature.updates.title': 'Podpisane aktualizacje', 'feature.updates.text': 'Automatyczne sprawdzanie. Instalacja jednym kliknięciem.',
       'feature.offline.title': 'Tryb offline', 'feature.offline.text': 'Uruchamiaj pobrane instancje bez połączenia z internetem.',
-      'feature.accounts.title': 'Trzy sposoby logowania', 'feature.accounts.text': 'Microsoft, ely.by lub offline. Status Microsoft znajdziesz w FAQ.',
+      'feature.accounts.title': 'Trzy sposoby logowania', 'feature.accounts.text': 'Microsoft, Ely.by lub offline.',
       'feature.discord.title': 'Discord RPC', 'feature.discord.text': 'Nazwa aktywnej instancji w Twoim statusie Discord.',
       'feature.languages.title': 'Cztery języki', 'feature.languages.text': 'Русский, English, українська i polski w całym interfejsie.',
       'safety.title': 'Zaufanie można sprawdzić', 'safety.description': 'Znane źródła. Sprawdzone pliki. Dostępny kod.',
@@ -182,8 +191,11 @@ window.siteI18n = (() => {
       'faq.safe.q': 'Czy to bezpieczne?', 'faq.safe.a': 'Launcher korzysta z oficjalnych źródeł i sprawdza sumy kontrolne pobranych plików. Aktualizacje launchera są podpisane. Kod jest dostępny do wglądu. Wybieraj mody uważnie: launcher nie może zagwarantować bezpieczeństwa kodu innych autorów.',
       'faq.path.q': 'Gdzie przechowywane są dane?', 'faq.path.before': 'Domyślnie instancje, pamięć podręczna i ustawienia znajdują się w ', 'faq.path.after': '. To katalog danych, a nie miejsce instalacji programu.',
       'faq.updates.q': 'Jak aktualizować launcher?', 'faq.updates.a': 'Launcher sam sprawdza nowe wersje i informuje o aktualizacji. Kliknij przycisk instalacji: podpis zostanie zweryfikowany, a launcher uruchomi się ponownie. Instancje i profile pozostają na miejscu. Możesz też sprawdzić aktualizacje ręcznie w ustawieniach.',
-      'faq.microsoft.q': 'Dlaczego logowanie Microsoft może nie działać?', 'faq.microsoft.a': 'Aplikacja wymaga zgody Mojang na dostęp do API Minecraft. Wniosek został złożony i czeka na zatwierdzenie. Tymczasem dostępne są ely.by i profile offline; nie zastępują one licencji Minecraft ani dostępu do serwerów weryfikujących konta Microsoft.',
+      'faq.microsoft.q': 'Dlaczego logowanie Microsoft może nie działać?', 'faq.microsoft.a': 'Logowanie przez Microsoft zostało zatwierdzone przez Mojang i działa. Jeśli się nie udaje — sprawdź zegar systemowy i ustawienia proxy. Dostępne są też Ely.by i profile offline; nie zastępują one licencji Minecraft.',
       'faq.cost.q': 'Ile to kosztuje?', 'faq.cost.a': 'Cobble Launcher jest darmowy i udostępniany na licencji MIT. Licencję Minecraft kupuje się osobno. Launcher nie ma płatnych funkcji.',
+      'faq.cf.q': "A CurseForge?", 'faq.cf.a': "Katalog i aktualizacje korzystają z Modrinth: otwarte API i hashe plików. Modpacki CurseForge instalują się z archiwów .mrpack (przycisk „Importuj” lub upuszczenie pliku na okno) — loader i mody pobiorą się automatycznie.",
+      'faq.os.q': "Czy będą wersje na Linuxa lub macOS?", 'faq.os.a': "Launcher działa obecnie tylko na Windows. Linux i macOS są w planach, ale bez obietnic co do terminów — uczciwiej niż „wkrótce”.",
+      'faq.license.q': "Czy profil offline to piractwo?", 'faq.license.a': "Pliki gry pobierane są wyłącznie z oficjalnych serwerów Mojang. Serwery z uwierzytelnianiem Microsoft wymagają zakupionej kopii gry; profile offline są uczciwie oznaczone jako nielicencyjne i nie udają licencyjnych.",
       'footer.disclaimer': 'Nie jest oficjalnym produktem Minecraft. Nie jest zatwierdzony przez Mojang ani Microsoft ani z nimi powiązany.', 'footer.license': 'Licencja MIT', 'footer.links': 'Linki projektu'
     }
   };
