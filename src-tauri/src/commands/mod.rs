@@ -2437,6 +2437,7 @@ pub async fn server_start(state: State<'_, AppState>, id: String) -> Result<u32>
             loader: info.loader.clone(),
             loader_version: info.loader_version.clone(),
             mc_version: info.mc_version.clone(),
+            java_major: info.java_major,
         };
         crate::servers::run::server_start(&paths, &bus, spec, info.port)
     })

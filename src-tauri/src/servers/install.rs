@@ -602,6 +602,29 @@ async fn install_fabric(
 /// загрузчиков клиенту (instances::run::resolve_java) — рантайм jdk{major}
 /// по javaVersion версии MC, системные Java, затем Adoptium. Настройки
 /// (прокси, доп. пути Java) читаются из стандартного settings.json.
+/// Требуемый мажор Java для серверной версии: javaVersion из version JSON
+/// (для снапшотов 26.x эвристика fallback_major занижает — ловили
+/// UnsupportedClassVersionError на приёмке), fallback — старая схема.
+pub(crate) async fn required_java_major(
+    paths: &crate::paths::Paths,
+    http: &crate::net::http::HttpClient,
+    mc: &str,
+) -> u32 {
+    let Ok(manifest) =
+        crate::mojang::manifest::fetch_manifest(http, &paths.manifests_cache()).await
+    else {
+        return crate::instances::run::fallback_major(mc);
+    };
+    let Ok(entry) = crate::mojang::manifest::resolve_entry(&manifest, mc) else {
+        return crate::instances::run::fallback_major(mc);
+    };
+    crate::mojang::manifest::fetch_version_json_cached(http, entry, &paths.manifests_cache())
+        .await
+        .ok()
+        .and_then(|v| v.java_version.as_ref().map(|j| j.major_version))
+        .unwrap_or_else(|| crate::instances::run::fallback_major(mc))
+}
+
 async fn resolve_installer_java(
     paths: &Paths,
     http: &HttpClient,

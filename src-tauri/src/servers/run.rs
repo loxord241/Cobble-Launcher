@@ -30,6 +30,8 @@ pub struct ServerRunSpec {
     pub loader: Option<String>,
     pub loader_version: Option<String>,
     pub mc_version: String,
+    /// Требуемый мажор Java из version JSON (0 — эвристика fallback_major).
+    pub java_major: u32,
 }
 
 /// Каталог конкретного сервера: `<servers_root>/<id>`, где корень —
@@ -112,7 +114,14 @@ pub fn server_start(
     }
 
     // 5. Java (v1: только найденная на машине) и командная строка по лоадеру.
-    let need_major = crate::instances::run::fallback_major(&spec.mc_version);
+    // Приёмка 0.2.10: для снапшотов 26.x эвристика fallback_major занижала
+    // (21 вместо 25) — супервизор запускал старую Java и сервер падал с
+    // UnsupportedClassVersionError. Мажор берём из записи (version JSON).
+    let need_major = if spec.java_major > 0 {
+        spec.java_major
+    } else {
+        crate::instances::run::fallback_major(&spec.mc_version)
+    };
     let java = resolve_java(paths, need_major)?;
     let argv = build_command(&java, &spec)?;
 
@@ -414,11 +423,14 @@ fn resolve_java(paths: &crate::paths::Paths, need_major: u32) -> Result<PathBuf>
             candidates.push((exe, major));
         }
     }
-    // Точная мажорная версия, затем ближайшая старшая (зеркало pick_java).
+    // Точная мажорная версия → ближайшая старшая → наибольшая доступная
+    // (последняя — осознанный рингер: для снапшотов эвристика может
+    // завышать/занижать, а запуск на новейшей Java лучше отказа).
     let best = candidates
         .iter()
         .find(|(_, m)| *m == need_major)
-        .or_else(|| candidates.iter().min_by_key(|(_, m)| *m));
+        .or_else(|| candidates.iter().filter(|(_, m)| *m > need_major).min_by_key(|(_, m)| *m))
+        .or_else(|| candidates.iter().max_by_key(|(_, m)| *m));
     best.map(|(exe, _)| exe.clone()).ok_or_else(|| {
         LauncherError::InvalidInput(format!(
             "подходящая Java ({need_major}+) не найдена — сначала запустите игру один раз или установите Java"
@@ -853,6 +865,7 @@ mod tests {
             loader: None,
             loader_version: None,
             mc_version: "1.20.1".into(),
+            java_major: 21,
         }
     }
 

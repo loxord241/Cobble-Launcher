@@ -56,6 +56,7 @@ pub struct ServerInfo {
     pub created_at: u64,
     pub running: bool,
     pub pid: Option<u32>,
+    pub java_major: u32,
 }
 
 /// Результат создания сервера: карточка + сводка фильтра модов.
@@ -93,6 +94,11 @@ struct ServerRecord {
     /// Имя мира-источника, скопированного при создании (для UI).
     world: Option<String>,
     created_at: u64,
+    /// Требуемый мажор Java из version JSON на момент создания
+    /// (0 — не вычислили, супервизор тогда на эвристике; снапшоты 26.x
+    /// эвристика занижает — приёмка ловила UnsupportedClassVersionError).
+    #[serde(default)]
+    java_major: u32,
 }
 
 impl Default for ServerRecord {
@@ -109,6 +115,7 @@ impl Default for ServerRecord {
             online_mode: true,
             world: None,
             created_at: 0,
+                java_major: 0,
         }
     }
 }
@@ -294,6 +301,7 @@ fn to_info(paths: &Paths, rec: &ServerRecord) -> ServerInfo {
         created_at: rec.created_at,
         running: run::is_running(paths, &rec.id),
         pid: run::running_pid(paths, &rec.id),
+        java_major: rec.java_major,
     }
 }
 
@@ -408,6 +416,9 @@ async fn create_inner(
     mc_version: &str,
     p: CreateParams<'_>,
 ) -> Result<ServerCreateResult> {
+    // Требуемый мажор Java фиксируем из version JSON (источник истины, а не
+    // эвристика fallback_major — снапшоты 26.x ей незнакомы).
+    let java_major = install::required_java_major(paths, http, mc_version).await;
     // 3. Серверное ПО (vanilla/fabric/forge/neoforge) — модуль install;
     // тяжёлое блокирует сам инсталлятор, прогресс играет в журнал.
     let progress = |msg: String| tracing::info!(target: "servers::create", "{msg}");
@@ -452,6 +463,7 @@ async fn create_inner(
         online_mode: p.online_mode,
         world: p.world.map(str::to_string),
         created_at: crate::instances::now_secs(),
+        java_major,
     };
     {
         let _guard = SERVERS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -568,6 +580,7 @@ mod tests {
             online_mode: false,
             world: Some("Новый мир".into()),
             created_at: 1700000000,
+            java_major: 21,
         }
     }
 
@@ -866,6 +879,7 @@ mod tests {
             created_at: 1,
             running: false,
             pid: Some(42),
+            java_major: 21,
         };
         let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["instanceId"], "i");
