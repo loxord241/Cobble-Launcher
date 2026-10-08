@@ -1560,3 +1560,8 @@ modrinth+import, auth/, mojang/loaders/java/process, IPC-поверхность 
   («Ферма», «Спринт-ран», «26.3») — это данные, не приватность (ники/почты
   проверены глазами: только офлайн-«Player» и публичные авторы Modrinth);
   заменить на нейтральные при следующей пересъёмке.
+- deploy-site.yml: upload-pages-artifact заменён на inline tar + upload-artifact
+  v4.6.2 с `overwrite: true` — composite (v3–v5) не пробрасывает overwrite,
+  и rerun джоба дублировал артефакт «github-pages», валив deploy-pages
+  («Multiple artifacts … count is 2»); первый падёж был транзиентом GitHub
+  (артефакт загружен, API его не отдавал), rerun теперь безопасен.
