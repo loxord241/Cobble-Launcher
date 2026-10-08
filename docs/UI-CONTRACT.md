@@ -21,8 +21,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 ## Команды (invoke)
 
-Все 105 команд `invoke_handler` (`src-tauri/src/lib.rs:213-322`; пересчитано по
-реестру, D68), обработчики — `src-tauri/src/commands/mod.rs` (кроме
+Все 106 команд `invoke_handler` (пересчитано по реестру, D68 + ревизия), обработчики — `src-tauri/src/commands/mod.rs` (кроме
 `shortcut_take_pending` — он в `lib.rs:61`).
 
 ### Инстансы и процессы
@@ -76,6 +75,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `server_accept_eula` | `{id}` | `void` (eula.txt eula=true — только явное действие пользователя) | not_found, io |
 | `server_start` | `{id}` | `u32` pid (java с stdin-pipe; событие `server_event` {serverId, kind: log/started/exited/crashed, line?, code?}) | not_found, invalid_input, io |
 | `server_stop` | `{id}` | `bool` (true = «stop» в stdin, вышли сами ≤60с; false = жёсткий kill; не запущен → Ok(false)) | not_found |
+| `server_reinstall` | `{id}` | `void` (P3-ревизии: снос артефактов установщика + новая установка; мир/настройки не трогаются; только остановленный сервер) | not_found, invalid_input, io, offline_mode, network, http, hash_mismatch, timeout |
 | `manifest_versions` | `{showSnapshots, showOld}` | `VersionEntry[]` | network, json, io |
 | `loader_versions` | `{loader}` | `LoaderVersionEntry[]` (`fabric`/`quilt` — все, `neoforge` — 30 последних стабильных) | network, invalid_input, json |
 | `loader_install` | `{id, loader, loaderVersion?}` | `Instance` (после установки `versionId` = профиль загрузчика) | invalid_input, version_not_found, java_not_found, network, hash_mismatch, zip, io, internal |

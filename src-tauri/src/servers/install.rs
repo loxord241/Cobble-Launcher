@@ -11,7 +11,7 @@ use crate::net::download::{DownloadEngine, DownloadTask};
 use crate::net::http::HttpClient;
 use crate::paths::Paths;
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Версия формата server-launcher у meta Fabric (конечный сегмент эндпоинта).
 const FABRIC_SERVER_FORMAT: &str = "1.0.3";
@@ -80,6 +80,141 @@ pub async fn install_server_software(
             .await
         }
     }
+}
+
+/// Переустановить серверное ПО: снести следы предыдущей установки и поставить
+/// заново (маркеры «уже установлен» игнорируются принудительно). Чинит
+/// побитые библиотеки лоадера и случай «установщик убит сразу после записи
+/// win_args.txt». Вход валидируется как в install_server_software; удаления —
+/// только внутри `dir` (плюс кэш установщика этой версии внутри cache_dir).
+pub async fn reinstall_server_software(
+    paths: &Paths,
+    http: &HttpClient,
+    dir: &Path,
+    mc_version: &str,
+    loader: Option<&str>,
+    loader_version: Option<&str>,
+    progress: &(dyn Fn(String) + Send + Sync),
+) -> Result<()> {
+    let kind = resolve_kind(mc_version, loader, loader_version)?;
+
+    // Снос следов предыдущей установки. Пути собираются из констант модуля и
+    // уже проверенных id — но перед любым удалением страхуемся «всё внутри
+    // dir»: лексическое сравнение не разворачивает «..», поэтому запрет
+    // таких компонент — в самом contained_in.
+    let targets: Vec<PathBuf> = reinstall_targets(&kind)
+        .into_iter()
+        .map(|rel| dir.join(rel))
+        .collect();
+    if !targets.iter().all(|p| contained_in(dir, p)) {
+        return Err(LauncherError::Internal(format!(
+            "пути переустановки выходят за каталог сервера {}: {targets:?}",
+            dir.display()
+        )));
+    }
+
+    progress(format!("Переустанавливаю {}", kind.label()));
+    progress(wipe_status(&kind).into());
+    for path in targets {
+        remove_target(path).await?;
+    }
+
+    // Кэш установщика этой версии тоже сносим: при недоступном .sha1 maven
+    // download_installer берёт файл из кэша без сверки — побитый кэш иначе
+    // пережил бы переустановку.
+    if let Some(cache) = installer_cache_path(paths, &kind, mc_version) {
+        if !contained_in(&paths.cache_dir(), &cache) {
+            return Err(LauncherError::Internal(format!(
+                "путь кэша установщика вне cache_dir: {}",
+                cache.display()
+            )));
+        }
+        remove_target(cache).await?;
+    }
+
+    // Штатная установка: маркеров после сноса нет — ставится заново
+    // (vanilla получит sha1 из манифеста, Fabric — свежий бутстрап).
+    install_server_software(paths, http, dir, mc_version, loader, loader_version, progress).await
+}
+
+/// Что переустановка сносит перед новой установкой — относительные пути
+/// внутри каталога сервера (чистая функция: без сети и диска). Forge/NeoForge:
+/// каталог группы лоадера в libraries ЦЕЛИКОМ — там только артефакты
+/// установщика (внутри же лежит маркер win_args.txt, из-за которого «уже
+/// установлен» держался вечно); Fabric: бутстрап + libraries (бутстрап
+/// докачает библиотеки при первом старте); vanilla: server.jar.
+fn reinstall_targets(kind: &ServerKind) -> Vec<PathBuf> {
+    match kind {
+        ServerKind::Vanilla => vec![PathBuf::from("server.jar")],
+        ServerKind::Fabric(_) => vec![
+            PathBuf::from("fabric-server-launch.jar"),
+            PathBuf::from("libraries"),
+        ],
+        ServerKind::Forge(_) => vec![PathBuf::from("libraries")
+            .join("net")
+            .join("minecraftforge")],
+        ServerKind::NeoForge(_) => vec![PathBuf::from("libraries")
+            .join("net")
+            .join("neoforged")],
+    }
+}
+
+/// Человекочитаемый статус сноса для progress.
+fn wipe_status(kind: &ServerKind) -> &'static str {
+    match kind {
+        ServerKind::Vanilla => "Удаляю старый server.jar",
+        ServerKind::Fabric(_) => "Удаляю старый бутстрап и библиотеки",
+        ServerKind::Forge(_) | ServerKind::NeoForge(_) => "Удаляю старые библиотеки лоадера",
+    }
+}
+
+/// Кэш установщика лоадера в cache_dir/installers. Имена файлов обязаны
+/// совпадать с приватными installer_path в loaders/forge.rs и
+/// loaders/neoforge.rs. None — у плана нет установщика (vanilla/fabric).
+fn installer_cache_path(paths: &Paths, kind: &ServerKind, mc: &str) -> Option<PathBuf> {
+    let name = match kind {
+        ServerKind::Forge(lv) => format!("forge-{mc}-{lv}-installer.jar"),
+        ServerKind::NeoForge(lv) => format!("neoforge-{lv}-installer.jar"),
+        _ => return None,
+    };
+    Some(paths.cache_dir().join("installers").join(name))
+}
+
+/// Путь остаётся внутри `base`? Страховка от выхода за каталог (удаления —
+/// только внутри dir): «..»-компоненты запрещены вовсе (лексическое
+/// `starts_with` их не разворачивает), чужие абсолютные пути отсекает
+/// сравнение по компонентам после снятия long-префикса.
+fn contained_in(base: &Path, path: &Path) -> bool {
+    if path
+        .components()
+        .any(|c| matches!(c, Component::ParentDir))
+    {
+        return false;
+    }
+    crate::util::fs::normalize_for_compare(path)
+        .starts_with(crate::util::fs::normalize_for_compare(base))
+}
+
+/// Снести один целевой путь (файл или каталог). Отсутствующий — не ошибка
+/// (переустановка идемпотентна); каталог libraries лоадера может быть
+/// большим — удаление в spawn_blocking, tokio-воркер не блокируем.
+async fn remove_target(path: PathBuf) -> Result<()> {
+    let shown = path.display().to_string();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let long = crate::util::fs::long_path(&path);
+        if long.is_dir() {
+            match std::fs::remove_dir_all(&long) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e.into()),
+            }
+        } else {
+            // remove_file_with_retry: ретраи Windows-локов, NotFound → Ok.
+            crate::util::fs::remove_file_with_retry(&path)
+        }
+    })
+    .await
+    .map_err(|e| LauncherError::Internal(format!("join удаления {shown}: {e}")))?
 }
 
 /// Распознанный план установки (чистый разбор входа, без сети).
@@ -830,6 +965,121 @@ mod tests {
         // Каталог есть, маркеров нет — не установлен.
         std::fs::remove_file(dir.path().join(&rel).join("unix_args.txt")).unwrap();
         assert!(!loader_installed(dir.path(), &rel));
+    }
+
+    // ------------------------------------------------------- переустановка
+
+    /// Список сноса по вариантам: vanilla / fabric / группы лоадеров целиком.
+    #[test]
+    fn reinstall_targets_per_kind() {
+        assert_eq!(
+            reinstall_targets(&ServerKind::Vanilla),
+            vec![PathBuf::from("server.jar")]
+        );
+        assert_eq!(
+            reinstall_targets(&ServerKind::Fabric("0.15.11".into())),
+            vec![
+                PathBuf::from("fabric-server-launch.jar"),
+                PathBuf::from("libraries"),
+            ]
+        );
+        // Группа лоадера сносится ЦЕЛИКОМ, а не только каталог одной версии:
+        // маркер мог остаться в каталоге другой сборки.
+        assert_eq!(
+            reinstall_targets(&ServerKind::Forge("47.2.0".into())),
+            vec![PathBuf::from("libraries/net/minecraftforge")]
+        );
+        assert_eq!(
+            reinstall_targets(&ServerKind::NeoForge("21.1.251".into())),
+            vec![PathBuf::from("libraries/net/neoforged")]
+        );
+    }
+
+    /// Инвариант безопасности: любые цели сноса остаются внутри каталога
+    /// сервера — при любых валидных mc/loader_version.
+    #[test]
+    fn reinstall_targets_stay_inside_dir() {
+        let dir = Path::new("/srv/mc");
+        for kind in [
+            ServerKind::Vanilla,
+            ServerKind::Fabric("0.15.11".into()),
+            ServerKind::Forge("47.2.0".into()),
+            ServerKind::NeoForge("21.1.251".into()),
+        ] {
+            for rel in reinstall_targets(&kind) {
+                assert!(
+                    contained_in(dir, &dir.join(&rel)),
+                    "{kind:?}: цель {rel:?} обязана остаться внутри dir"
+                );
+            }
+        }
+    }
+
+    /// contained_in отсекает «..», чужие абсолютные пути и строковые
+    /// префиксы («C:\srvx» не «внутри» «C:\srv»).
+    #[test]
+    fn contained_in_rejects_escape_attempts() {
+        let dir = Path::new("C:\\srv");
+        assert!(contained_in(dir, Path::new("C:\\srv\\server.jar")));
+        assert!(contained_in(dir, Path::new("C:\\srv\\libraries\\net\\x")));
+        assert!(!contained_in(
+            dir,
+            Path::new("C:\\srv\\..\\escape\\server.jar")
+        ));
+        assert!(!contained_in(dir, Path::new("C:\\other\\server.jar")));
+        assert!(!contained_in(dir, Path::new("C:\\srvx")));
+        assert!(!contained_in(dir, Path::new("D:\\srv\\server.jar")));
+    }
+
+    /// Кэш установщика: имена совпадают с приватными installer_path в
+    /// loaders/{forge,neoforge}.rs, для vanilla/fabric его нет, и путь
+    /// всегда внутри cache_dir.
+    #[test]
+    fn installer_cache_path_matches_loaders() {
+        let paths = Paths::new(PathBuf::from(r"C:\data\mcl"));
+        let f = installer_cache_path(&paths, &ServerKind::Forge("47.2.0".into()), "1.20.1")
+            .expect("у Forge есть установщик");
+        assert_eq!(
+            f,
+            PathBuf::from(r"C:\data\mcl\cache\installers\forge-1.20.1-47.2.0-installer.jar")
+        );
+        let n = installer_cache_path(
+            &paths,
+            &ServerKind::NeoForge("21.1.251".into()),
+            "1.21.1",
+        )
+        .expect("у NeoForge есть установщик");
+        assert_eq!(
+            n,
+            PathBuf::from(r"C:\data\mcl\cache\installers\neoforge-21.1.251-installer.jar")
+        );
+        assert!(installer_cache_path(&paths, &ServerKind::Vanilla, "1.20.1").is_none());
+        assert!(installer_cache_path(
+            &paths,
+            &ServerKind::Fabric("0.15.11".into()),
+            "1.20.1"
+        )
+        .is_none());
+        assert!(contained_in(&paths.cache_dir(), &f));
+        assert!(contained_in(&paths.cache_dir(), &n));
+    }
+
+    /// Переустановка валидирует вход тем же resolve_kind: malformed-версии —
+    /// InvalidInput до любых удалений (и без сети).
+    #[test]
+    fn reinstall_input_validated_like_install() {
+        for (mc, loader, lv) in [
+            ("../evil", Some("fabric"), Some("0.15.11")),
+            ("1.20.1", Some("neoforge"), Some("a/b")),
+            ("1.20.1", Some("neoforge"), Some("")),
+            ("1.20.1", Some("quilt"), Some("0.26.0")),
+        ] {
+            let err = resolve_kind(mc, loader, lv).expect_err("должен быть отказ");
+            assert!(
+                matches!(err, LauncherError::InvalidInput(_)),
+                "{mc}/{loader:?}: ожидался InvalidInput, получен {err:?}"
+            );
+        }
     }
 
     // ----------------------------------------------------------- прочее

@@ -38,6 +38,18 @@ fn server_dir(paths: &crate::paths::Paths, id: &str) -> PathBuf {
     crate::servers::servers_root(paths).join(id)
 }
 
+// ---------- сериализация стартов/удаления ----------
+
+/// Гвард сериализации стартов серверов; server_delete берёт его же,
+/// чтобы старт не просочился между проверкой is_running и удалением каталога.
+static START_GUARD: Mutex<()> = Mutex::new(());
+
+/// Замок на гвард: отравленный Mutex после паники нити — не повод терять
+/// старт/удаление (паттерн кодовой базы: into_inner, как lock_children).
+pub(crate) fn start_guard() -> MutexGuard<'static, ()> {
+    START_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Запустить сервер. Проверки ДО спавна: каталог есть; eula.txt существует
 /// и eula=true; сервер ещё не запущен; порт свободен (пробный bind на
 /// 0.0.0.0:port). Спавнит java с piped stdin/stdout/stderr и CREATE_NO_WINDOW,
@@ -55,8 +67,7 @@ pub fn server_start(
     // P2-ревизии: двойной старт одного id (обе проверки is_running проходят
     // до записи лока) — сериализуем секцию проверка→спавн→лок глобально:
     // старты редки, а per-id карта усложнила бы уборку.
-    static START_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _start_guard = START_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    let _start_guard = start_guard();
 
     // 1. Каталог сервера существует. Совпадение с каноническим
     //    `<servers_root>/<id>` — нестрогое (warn): cwd берём из spec.
@@ -148,10 +159,15 @@ pub fn server_start(
     });
 
     // 9. Супервизор: живёт до смерти процесса; паника задачи приложение не
-    //    роняет, уборку (лок + запись реестра) делает Drop-guard.
+    //    роняет, уборку (лок + запись реестра) делает Drop-guard. Вместе с ним
+    //    уходит корень данных ЭТОГО запуска: playtime пишется по Paths
+    //    (CLI --data-dir уважается), а не в дефолтный каталог.
     let id = spec.id.clone();
     let lp = lock_path(paths, &spec.id);
-    tauri::async_runtime::spawn_blocking(move || supervise(lp, id, child, lock, generation));
+    let data_root = paths.root().to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        supervise(lp, id, child, lock, generation, data_root)
+    });
     tracing::info!("сервер {}: запущен (PID {pid}, порт {port})", spec.id);
     Ok(pid)
 }
@@ -605,15 +621,37 @@ fn lossy_line(buf: &[u8]) -> String {
     line
 }
 
-/// Надзор: строки stdout/stderr → события (пачками), по выходе — exited/crashed
-/// и уборка. Возвращает управление только после смерти процесса.
+/// Общий бюджет финализации супервизора (~700 мс): дренаж хвоста лога и
+/// отсрочка отсоединения читателей делят один дедлайн (см. supervise/finalize_run).
+const FINALIZE_BUDGET: std::time::Duration = std::time::Duration::from_millis(700);
+
+/// Шаг опроса is_finished при join читателей в пределах бюджета.
+const READER_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Надзор: строки stdout/stderr → события (пачками), по выходе — единая
+/// финализация. Возвращает управление только после смерти процесса (или
+/// отсоединения застрявших читателей — см. ниже).
+///
+/// Читающие потоки: пайпы stdout/stderr разобирают свои нити, строки идут в
+/// канал под тем же батчером. Выход детектится двумя путями — тиком
+/// try_wait (ветка Timeout) и закрытием обоих пайпов (ветка Disconnected);
+/// оба сходятся в finalize_run. Дедлайн финализации общий, FINALIZE_BUDGET:
+/// 1) дренаж хвоста лога — при выходе по тику читатели могли не дочитать,
+///    остаток (хвост краш-стека) выкачивается из канала тем же батчером до
+///    дедлайна, без вечного ожидания;
+/// 2) читатели — join на остатке того же дедлайна. Если ребёнок унаследовал
+///    stdout/stderr и пережил родителя, read в читателе не вернётся никогда:
+///    по истечении бюджета поток отсоединяется (daemon-семантика) с warn —
+///    супервизор обязан завершиться всегда, лок и реестр не зависают.
 fn supervise(
     lock_path: PathBuf,
     id: String,
     mut child: std::process::Child,
     written_lock: ServerLock,
     generation: u64,
+    data_root: PathBuf,
 ) {
+    let started = std::time::Instant::now();
     let _guard = SupervisorGuard {
         lock_path,
         id: id.clone(),
@@ -628,9 +666,10 @@ fn supervise(
         stdout.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
         stderr.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
     ];
+    let mut readers = Vec::new();
     for stream in streams.into_iter().flatten() {
         let tx = tx.clone();
-        std::thread::spawn(move || {
+        readers.push(std::thread::spawn(move || {
             let reader = std::io::BufReader::new(stream);
             for buf in reader.split(b'\n') {
                 let Ok(buf) = buf else { break };
@@ -638,12 +677,12 @@ fn supervise(
                     break;
                 }
             }
-        });
+        }));
     }
     drop(tx);
 
     let mut batch = LogBatch::new();
-    loop {
+    let code = loop {
         match rx.recv_timeout(LogBatch::MAX_DELAY) {
             Ok(line) => {
                 batch.push(line);
@@ -654,10 +693,7 @@ fn supervise(
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => match child.try_wait() {
-                Ok(Some(status)) => {
-                    finalize(&id, &mut batch, status.code());
-                    return;
-                }
+                Ok(Some(status)) => break status.code(),
                 Ok(None) => {
                     if let Some(blob) = batch.take_if_matured() {
                         emit_log(&id, &blob);
@@ -665,13 +701,82 @@ fn supervise(
                 }
                 Err(e) => tracing::warn!("сервер {id}: try_wait: {e}"),
             },
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // Оба пайпа дочитаны — процесс завершился (или закрывает потоки
+                // перед выходом): дожидаемся код завершения.
+                break child.wait().ok().and_then(|s| s.code());
+            }
+        }
+    };
+    finalize_run(rx, readers, &id, &mut batch, code, started, &data_root);
+}
+
+/// Единая финализация обоих путей выхода супервизора (тик try_wait и
+/// Disconnected): дренаж хвоста лога, освобождение читателей, playtime и
+/// событие exited/crashed. Дедлайн общий (FINALIZE_BUDGET): сначала дренаж,
+/// читателям — остаток; обычный выход (пайпы закрыты) проходит оба шага
+/// мгновенно, застрявшие на наследнике — отсекаются по бюджету.
+fn finalize_run(
+    rx: std::sync::mpsc::Receiver<String>,
+    readers: Vec<std::thread::JoinHandle<()>>,
+    id: &str,
+    batch: &mut LogBatch,
+    code: Option<i32>,
+    started: std::time::Instant,
+    data_root: &Path,
+) {
+    let deadline = std::time::Instant::now() + FINALIZE_BUDGET;
+
+    // 1. Дренаж хвоста: строка, поданная в канал после детекта выхода, ещё
+    //    не потеряна — выкачиваем тем же батчером до дедлайна.
+    while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match rx.recv_timeout(remaining) {
+            Ok(line) => {
+                batch.push(line);
+                if batch.ready() {
+                    if let Some(blob) = batch.take() {
+                        emit_log(id, &blob);
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    // Оба пайпа дочитаны — процесс завершился (или закрывает потоки перед
-    // выходом): дожимаем код завершения и финализируем.
-    let code = child.wait().ok().and_then(|s| s.code());
-    finalize(&id, &mut batch, code);
+
+    // 2. Читатели: join на остатке дедлайна; не закрылись (наследник держит
+    //    пайп) — отсоединяем, супервизор не должен висеть на чужом read.
+    for handle in readers {
+        if !join_reader(handle, deadline) {
+            tracing::warn!(
+                "сервер {id}: читатель лога не закрылся (наследник держит пайп) — поток отсоединён"
+            );
+        }
+    }
+
+    // 3. Playtime сессии — в корень данных ЭТОГО запуска под id сервера; оба
+    //    пути выхода пишут одинаково (одна точка вызова). Ошибка записи не
+    //    роняет финализацию — статистика не критична.
+    if let Err(e) = crate::playtime::record_in_dir(data_root, id, started.elapsed().as_secs()) {
+        tracing::warn!("сервер {id}: playtime не записан: {e}");
+    }
+
+    finalize(id, batch, code);
+}
+
+/// Join читателя с дедлайном: поток, дошедший до EOF, закрывается мгновенно;
+/// застрявший в read (наследник держит пайп) отсоединяется по истечении
+/// бюджета (JoinHandle в drop — detach). false — не дождались, поток отсоединён.
+fn join_reader(handle: std::thread::JoinHandle<()>, deadline: std::time::Instant) -> bool {
+    while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
+        if handle.is_finished() {
+            return handle.join().is_ok();
+        }
+        std::thread::sleep(remaining.min(READER_POLL));
+    }
+    // Последняя проверка на границе бюджета: закрывшийся микросекундой раньше
+    // читатель всё же присоединится, а не отсоединится.
+    handle.is_finished() && handle.join().is_ok()
 }
 
 impl LogBatch {
@@ -1145,6 +1250,94 @@ mod tests {
         let bad = vec![b'a', b'd', 0xFF, b'x'];
         let decoded = lossy_line(&bad);
         assert!(decoded.contains('\u{FFFD}'), "{decoded:?}");
+    }
+
+    /// Хвост лога при выходе по тику: строка, поданная в канал ПОСЛЕ детекта
+    /// выхода, дожимается финализацией (дренаж до дедлайна), затем уходит
+    /// финальное exited/crashed. Батчер с отложенной подачей — не теряется.
+    #[test]
+    fn finalize_drains_pending_log_tail() {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let mut sub = subscribe_server_events();
+
+        // «Читатель не успел»: хвост краш-стека приходит в канал с задержкой.
+        let late = tx.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let _ = late.send("late crash frame".to_string());
+        });
+        drop(tx);
+
+        let mut batch = LogBatch::new();
+        // Корень в tempdir: даже если elapsed дотянет до целой секунды,
+        // playtime-запись не загрязнит рабочую область теста.
+        let root = tempfile::tempdir().unwrap();
+        finalize_run(
+            rx,
+            Vec::new(),
+            "drain-test",
+            &mut batch,
+            Some(1),
+            std::time::Instant::now(), // elapsed ~0 сек — записи не будет
+            root.path(),
+        );
+
+        // Дошли и хвост (log), и финал (crashed с кодом 1).
+        let mut saw_tail = false;
+        let mut saw_crashed = false;
+        while let Ok(ev) = sub.try_recv() {
+            let ServerEvent::ServerEvent {
+                server_id,
+                kind,
+                line,
+                code,
+            } = ev;
+            if server_id != "drain-test" {
+                continue;
+            }
+            match kind {
+                ServerEventKind::Log => {
+                    saw_tail = true;
+                    assert!(
+                        line.unwrap_or_default().contains("late crash frame"),
+                        "хвост лога потерян"
+                    );
+                }
+                ServerEventKind::Crashed => {
+                    saw_crashed = true;
+                    assert_eq!(code, Some(1));
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_tail, "событие log с хвостом не дошло");
+        assert!(saw_crashed, "финальное событие crashed не дошло");
+    }
+
+    /// Читатели: закрывшийся поток присоединяется мгновенно; застрявший
+    /// (наследник держит пайп) отсоединяется по истечении дедлайна —
+    /// супервизор не виснет.
+    #[test]
+    fn join_reader_finishes_and_times_out() {
+        // Успешный путь: поток уже закончился — join без задержки.
+        let done = std::thread::spawn(|| {});
+        assert!(join_reader(
+            done,
+            std::time::Instant::now() + FINALIZE_BUDGET
+        ));
+
+        // Застрявший поток и дедлайн в прошлом — мгновенный отказ без join.
+        let stuck = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+        let t0 = std::time::Instant::now();
+        assert!(!join_reader(stuck, t0), "застрявший поток не присоединился");
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(500),
+            "отказ по дедлайну затянулся: {:?}",
+            t0.elapsed()
+        );
+        // Отсоединённый поток доспит сам; процесс теста его не ждёт.
     }
 
     /// server_stop: не запущен — честное false, ничего не падает.

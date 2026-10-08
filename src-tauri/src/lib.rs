@@ -306,6 +306,7 @@ pub fn run() -> tauri::Result<()> {
             commands::server_accept_eula,
             commands::server_start,
             commands::server_stop,
+            commands::server_reinstall,
             commands::panorama_art,
             commands::crash_analyze,
             commands::java_list,

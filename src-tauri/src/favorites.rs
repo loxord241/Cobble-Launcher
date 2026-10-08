@@ -22,15 +22,34 @@ fn file_path(dir: &Path) -> PathBuf {
     dir.join(FILE_NAME)
 }
 
-/// Битый favorites.json уехать в `.bad`: иначе первый же toggle молча затёр бы
-/// файл пустым списком (как карантин settings.json — лёгкая версия).
+/// Битый favorites.json — в карантин: переименовать в `favorites.json.bad`
+/// (занятый слот не затираем — тогда `.bad.1`, `.bad.2`, ...). Иначе первый же
+/// toggle молча затёр бы файл пустым списком, а вторая порча — молча затёрла бы
+/// прежний карантин: слоты оставляют данные для ручного восстановления
+/// (та же схема слотов, что у settings.json).
 fn quarantine_broken(path: &Path, reason: &str) {
-    let mut bad = path.as_os_str().to_os_string();
-    bad.push(".bad");
-    match crate::util::fs::rename_with_retry(path, Path::new(&bad)) {
-        Ok(()) => tracing::warn!("favorites.json невалиден ({reason}) — перемещён в {}", bad.display()),
-        Err(e) => tracing::warn!("favorites.json невалиден ({reason}), карантин не удался: {e}"),
+    for i in 0..10u32 {
+        let mut name = path.as_os_str().to_os_string();
+        match i {
+            0 => name.push(".bad"),
+            _ => name.push(format!(".bad.{i}")),
+        }
+        let candidate = PathBuf::from(name);
+        if candidate.exists() {
+            continue;
+        }
+        match crate::util::fs::rename_with_retry(path, &candidate) {
+            Ok(()) => {
+                tracing::warn!("favorites.json невалиден ({reason}) — перемещён в {}", candidate.display());
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("favorites.json невалиден ({reason}), карантин не удался: {e}");
+                return;
+            }
+        }
     }
+    tracing::warn!("favorites.json невалиден ({reason}); слоты карантина заняты — файл оставлен как есть");
 }
 
 /// Читать список; файла нет → пустой, битый → карантин + пустой (избранное не
@@ -151,6 +170,23 @@ mod tests {
         // Toggle не падает и начинает список заново (битый уже в карантине).
         assert!(toggle_in(dir.path(), "id1").unwrap());
         assert_eq!(list_in(dir.path()), vec!["id1".to_string()]);
+    }
+
+    /// Вторая порча подряд не затирает первый карантин — новый файл уезжает
+    /// в свободный слот `.bad.1` (схема settings.json).
+    #[test]
+    fn quarantine_does_not_overwrite_previous_bad() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        std::fs::write(&path, b"{ first broken").unwrap();
+        assert!(list_in(dir.path()).is_empty());
+        assert!(path.with_file_name("favorites.json.bad").exists());
+
+        std::fs::write(&path, b"{ second broken").unwrap();
+        assert!(list_in(dir.path()).is_empty());
+        let first = std::fs::read_to_string(dir.path().join("favorites.json.bad")).unwrap();
+        assert_eq!(first, "{ first broken", "прежний карантин не затёрт");
+        assert!(path.with_file_name("favorites.json.bad.1").exists(), "вторая порча в соседнем слоте");
     }
 
     #[test]

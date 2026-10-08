@@ -747,7 +747,13 @@ pub async fn instance_export(state: State<'_, AppState>, id: String) -> Result<A
         false,
     )
     .await?;
-    let bytes = std::fs::metadata(&res.path).map(|m| m.len()).unwrap_or(0);
+    // P3-ревизии: путь через long_path; при сбое metadata — warn и 0 (не молча).
+    let bytes = std::fs::metadata(crate::util::fs::long_path(std::path::Path::new(&res.path)))
+        .map(|m| m.len())
+        .unwrap_or_else(|e| {
+            tracing::warn!("размер экспорта не прочитан ({}): {e}", res.path);
+            0
+        });
     Ok(ArchiveResult {
         path: res.path,
         files: (res.files_sourced + res.files_overrides) as usize,
@@ -2446,6 +2452,31 @@ pub async fn server_stop(state: State<'_, AppState>, id: String) -> Result<bool>
     tauri::async_runtime::spawn_blocking(move || crate::servers::run::server_stop(&paths, &id))
         .await
         .map_err(join_err)?
+}
+
+/// Переустановить серверное ПО (снос артефактов установщика + новая установка;
+/// мир и настройки сервера не трогаются). Минуты — async + spawn_blocking.
+#[tauri::command]
+pub async fn server_reinstall(state: State<'_, AppState>, id: String) -> Result<()> {
+    let info = crate::servers::server_status(&state.paths, &id)?;
+    if crate::servers::run::is_running(&state.paths, &id) {
+        return Err(LauncherError::InvalidInput(format!(
+            "сервер {} запущен — сначала остановите его",
+            id
+        )));
+    }
+    let http = state.http().await;
+    let dir = crate::servers::servers_root(&state.paths).join(&info.id);
+    crate::servers::install::reinstall_server_software(
+        &state.paths,
+        &http,
+        &dir,
+        &info.mc_version,
+        info.loader.as_deref(),
+        info.loader_version.as_deref(),
+        &|status: String| tracing::info!("reinstall {id}: {status}"),
+    )
+    .await
 }
 
 #[cfg(test)]

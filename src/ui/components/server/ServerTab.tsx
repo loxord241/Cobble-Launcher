@@ -11,8 +11,10 @@ import {
   ChevronUp,
   ExternalLink,
   FolderOpen,
+  Loader2,
   Play,
   Plus,
+  RefreshCw,
   Square,
   Trash2,
 } from "lucide-react";
@@ -39,12 +41,22 @@ type RunOverride = { running: boolean; pid: number | null };
 /** Стабильная ссылка для пустого лога (как NO_LOGS на странице инстанса). */
 const NO_LOGS: ServerLogEntry[] = [];
 
+/**
+ * P3-ревизии: переустановка серверного ПО (пересоздание серверных файлов
+ * поверх текущих — деструктив для поставленных библиотек). Контракт
+ * `api.serverReinstall(id): Promise<void>` — долгая операция (минуты).
+ */
+
 export default function ServerTab({ instanceId }: { instanceId: string }) {
   const [servers, setServers] = useState<ServerInfo[] | null>(null);
   // Таб получает только instanceId — ошибки показывает сам (локальная строка).
   const [error, setError] = useState<string | null>(null);
   /** Сервер, над которым идёт действие (старт/стоп/EULA/удаление) — блок кнопок. */
   const [busyId, setBusyId] = useState<string | null>(null);
+  /** P3-ревизии: сервер с переустановкой ПО в полёте (долгая) — статус-строка. */
+  const [reinstallId, setReinstallId] = useState<string | null>(null);
+  /** Успех последнего действия — notice-строка таба (зеркало строки ошибки). */
+  const [notice, setNotice] = useState<string | null>(null);
   const [overrides, setOverrides] = useState<Record<string, RunOverride>>({});
   /** P2-ревизии: поколение событий на сервер — гасит поздний ответ serverStatus. */
   const eventGenRef = useRef<Map<string, number>>(new Map());
@@ -152,6 +164,7 @@ export default function ServerTab({ instanceId }: { instanceId: string }) {
     async (id: string, op: () => Promise<void>) => {
       setBusyId(id);
       setError(null);
+      setNotice(null);
       try {
         await op();
       } catch (e) {
@@ -210,6 +223,22 @@ export default function ServerTab({ instanceId }: { instanceId: string }) {
     void revealItemInDir(s.dir).catch((e: unknown) => setError(apiErrorText(e)));
   };
 
+  /** P3-ревизии: переустановить серверное ПО. Долгая (минуты) и деструктивная
+   * для уже поставленных библиотек — подтверждение текстом кнопки; на время
+   * операции кнопки карточки погашены (busyId), в карточке — статус-строка. */
+  const reinstall = async (s: ServerInfo) => {
+    if (!(await askConfirm(t("servers.reinstall"), { danger: true }))) return;
+    setReinstallId(s.id);
+    void run(s.id, async () => {
+      try {
+        await api.serverReinstall(s.id);
+        setNotice(t("servers.reinstalled"));
+      } finally {
+        setReinstallId(null);
+      }
+    });
+  };
+
   const openEula = () => {
     void openUrl(EULA_URL).catch((e: unknown) => setError(apiErrorText(e)));
   };
@@ -230,6 +259,11 @@ export default function ServerTab({ instanceId }: { instanceId: string }) {
       {error && (
         <p role="alert" className="text-[13px] text-error">
           {error}
+        </p>
+      )}
+      {notice && !error && (
+        <p role="status" className="text-[13px] text-success">
+          {notice}
         </p>
       )}
 
@@ -337,6 +371,16 @@ export default function ServerTab({ instanceId }: { instanceId: string }) {
                   <FolderOpen size={14} aria-hidden />
                   {t("servers.openDir")}
                 </button>
+                {/* P3-ревизии: тихая кнопка рядом с «Открыть папку» —
+                    переустановка серверного ПО (с подтверждением). */}
+                <button
+                  onClick={() => void reinstall(s)}
+                  disabled={busy}
+                  className="btn-ghost btn-sm text-text-muted hover:text-text"
+                >
+                  <RefreshCw size={14} aria-hidden />
+                  {t("servers.reinstall")}
+                </button>
                 <button
                   onClick={() => void remove(s)}
                   disabled={busy}
@@ -346,6 +390,14 @@ export default function ServerTab({ instanceId }: { instanceId: string }) {
                   {t("servers.delete")}
                 </button>
               </div>
+
+              {/* Переустановка ПО в полёте (долгая, минуты) — статус-строка. */}
+              {reinstallId === s.id && (
+                <p role="status" className="mt-2 flex items-center gap-2 text-[13px] text-text-muted">
+                  <Loader2 size={14} aria-hidden className="animate-spin" />
+                  {t("servers.reinstalling")}
+                </p>
+              )}
 
               <ServerLogPanel
                 lines={logs[s.id] ?? NO_LOGS}

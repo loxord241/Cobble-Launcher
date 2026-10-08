@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../../api/client";
 import type { PlaytimeDay } from "../../../api/types";
-import { t } from "../../../i18n";
+import { plural, t } from "../../../i18n";
 import { useInstances } from "../../../state/instances";
 
 const DAYS = 14;
@@ -74,7 +74,7 @@ export default function PlaytimeChart({ instanceId }: { instanceId: string }) {
         <h3 className="text-sm font-semibold">{t("instances.stats.playtimeTitle")}</h3>
         {!empty && (
           <span className="text-[12px] text-text-muted tabular-nums">
-            {t("instances.stats.playtimeWindow", { n: days.length })}
+            {plural("instances.stats.playtimeWindow", days.length)}
             {" · "}
             <span className="font-semibold text-text">
               {t("instances.stats.playtimeHours", { n: hours1(totalSecs) })}
@@ -99,7 +99,7 @@ function Chart({ days, totalSecs }: { days: PlaytimeDay[]; totalSecs: number }) 
   return (
     <svg
       role="img"
-      aria-label={`${t("instances.stats.playtimeWindow", { n: days.length })}: ${t(
+      aria-label={`${plural("instances.stats.playtimeWindow", days.length)}: ${t(
         "instances.stats.playtimeHours",
         { n: hours1(totalSecs) },
       )}`}

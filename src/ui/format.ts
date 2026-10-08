@@ -13,8 +13,9 @@ function suffixes(): { kb: string; mb: string; gb: string } {
 /** Авто-масштаб: <1 МБ → КБ, до 1 ГБ → МБ, дальше ГБ. */
 export function formatSize(bytes: number): string {
   // D64: после очистки кэша сюда приезжал NaN (ядро отдало нечисловой объём) —
-  // честное «—» вместо «NaN КБ».
-  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  // честное «—» вместо «NaN КБ». P3-ревизии: точный ноль — тоже «—» (объёма
+  // нет), а не «1 КБ»; малые ненулевые размеры — как раньше (0.4 КБ → «1 КБ»).
+  if (!Number.isFinite(bytes) || bytes <= 0) return "—";
   const s = suffixes();
   const mb = bytes / (1024 * 1024);
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} ${s.gb}`;

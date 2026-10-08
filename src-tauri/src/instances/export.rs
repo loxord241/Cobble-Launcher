@@ -14,8 +14,11 @@ use crate::instances::{minecraft_dir, ContentEntry, Instance};
 use crate::net::http::HttpClient;
 use crate::paths::Paths;
 use serde::Serialize;
+use sha1::{Digest, Sha1};
+use sha2::Sha512;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::io::{BufRead, BufReader};
+use std::path::{Component, Path, PathBuf};
 
 /// Каталоги `minecraft/`, целиком уходящие в overrides/ (контент без
 /// привязки к Modrinth и конфиги; список = content::CONTENT_DIRS + config).
@@ -30,6 +33,13 @@ const REASON_MISSING: &str = "missing";
 const REASON_NO_URL: &str = "no_url";
 /// Причина пропуска: привязки к Modrinth нет (ручной jar) — файл в overrides/.
 const REASON_UNLINKED: &str = "unlinked";
+/// Причина пропуска: путь записи из манифеста небезопасен (`..`, абсолютный
+/// путь, диск, пустой) — за пределы minecraft/ и staging не выпускаем
+/// (защита в глубину, как A29 у импорта).
+const REASON_TRAVERSAL: &str = "traversal";
+/// Причина пропуска: в saves/ несколько миров, а quick_play_world не указан —
+/// за пользователя не решаем, мир в пак не включается.
+const REASON_WORLD_AMBIGUOUS: &str = "world_ambiguous";
 
 /// Файл, пропущенный при экспорте: путь в паке + причина (стабильный ключ,
 /// переводит фронт: `export.skip.<reason>`).
@@ -151,6 +161,57 @@ pub async fn export_instance_mrpack_in(
 /// Ошибка фоновой задачи (как join_err в import): поток упал или запаниковал.
 fn join_err(e: tauri::Error) -> LauncherError {
     LauncherError::Io(std::io::Error::other(format!("фоновая задача экспорта: {e}")))
+}
+
+/// SHA1+SHA512+размер файла за один проход (BufReader, чанки по 128 КБ):
+/// оба хэшера обновляются на одном и том же чтении, файл не вычитывается
+/// дважды (как было с sha1_file + sha512_file подряд). Размер — фактически
+/// хэшированные байты, поэтому hash и fileSize всегда согласованы.
+fn hash_file_once(path: &Path) -> Result<(String, String, u64)> {
+    let file = std::fs::File::open(crate::util::fs::long_path(path))?;
+    let mut reader = BufReader::with_capacity(128 * 1024, file);
+    let mut sha1 = Sha1::new();
+    let mut sha512 = Sha512::new();
+    let mut total = 0u64;
+    loop {
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
+            break;
+        }
+        let n = chunk.len();
+        sha1.update(chunk);
+        sha512.update(chunk);
+        reader.consume(n);
+        total += n as u64;
+    }
+    Ok((
+        hex::encode(sha1.finalize()),
+        hex::encode(sha512.finalize()),
+        total,
+    ))
+}
+
+/// Защита в глубину для путей записей из манифеста (зеркало
+/// util::zip::safe_relative_path): только нормальные компоненты.
+/// `..`, абсолютный путь, диск (`C:`), NUL и пустая строка — отбраковка:
+/// `Some(причина)` для лога; `None` — путь безопасен.
+fn traversal_reason(raw: &str) -> Option<&'static str> {
+    if raw.contains('\0') {
+        return Some("NUL-байт");
+    }
+    let normalized = raw.replace('\\', "/");
+    let mut out = PathBuf::new();
+    for comp in Path::new(&normalized).components() {
+        match comp {
+            Component::Normal(c) => out.push(c),
+            Component::CurDir => {}
+            _ => return Some("`..`, абсолютный путь или диск"),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        return Some("пустой путь");
+    }
+    None
 }
 
 /// Ключ dependencies для загрузчика инстанса (зеркало resolve_loader в
@@ -290,6 +351,17 @@ fn plan_export(
 ) -> ExportPlan {
     let mut plan = ExportPlan::default();
     for e in entries {
+        // Небезопасный путь из манифеста не доходит ни до files[] (утечка
+        // содержимого мимо minecraft/), ни до overrides (запись мимо
+        // staging) — отбраковка в отчёт, экспорт не падает.
+        if let Some(why) = traversal_reason(&e.file) {
+            tracing::warn!("экспорт: путь {:?} отбракован ({why}) — в пак не попадёт", e.file);
+            plan.skipped.push(ExportedFileReport {
+                path: e.file.clone(),
+                reason: REASON_TRAVERSAL.into(),
+            });
+            continue;
+        }
         if !e.enabled {
             plan.skipped.push(ExportedFileReport {
                 path: e.file.clone(),
@@ -333,30 +405,55 @@ fn plan_export(
     plan
 }
 
-/// Выбрать мир для include_worlds: quick_play_world, иначе `world`,
-/// иначе единственный мир в saves/. None — мира нет.
-fn pick_world_dir(mc_dir: &Path, inst: &Instance) -> Option<PathBuf> {
+/// Результат выбора мира для overrides/world.
+#[derive(Debug, PartialEq, Eq)]
+enum WorldPick {
+    /// Мир определён — каталог для копирования.
+    Dir(PathBuf),
+    /// Мира нет (saves пуст, quick_play_world не указывает на мир).
+    None,
+    /// Несколько миров без указания — за пользователя не решаем,
+    /// в отчёт уходит world_ambiguous.
+    Ambiguous,
+}
+
+/// Выбрать мир для include_worlds: quick_play_world, иначе `world`, иначе
+/// единственный мир в saves/. Несколько миров без указания — Ambiguous:
+/// вслепую брать первый нельзя.
+fn pick_world(mc_dir: &Path, inst: &Instance) -> WorldPick {
     let saves = mc_dir.join("saves");
     let is_world = |d: &Path| d.is_dir() && d.join("level.dat").is_file();
     if let Some(qw) = &inst.quick_play_world {
         let d = saves.join(qw);
         if is_world(&d) {
-            return Some(d);
+            return WorldPick::Dir(d);
         }
     }
     let default_world = saves.join("world");
     if is_world(&default_world) {
-        return Some(default_world);
+        return WorldPick::Dir(default_world);
     }
-    let mut worlds: Vec<PathBuf> = std::fs::read_dir(crate::util::fs::long_path(&saves))
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| is_world(p))
-        .collect();
-    match worlds.len() {
-        1 => worlds.pop(),
-        _ => None,
+    let worlds: Vec<PathBuf> = std::fs::read_dir(crate::util::fs::long_path(&saves))
+        .map(|it| {
+            it.flatten()
+                .map(|e| e.path())
+                .filter(|p| is_world(p))
+                .collect()
+        })
+        .unwrap_or_default();
+    match worlds.as_slice() {
+        [one] => WorldPick::Dir(one.clone()),
+        [] => WorldPick::None,
+        _ => WorldPick::Ambiguous,
+    }
+}
+
+/// Да/нет-обёртка над pick_world: каталог мира или None (неоднозначность
+/// тоже None — различать через pick_world).
+fn pick_world_dir(mc_dir: &Path, inst: &Instance) -> Option<PathBuf> {
+    match pick_world(mc_dir, inst) {
+        WorldPick::Dir(d) => Some(d),
+        WorldPick::None | WorldPick::Ambiguous => None,
     }
 }
 
@@ -430,19 +527,16 @@ fn assemble(
 
     let plan = plan_export(manifest, urls, &mc);
 
-    // files[]: хэши и размер — строго с диска (не из манифеста).
+    // files[]: хэши и размер — строго с диска (не из манифеста), один
+    // проход на файл (sha1+sha512+размер).
     let mut sourced: Vec<SourcedFile> = Vec::new();
     let mut skipped = plan.skipped;
     for s in &plan.sourced {
         let abs =
             crate::util::fs::long_path(&mc.join(crate::instances::content::disk_path(&s.path, true)));
-        let size = std::fs::metadata(&abs).map(|m| m.len()).unwrap_or(0);
-        let (sha1, sha512) = match (
-            crate::util::fs::sha1_file(&abs),
-            crate::util::fs::sha512_file(&abs),
-        ) {
-            (Ok(sha1), Ok(sha512)) => (sha1, sha512),
-            (Err(e), _) | (_, Err(e)) => {
+        let (sha1, sha512, size) = match hash_file_once(&abs) {
+            Ok(h) => h,
+            Err(e) => {
                 skipped.push(ExportedFileReport {
                     path: s.path.clone(),
                     reason: REASON_MISSING.into(),
@@ -498,6 +592,12 @@ fn assemble(
     // Ручные записи вне контентных каталогов копируем точечно (wholesale их
     // не накрыл); внутри каталогов они уже на месте.
     for rel in &plan.unlinked {
+        // Глубинная проверка: plan_export уже отбраковал мусор, но точечная
+        // копия — последний рубеж, мимо staging писать нельзя.
+        if let Some(why) = traversal_reason(rel) {
+            tracing::warn!("экспорт: точечная копия {rel:?} отменена ({why})");
+            continue;
+        }
         let in_staging = staging.join("overrides").join(rel);
         if crate::util::fs::long_path(&in_staging).exists() {
             continue;
@@ -515,12 +615,21 @@ fn assemble(
         )?;
         overrides_count += 1;
     }
-    // Мир (по флагу): overrides/world, один мир.
+    // Мир (по флагу): overrides/world, один мир. Несколько миров без
+    // quick_play_world — видимый отказ в отчёте, а не молчаливый пропуск.
     if include_worlds {
         if let Some(world_dir) = pick_world_dir(&mc, inst) {
             overrides_count += copy_tree(&world_dir, &staging.join("overrides").join("world"), &|_| {
                 false
             })?;
+        } else if matches!(pick_world(&mc, inst), WorldPick::Ambiguous) {
+            skipped.push(ExportedFileReport {
+                path: "world".into(),
+                reason: REASON_WORLD_AMBIGUOUS.into(),
+            });
+            tracing::info!(
+                "экспорт: в saves/ несколько миров, quick_play_world не указан — мир в пак не включён"
+            );
         } else {
             tracing::debug!("экспорт: мира для включения не нашлось — overrides/world пуст");
         }
@@ -901,5 +1010,200 @@ mod tests {
         assert_eq!(pick_world_dir(&mc, &inst).unwrap(), mc.join("saves/world"));
         inst.quick_play_world = Some("Beta".into());
         assert_eq!(pick_world_dir(&mc, &inst).unwrap(), mc.join("saves/Beta"));
+    }
+
+    /// Неоднозначный выбор — отдельный статус: два мира без quick_play —
+    /// Ambiguous (в отчёт уходит world_ambiguous), с указанием — Dir.
+    #[test]
+    fn world_pick_distinguishes_ambiguity() {
+        let dir = tempfile::tempdir().unwrap();
+        let mc = dir.path().to_path_buf();
+        let mut inst = Instance::new("w", "1.20.1");
+        write_mc_file(&mc, "saves/Alpha/level.dat", b"a");
+        write_mc_file(&mc, "saves/Beta/level.dat", b"b");
+        assert!(matches!(pick_world(&mc, &inst), WorldPick::Ambiguous));
+        inst.quick_play_world = Some("Alpha".into());
+        assert_eq!(
+            pick_world(&mc, &inst),
+            WorldPick::Dir(mc.join("saves/Alpha"))
+        );
+    }
+
+    /// Однопроходный хэш: пара (sha1, sha512) и размер совпадают с эталоном
+    /// через прежние sha1_file/sha512_file — на многочанковом (>128 КБ) и
+    /// пустом файлах; нечитаемый путь — ошибка.
+    #[test]
+    fn single_pass_hash_matches_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let data: Vec<u8> = (0..300 * 1024u32).map(|i| (i % 251) as u8).collect();
+        let big = dir.path().join("big.bin");
+        std::fs::write(long_path(&big), &data).unwrap();
+        let (sha1, sha512, size) = hash_file_once(&long_path(&big)).unwrap();
+        assert_eq!(sha1, crate::util::fs::sha1_file(&long_path(&big)).unwrap());
+        assert_eq!(
+            sha512,
+            crate::util::fs::sha512_file(&long_path(&big)).unwrap()
+        );
+        assert_eq!(size, data.len() as u64);
+
+        let empty = dir.path().join("empty.bin");
+        std::fs::write(long_path(&empty), b"").unwrap();
+        let (s1, s2, sz) = hash_file_once(&long_path(&empty)).unwrap();
+        assert_eq!(s1, crate::util::fs::sha1_file(&long_path(&empty)).unwrap());
+        assert_eq!(
+            s2,
+            crate::util::fs::sha512_file(&long_path(&empty)).unwrap()
+        );
+        assert_eq!(sz, 0);
+        assert!(hash_file_once(&long_path(&dir.path().join("nope.bin"))).is_err());
+    }
+
+    /// Фильтр путей манифеста: нормальные относительные проходят,
+    /// `..`/абсолютные/диск/пустые/NUL — нет.
+    #[test]
+    fn manifest_path_filter() {
+        for ok in ["mods/a.jar", "resourcepacks/pack.zip", "a/b/c.dat"] {
+            assert!(traversal_reason(ok).is_none(), "{ok}");
+        }
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../evil.jar",
+            "mods/../evil.jar",
+            "C:/abs.jar",
+            "/abs.jar",
+            "a\\..\\b.jar",
+            "mod\0.jar",
+        ] {
+            assert!(traversal_reason(bad).is_some(), "{bad:?}");
+        }
+    }
+
+    /// Traversal-пути манифеста отбраковываются в плане: и sourced-ветка
+    /// (привязка+ссылка), и unlinked-ветка уходят в skipped с traversal.
+    #[test]
+    fn plan_rejects_traversal_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let mc = dir.path().to_path_buf();
+        write_mc_file(&mc, "mods/ok.jar", b"ok");
+        let entries = vec![
+            entry("../evil.jar", ContentSource::Local, None, None),
+            entry(
+                "C:/abs.jar",
+                ContentSource::Modrinth,
+                Some("PROJ"),
+                Some("https://cdn.modrinth.com/abs.jar"),
+            ),
+            entry("mods/ok.jar", ContentSource::Local, None, None),
+        ];
+        let plan = plan_export(&entries, &HashMap::new(), &mc);
+        assert!(plan.sourced.is_empty(), "traversal не проходит в files[]");
+        assert_eq!(
+            plan.unlinked,
+            vec!["mods/ok.jar".to_string()],
+            "до копий доходит только безопасный путь"
+        );
+        let reasons: HashMap<&str, &str> = plan
+            .skipped
+            .iter()
+            .map(|r| (r.path.as_str(), r.reason.as_str()))
+            .collect();
+        assert_eq!(reasons.get("../evil.jar"), Some(&"traversal"));
+        assert_eq!(reasons.get("C:/abs.jar"), Some(&"traversal"));
+        assert_eq!(reasons.get("mods/ok.jar"), Some(&"unlinked"));
+    }
+
+    /// Traversal в манифесте (полный прогон, офлайн): ../evil.jar (файл
+    /// существует и существует за пределами minecraft/) и C:/abs.jar не
+    /// выходят за staging — в отчёте traversal, в архиве их нет.
+    #[tokio::test]
+    async fn traversal_paths_never_reach_the_pack() {
+        let (dir, paths) = test_paths();
+        let inst = Instance::new("trav", "1.20.1");
+        crate::instances::save(&paths, &inst).unwrap();
+        let inst_root = instance_dir(&paths, &inst.id);
+        let mc = minecraft_dir(&inst_root);
+        write_mc_file(&mc, "mods/manual.jar", b"manual bytes");
+        // «жертва» ровно там, куда целился бы ../evil.jar из minecraft/.
+        std::fs::write(long_path(&inst_root.join("evil.jar")), b"secret").unwrap();
+
+        save_content_manifest(
+            &paths,
+            &inst.id,
+            &[
+                entry("../evil.jar", ContentSource::Local, None, None),
+                entry(
+                    "C:/abs.jar",
+                    ContentSource::Modrinth,
+                    Some("PROJ"),
+                    Some("https://cdn.modrinth.com/abs.jar"),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let client = HttpClient::new(None).unwrap();
+        client.set_offline(true);
+        let out = dir.path().join("trav.mrpack");
+        let res = export_instance_mrpack_in(&paths, &client, &inst.id, &out, false)
+            .await
+            .unwrap();
+        assert_eq!(res.files_sourced, 0);
+        let skipped: HashMap<&str, &str> = res
+            .skipped
+            .iter()
+            .map(|r| (r.path.as_str(), r.reason.as_str()))
+            .collect();
+        assert_eq!(skipped.get("../evil.jar"), Some(&"traversal"));
+        assert_eq!(skipped.get("C:/abs.jar"), Some(&"traversal"));
+
+        let file = std::fs::File::open(long_path(&out)).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let names: Vec<String> = (0..zip.len())
+            .map(|i| zip.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(names.iter().all(|n| !n.contains("evil.jar")), "{names:?}");
+        assert!(names.iter().all(|n| !n.contains("abs.jar")), "{names:?}");
+        assert!(
+            names.iter().any(|n| n == "overrides/mods/manual.jar"),
+            "обычный файл на месте: {names:?}"
+        );
+    }
+
+    /// Несколько миров без quick_play_world — видимый отказ: skipped
+    /// { path: "world", reason: "world_ambiguous" }, мира в архиве нет.
+    #[tokio::test]
+    async fn ambiguous_world_reported_not_silently_skipped() {
+        let (dir, paths) = test_paths();
+        let inst = Instance::new("ambiguous", "1.20.1");
+        crate::instances::save(&paths, &inst).unwrap();
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        write_mc_file(&mc, "saves/Alpha/level.dat", b"a");
+        write_mc_file(&mc, "saves/Beta/level.dat", b"b");
+
+        let client = HttpClient::new(None).unwrap();
+        client.set_offline(true);
+        let out = dir.path().join("amb.mrpack");
+        let res = export_instance_mrpack_in(&paths, &client, &inst.id, &out, true)
+            .await
+            .unwrap();
+        assert!(
+            res.skipped
+                .iter()
+                .any(|r| r.path == "world" && r.reason == "world_ambiguous"),
+            "{:?}",
+            res.skipped
+        );
+
+        let file = std::fs::File::open(long_path(&out)).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let names: Vec<String> = (0..zip.len())
+            .map(|i| zip.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.starts_with("overrides/world")),
+            "мир не выбран вслепую: {names:?}"
+        );
     }
 }

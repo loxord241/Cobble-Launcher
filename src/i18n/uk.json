@@ -526,7 +526,6 @@
   "instances.stats.playtimeTitle": "Награні години за 14 днів",
   "instances.stats.playtimeHours": "{n} год",
   "instances.stats.playtimeEmpty": "Ще немає сесій — запустіть гру",
-  "instances.stats.playtimeWindow": "За {n} днів",
   "mods.shader.needsIris": "Шейдер-паки працюють лише з Iris (Fabric/Quilt) або OptiFine.",
   "home.favorites.title": "Обране",
   "home.favorites.add": "Додати «{name}» до обраного",
@@ -577,5 +576,13 @@
   "servers.online.off": "офлайн",
   "servers.log.exited": "Процес завершився.",
   "servers.log.crashed": "Аварійне завершення (код {code}).",
-  "servers.log.empty": "Лог порожній — запустіть сервер."
+  "servers.log.empty": "Лог порожній — запустіть сервер.",
+  "servers.reinstall": "Перевстановити серверне ПЗ",
+  "servers.reinstalling": "Перевстановлюю… (може зайняти кілька хвилин)",
+  "servers.reinstalled": "Серверне ПЗ перевстановлено",
+  "home.favorites.orphan": "Проєкт недоступний",
+  "instances.stats.playtimeWindow.one": "За {n} день",
+  "instances.stats.playtimeWindow.few": "За {n} дні",
+  "instances.stats.playtimeWindow.many": "За {n} днів",
+  "instances.stats.playtimeWindow.other": "За {n} днів"
 }

@@ -69,6 +69,8 @@ pub struct ServerCreateResult {
     pub mods_client_skipped: u32,
     /// Скопировано непроверенных (офлайн, нет project_id).
     pub mods_unchecked: u32,
+    /// Не скопировано из-за дубля имени (dst-коллизия вложенных путей).
+    pub collisions: u32,
     /// Имена файлов пропущенных клиент-модов.
     pub skipped_projects: Vec<String>,
 }
@@ -143,17 +145,34 @@ fn valid_server_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Битый servers.json — в карантин `.bad` (паттерн favorites.rs): иначе
-/// первая же запись молча затёрла бы реестр всех серверов.
+/// Битый servers.json — в карантин: переименовать в `servers.json.bad`
+/// (занятый слот не затираем — тогда `.bad.1`, `.bad.2`, ...). Иначе первая же
+/// запись молча затёрла бы реестр всех серверов, а вторая порча — молча
+/// затёрла бы прежний карантин: слоты оставляют данные для ручного
+/// восстановления (та же схема слотов, что у settings.json).
 fn quarantine_broken(path: &Path, reason: &str) {
-    let mut bad = path.as_os_str().to_os_string();
-    bad.push(".bad");
-    match crate::util::fs::rename_with_retry(path, Path::new(&bad)) {
-        Ok(()) => {
-            tracing::warn!("servers.json невалиден ({reason}) — перемещён в {}", bad.display())
+    for i in 0..10u32 {
+        let mut name = path.as_os_str().to_os_string();
+        match i {
+            0 => name.push(".bad"),
+            _ => name.push(format!(".bad.{i}")),
         }
-        Err(e) => tracing::warn!("servers.json невалиден ({reason}), карантин не удался: {e}"),
+        let candidate = PathBuf::from(name);
+        if candidate.exists() {
+            continue;
+        }
+        match crate::util::fs::rename_with_retry(path, &candidate) {
+            Ok(()) => {
+                tracing::warn!("servers.json невалиден ({reason}) — перемещён в {}", candidate.display());
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("servers.json невалиден ({reason}), карантин не удался: {e}");
+                return;
+            }
+        }
     }
+    tracing::warn!("servers.json невалиден ({reason}); слоты карантина заняты — файл оставлен как есть");
 }
 
 /// Читать реестр; файла нет → пустой, битый → карантин + пустой.
@@ -182,6 +201,34 @@ fn load_registry(paths: &Paths) -> Registry {
 fn save_registry(paths: &Paths, reg: &Registry) -> Result<()> {
     let data = serde_json::to_vec_pretty(reg)?;
     atomic_write(&registry_path(paths), &data)
+}
+
+/// Каталоги-сироты: подкаталог в servers_root без записи в реестре (после
+/// карантина servers.json, сбоя диска или ручной чистки файла). Подкаталог с
+/// .server.lock или хотя бы одним файлом — warn в журнал: молча терять
+/// установленный сервер нельзя, но записи не восстанавливаем и каталог не
+/// трогаем (список сироты, как и раньше, не возвращает).
+fn warn_orphan_server_dirs(paths: &Paths, reg: &Registry) {
+    let Ok(entries) = std::fs::read_dir(long_path(&servers_root(paths))) else {
+        return; // корня серверов ещё нет — сирот тоже нет
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if reg.contains_key(&id) {
+            continue;
+        }
+        let has_content = path.join(".server.lock").exists()
+            || std::fs::read_dir(&path)
+                .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.path().is_file()))
+                .unwrap_or(false);
+        if has_content {
+            tracing::warn!("каталог сервера без записи реестра: {}", path.display());
+        }
+    }
 }
 
 /// Имя каталога сервера из имени: ASCII-буквы/цифры в нижний регистр,
@@ -327,9 +374,26 @@ pub async fn server_create(
     match create_inner(paths, http, &inst, &mc_version, params).await {
         Ok(res) => Ok(res),
         Err(e) => {
-            // Откат: недостроенный каталог сервера не оставляем.
-            let _ = std::fs::remove_dir_all(long_path(&dir));
-            tracing::warn!("создание сервера {id} не удалось, каталог откачен: {e}");
+            // Откат: недостроенный каталог сервера не оставляем. Первый
+            // remove_dir_all может не смочь (антивирус держит свежий
+            // server.jar) — один повтор через короткую паузу. Редкий путь,
+            // короткий блокирующий сон в async-функции здесь допустим.
+            match std::fs::remove_dir_all(long_path(&dir)) {
+                Ok(()) => {
+                    tracing::warn!("создание сервера {id} не удалось, каталог откачен: {e}")
+                }
+                Err(first) => {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    match std::fs::remove_dir_all(long_path(&dir)) {
+                        Ok(()) => tracing::warn!(
+                            "создание сервера {id} не удалось, каталог откачен со второй попытки: {e}"
+                        ),
+                        Err(retry) => tracing::warn!(
+                            "создание сервера {id} не удалось, откат не удался: {first}; повтор: {retry}; причина отказа: {e}"
+                        ),
+                    }
+                }
+            }
             Err(e)
         }
     }
@@ -410,14 +474,16 @@ async fn create_inner(
         mods_server: mods.copied,
         mods_client_skipped: mods.skipped_client,
         mods_unchecked: mods.unchecked,
+        collisions: mods.collisions,
         skipped_projects: mods.skipped_projects,
     })
 }
 
 /// Список серверов (всех или конкретного инстанса), порядок — по id.
 pub fn server_list(paths: &Paths, instance_id: Option<&str>) -> Vec<ServerInfo> {
-    load_registry(paths)
-        .into_values()
+    let reg = load_registry(paths);
+    warn_orphan_server_dirs(paths, &reg);
+    reg.into_values()
         .filter(|r| match instance_id {
             Some(need) => r.instance_id == need,
             None => true,
@@ -446,6 +512,11 @@ pub fn server_delete(paths: &Paths, id: &str) -> Result<()> {
             return Err(LauncherError::NotFound(format!("сервер {id}")));
         }
     }
+    // Гвард старта (тот же, что сериализует server_start) берём ДО финальной
+    // проверки is_running и держим до конца удаления каталога: без него старт
+    // успел бы просочиться между проверкой и remove_dir_all (гонка delete vs
+    // start — каталог исчез бы под ногами у свежеспавненной java).
+    let _start = run::start_guard();
     if run::is_running(paths, id) {
         return Err(LauncherError::InvalidInput(
             "нельзя удалить работающий сервер: сначала остановите его".into(),
@@ -544,6 +615,44 @@ mod tests {
     fn missing_registry_file_is_empty() {
         let (_d, paths) = setup();
         assert!(load_registry(&paths).is_empty());
+    }
+
+    /// Вторая порча подряд не затирает первый карантин — новый файл уезжает
+    /// в свободный слот `.bad.1` (схема settings.json).
+    #[test]
+    fn quarantine_does_not_overwrite_previous_bad() {
+        let (_d, paths) = setup();
+        let path = registry_path(&paths);
+        std::fs::write(&path, b"{ first broken").unwrap();
+        assert!(load_registry(&paths).is_empty());
+        assert!(path.with_file_name("servers.json.bad").exists());
+
+        std::fs::write(&path, b"{ second broken").unwrap();
+        assert!(load_registry(&paths).is_empty());
+        let first = std::fs::read_to_string(path.with_file_name("servers.json.bad")).unwrap();
+        assert_eq!(first, "{ first broken", "прежний карантин не затёрт");
+        assert!(path.with_file_name("servers.json.bad.1").exists(), "вторая порча в соседнем слоте");
+    }
+
+    /// Каталог-сирота (есть на диске, записи в реестре нет): в список не
+    /// попадает, запись молча не восстанавливается, каталог не удаляется —
+    /// server_list только предупреждает в журнал.
+    #[test]
+    fn orphan_dir_not_in_list_and_left_untouched() {
+        let (_d, paths) = setup();
+        let root = servers_root(&paths);
+        let orphan = root.join("srv-orphan");
+        std::fs::create_dir_all(long_path(&orphan)).unwrap();
+        std::fs::write(orphan.join(".server.lock"), b"pid: 123\n").unwrap();
+        // Пустой подкаталог без файлов — не сирота, но в список тоже не попадает.
+        std::fs::create_dir_all(long_path(&root.join("srv-empty"))).unwrap();
+
+        assert!(server_list(&paths, None).is_empty(), "сирота в список не попадает");
+        assert!(orphan.exists(), "каталог-сирота не удаляется");
+        assert!(!registry_path(&paths).exists(), "запись не восстанавливается молча");
+        // Повторный list — та же картина (не копит побочных эффектов).
+        assert!(server_list(&paths, None).is_empty());
+        assert!(orphan.exists());
     }
 
     #[test]

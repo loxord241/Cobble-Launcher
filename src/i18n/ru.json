@@ -526,7 +526,6 @@
   "instances.stats.playtimeTitle": "Наигранные часы за 14 дней",
   "instances.stats.playtimeHours": "{n} ч",
   "instances.stats.playtimeEmpty": "Пока нет сессий — запустите игру",
-  "instances.stats.playtimeWindow": "За {n} дней",
   "mods.shader.needsIris": "Шейдер-паки работают только с Iris (Fabric/Quilt) или OptiFine.",
   "home.favorites.title": "Избранное",
   "home.favorites.add": "Добавить «{name}» в избранное",
@@ -577,5 +576,13 @@
   "servers.online.off": "офлайн",
   "servers.log.exited": "Процесс завершился.",
   "servers.log.crashed": "Аварийное завершение (код {code}).",
-  "servers.log.empty": "Лог пуст — запустите сервер."
+  "servers.log.empty": "Лог пуст — запустите сервер.",
+  "servers.reinstall": "Переустановить серверное ПО",
+  "servers.reinstalling": "Переустанавливаю… (может занять несколько минут)",
+  "servers.reinstalled": "Серверное ПО переустановлено",
+  "home.favorites.orphan": "Проект недоступен",
+  "instances.stats.playtimeWindow.one": "За {n} день",
+  "instances.stats.playtimeWindow.few": "За {n} дня",
+  "instances.stats.playtimeWindow.many": "За {n} дней",
+  "instances.stats.playtimeWindow.other": "За {n} дней"
 }

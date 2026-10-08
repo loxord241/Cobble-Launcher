@@ -98,6 +98,8 @@ export const api = {
   serverAcceptEula: (id: string) => invoke<void>("server_accept_eula", { id }),
   serverStart: (id: string) => invoke<number>("server_start", { id }),
   serverStop: (id: string) => invoke<boolean>("server_stop", { id }),
+  /** D68: переустановить серверное ПО (снос артефактов установщика + новая установка). */
+  serverReinstall: (id: string) => invoke<void>("server_reinstall", { id }),
   /** D63: официальная панорама титульного экрана из собственных файлов
    * игры инстанса (data-URL PNG) — null, пока ассеты не скачаны. */
   panoramaArt: (id: string) => invoke<string | null>("panorama_art", { id }),

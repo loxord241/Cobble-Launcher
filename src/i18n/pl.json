@@ -526,7 +526,6 @@
   "instances.stats.playtimeTitle": "Czas gry z ostatnich 14 dni",
   "instances.stats.playtimeHours": "{n} godz.",
   "instances.stats.playtimeEmpty": "Brak sesji — uruchom grę",
-  "instances.stats.playtimeWindow": "Z ostatnich {n} dni",
   "mods.shader.needsIris": "Pakiety shaderów wymagają Iris (Fabric/Quilt) lub OptiFine.",
   "home.favorites.title": "Ulubione",
   "home.favorites.add": "Dodaj „{name}” do ulubionych",
@@ -577,5 +576,13 @@
   "servers.online.off": "offline",
   "servers.log.exited": "Proces zakończył się.",
   "servers.log.crashed": "Awaria (kod wyjścia {code}).",
-  "servers.log.empty": "Dziennik jest pusty — uruchom serwer."
+  "servers.log.empty": "Dziennik jest pusty — uruchom serwer.",
+  "servers.reinstall": "Zainstaluj ponownie oprogramowanie serwera",
+  "servers.reinstalling": "Ponowna instalacja… (może potrwać kilka minut)",
+  "servers.reinstalled": "Oprogramowanie serwera zainstalowane ponownie",
+  "home.favorites.orphan": "Projekt niedostępny",
+  "instances.stats.playtimeWindow.one": "Z ostatniego {n} dnia",
+  "instances.stats.playtimeWindow.few": "Z ostatnich {n} dni",
+  "instances.stats.playtimeWindow.many": "Z ostatnich {n} dni",
+  "instances.stats.playtimeWindow.other": "Z ostatnich {n} dni"
 }

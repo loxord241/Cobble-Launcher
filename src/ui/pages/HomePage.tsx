@@ -57,6 +57,25 @@ function compactCount(n: number): string {
  * прихода показываем честным ambient-стилем (размытая подложка + чёткая
  * иконка в центре), а не апскейлом на всю плитку.
  */
+/**
+ * Кэп сессионных кэшей: модульные Map живут до перезапуска приложения, а
+ * долгая сессия с бесконечным скроллом и сердцами растит их без предела.
+ * При превышении лимита выталкиваем САМЫЕ СТАРЫЕ по порядку вставки (Map
+ * сохраняет порядок вставки) — удаляем первые ключи, пока размер не дойдёт
+ * до лимита. Вытесненная запись при повторном запросе просто перечитается.
+ */
+const GALLERY_CACHE_CAP = 300
+const META_CACHE_CAP = 300
+const HIT_CACHE_CAP = 100
+
+function capCache<T>(map: Map<string, T>, limit: number): void {
+  if (map.size <= limit) return
+  for (const key of map.keys()) {
+    map.delete(key)
+    if (map.size <= limit) break
+  }
+}
+
 const galleryCache = new Map<string, Promise<string | null>>()
 
 function loadGalleryArt(projectId: string): Promise<string | null> {
@@ -67,6 +86,7 @@ function loadGalleryArt(projectId: string): Promise<string | null> {
       .then((d) => d.gallery?.[0]?.url ?? null)
       .catch(() => null)
     galleryCache.set(projectId, p)
+    capCache(galleryCache, GALLERY_CACHE_CAP)
   }
   return p
 }
@@ -107,6 +127,7 @@ function loadProjectMeta(projectId: string): Promise<ProjectMeta | null> {
       .then((list) => list[0] ?? null)
       .catch(() => null)
     metaCache.set(projectId, p)
+    capCache(metaCache, META_CACHE_CAP)
   }
   return p
 }
@@ -128,6 +149,7 @@ function resolveFavoriteHit(projectId: string, title: string): Promise<SearchHit
       .then((r) => r.hits.find((h) => h.project_id === projectId) ?? null)
       .catch(() => null)
     hitCache.set(projectId, p)
+    capCache(hitCache, HIT_CACHE_CAP)
   }
   return p
 }
@@ -400,6 +422,9 @@ export default function HomePage({ query }: { query: string }) {
   // Сердца с переключением в полёте: кнопку гасим, параллельные toggle одного
   // проекта не гоняем (их ответы могли бы прийти не в порядке кликов).
   const [favPending, setFavPending] = useState<Set<string>>(() => new Set())
+  // P3-ревизии: проекты, для которых Modrinth метаданные НЕ вернул (удалены
+  // с сайта) — вместо вечного скелета рисуем плитку-заглушку.
+  const [favOrphans, setFavOrphans] = useState<Set<string>>(() => new Set())
   const sentinelRef = useRef<HTMLDivElement>(null)
   const stuckRef = useRef<HTMLDivElement>(null)
   const [stuck, setStuck] = useState(false)
@@ -596,6 +621,19 @@ export default function HomePage({ query }: { query: string }) {
             for (const m of metas) next[m.projectId] = m
             return next
           })
+          // Батч вернулся без части id — эти проекты удалены с Modrinth,
+          // метаданные для них не приедут никогда; помечаем, чтобы плитка-
+          // заглушка сменила вечный скелет (ошибка сети сюда не попадает —
+          // она уходит в catch ниже и скелеты остаются честными).
+          const got = new Set(metas.map((m) => m.projectId))
+          const missing = ids.filter((id) => !got.has(id))
+          if (missing.length > 0) {
+            setFavOrphans((prev) => {
+              const next = new Set(prev)
+              for (const id of missing) next.add(id)
+              return next
+            })
+          }
         } catch (e) {
           if (alive) setError(apiErrorText(e))
         }
@@ -621,7 +659,20 @@ export default function HomePage({ query }: { query: string }) {
       return next
     })
     applyFavorite(projectId, !wasFavorite)
-    if (!wasFavorite) void loadProjectMeta(projectId).then((m) => m && rememberMeta(m))
+    // Свежедобавленному подтягиваем метаданные плитки (кэш на сессию —
+    // повторно ядро не дёргаем). null — Modrinth проект не отдал (удалён
+    // с сайта) — плитка-заглушка вместо вечного скелета.
+    if (!wasFavorite) {
+      void loadProjectMeta(projectId).then((m) => {
+        if (m) rememberMeta(m)
+        else
+          setFavOrphans((prev) => {
+            const next = new Set(prev)
+            next.add(projectId)
+            return next
+          })
+      })
+    }
     try {
       const added = await api.favoritesToggle(projectId)
       applyFavorite(projectId, added)
@@ -651,8 +702,14 @@ export default function HomePage({ query }: { query: string }) {
   }
 
   // Элементы ряда: порядок favoritesList; плитки, чьи метаданные ещё не
-  // доехали, FavoritesRow рисует скелетами (в ритме скелетов страницы).
-  const favoriteItems = favoriteIds.map((id) => ({ projectId: id, meta: favMeta[id] ?? null }))
+  // доехали, FavoritesRow рисует скелетами (в ритме скелетов страницы) —
+  // но только пока запрос в полёте: помеченные осиротевшими рисуются
+  // плиткой-заглушкой (метаданные для них не приедут никогда).
+  const favoriteItems = favoriteIds.map((id) => ({
+    projectId: id,
+    meta: favMeta[id] ?? null,
+    orphan: favOrphans.has(id),
+  }))
 
   return (
     <div className="mx-auto flex max-w-[1240px] flex-col gap-4">

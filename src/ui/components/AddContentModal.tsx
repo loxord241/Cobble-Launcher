@@ -66,6 +66,9 @@ export default function AddContentModal({
     const seq = ++searchSeqRef.current;
     setBusy(true);
     setError(null);
+    // P3-ревизии: баннер «Установлено: …» не должен переживать смену вкладки
+    // и повторный поиск — висеть над чужим списком ему нечего.
+    setInstalledFiles(null);
     try {
       const r = await api.modrinthSearch(
         query.trim() || TABS.find((x) => x.id === tab)!.defaultQuery,

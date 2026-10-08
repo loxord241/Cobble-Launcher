@@ -13,10 +13,13 @@ import { Heart } from "lucide-react"
 import { t } from "../../i18n"
 import type { ProjectMeta } from "../../api/types"
 
-/** Элемент ряда: id из favoritesList + метаданные (null — ещё едут). */
+/** Элемент ряда: id из favoritesList + метаданные (null — ещё едут или их
+ * не будет: orphan — проект удалён с Modrinth, рисуем плитку-заглушку). */
 export interface FavoriteItem {
   projectId: string
   meta: ProjectMeta | null
+  /** P3-ревизии: метаданные не приедут никогда — плитка-заглушка, не скелет. */
+  orphan: boolean
 }
 
 /**
@@ -178,8 +181,67 @@ function FavoriteSkeleton() {
   )
 }
 
+/**
+ * Плитка-заглушка для проекта, которого больше нет на Modrinth (P3-ревизии):
+ * метаданные не приедут никогда — честное имя-заглушка вместо вечного
+ * скелета. Тот же GD-словарь, что у живых плиток (не выглядит сломанной);
+ * сердце работает (убрать из избранного можно), клик по плитке НИЧЕГО не
+ * открывает — метаданных для окна проекта нет; aria-disabled вместо
+ * кнопочной роли, без pointer-курсора и hover-подъёма.
+ */
+function FavoriteOrphanTile({
+  projectId,
+  idx,
+  pending,
+  onToggle,
+}: {
+  projectId: string
+  idx: number
+  pending: boolean
+  onToggle: (projectId: string) => void
+}) {
+  const label = t("home.favorites.orphan")
+  return (
+    <div
+      aria-disabled="true"
+      // Каскад появления — как у плиток каталога (кэп 20 строк на партию).
+      style={{ animationDelay: `${(idx % 20) * 22}ms` }}
+      className="anim-fade-up relative aspect-[280/238] w-44 flex-none overflow-hidden rounded-xl border border-border-app bg-surface-2 shadow-md shadow-black/20"
+    >
+      {/* Арта нет (метаданных нет) — честная заглушка с первой буквой имени,
+          как у плиток каталога без иконки. */}
+      <span
+        aria-hidden
+        className="absolute inset-0 grid place-items-center bg-gradient-to-br from-surface-2 to-bg text-4xl font-bold text-text-muted"
+      >
+        {label.slice(0, 1).toUpperCase()}
+      </span>
+      <div
+        aria-hidden
+        className="absolute inset-0 bg-gradient-to-b from-black/10 via-transparent to-black/80"
+      />
+      {/* Сердце живое: единственное действие осиротевшей плитки — убрать её
+          из избранного. */}
+      <HeartToggle
+        projectId={projectId}
+        title={label}
+        active
+        disabled={pending}
+        onToggle={onToggle}
+      />
+      {/* Постоянная плашка имени — как у каталога (видна без hover). */}
+      <div className="absolute inset-x-3 bottom-2.5 min-w-0">
+        <h4 className="truncate text-[13.5px] font-semibold leading-tight text-white drop-shadow">
+          {label}
+        </h4>
+      </div>
+    </div>
+  )
+}
+
 /** Горизонтальный ряд «Избранное»: заголовок в ритме секций страницы, лента
- * GD-плиток со скроллом; плитки без метаданных — скелетами. */
+ * GD-плиток со скроллом; плитки без метаданных — скелетами, пока запрос в
+ * полёте; осиротевшие (проект удалён с Modrinth) — плитками-заглушками. */
 export default function FavoritesRow({
   items,
   pendingIds,
@@ -206,6 +268,14 @@ export default function FavoritesRow({
               idx={idx}
               pending={pendingIds.has(item.projectId)}
               onOpen={() => onOpen(item.meta as ProjectMeta)}
+              onToggle={onToggle}
+            />
+          ) : item.orphan ? (
+            <FavoriteOrphanTile
+              key={item.projectId}
+              projectId={item.projectId}
+              idx={idx}
+              pending={pendingIds.has(item.projectId)}
               onToggle={onToggle}
             />
           ) : (

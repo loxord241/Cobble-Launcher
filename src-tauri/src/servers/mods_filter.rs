@@ -41,7 +41,10 @@ pub struct ModsFilterResult {
     pub skipped_client: u32,
     /// Скопировано непроверенных (нет project_id / офлайн / нет данных).
     pub unchecked: u32,
-    /// Имена файлов пропущенных клиент-модов.
+    /// Не скопировано из-за дубля имени (вложенные пути сводятся к одному
+    /// dst — второй файл молча перезаписал бы первый, P3-ревизии).
+    pub collisions: u32,
+    /// Имена файлов пропущенных клиент-модов и дублей («имя (дубль имени)»).
     pub skipped_projects: Vec<String>,
 }
 
@@ -169,6 +172,46 @@ fn base_name(file: &str) -> String {
         .to_string()
 }
 
+/// Учёт копии одного мода: dst строится по base_name, дубли не копируются.
+/// P3-ревизии: resolve_content_file допускает вложенные пути — «mods/x.jar» и
+/// «mods/sub/x.jar» сводятся к одному dst «mods/x.jar», и второй тихо
+/// перезаписал бы первый (порядок обхода манифеста решал бы, что на сервере).
+/// Занятый dst → `collisions` + имя в skipped_projects с пометкой; копируется
+/// первый пришедший. `checked` — сторона проверена (счётчик copied, иначе
+/// unchecked). Выделено в функцию, чтобы тест покрывал счёт без сети.
+fn account_copy(
+    taken: &mut HashMap<PathBuf, String>,
+    mods_dst: &Path,
+    res: &mut ModsFilterResult,
+    jobs: &mut Vec<(PathBuf, PathBuf)>,
+    src: PathBuf,
+    logical_file: &str,
+    checked: bool,
+) {
+    let name = base_name(logical_file);
+    let dst = mods_dst.join(&name);
+    match taken.entry(dst.clone()) {
+        std::collections::hash_map::Entry::Occupied(first) => {
+            res.collisions += 1;
+            tracing::warn!(
+                "mods_filter: «{logical_file}» не скопирован — dst {} уже занят «{}» (дубль имени)",
+                dst.display(),
+                first.get()
+            );
+            res.skipped_projects.push(format!("{name} (дубль имени)"));
+        }
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            slot.insert(logical_file.to_string());
+            if checked {
+                res.copied += 1;
+            } else {
+                res.unchecked += 1;
+            }
+            jobs.push((src, dst));
+        }
+    }
+}
+
 /// Скопировать моды инстанса на сервер с фильтрацией клиент-модов.
 /// `instance_id` — источник (манифест + `minecraft/mods`), `server_dir` —
 /// каталог сервера (моды ложатся в `mods/`). Выключенные моды и не-моды
@@ -213,9 +256,12 @@ pub async fn copy_server_mods(
         copied: 0,
         skipped_client: 0,
         unchecked: 0,
+        collisions: 0,
         skipped_projects: Vec::new(),
     };
     let mods_dst = server_dir.join("mods");
+    // Занятые dst этой выкладки: dst → логический путь первого владельца.
+    let mut taken: HashMap<PathBuf, String> = HashMap::new();
 
     for e in &entries {
         // resolve_content_file — traversal-барьер по логическому пути записи.
@@ -253,12 +299,10 @@ pub async fn copy_server_mods(
                 res.skipped_projects.push(base_name(&e.file));
             }
             ModDisposition::Copy => {
-                res.copied += 1;
-                jobs.push((src, mods_dst.join(base_name(&e.file))));
+                account_copy(&mut taken, &mods_dst, &mut res, &mut jobs, src, &e.file, true)
             }
             ModDisposition::CopyUnchecked => {
-                res.unchecked += 1;
-                jobs.push((src, mods_dst.join(base_name(&e.file))));
+                account_copy(&mut taken, &mods_dst, &mut res, &mut jobs, src, &e.file, false)
             }
         }
     }
@@ -277,10 +321,11 @@ pub async fn copy_server_mods(
     .map_err(|e| LauncherError::internal(format!("копирование модов: {e}")))??;
 
     tracing::info!(
-        "mods_filter: скопировано {}, непроверенных {}, клиент-модов пропущено {}",
+        "mods_filter: скопировано {}, непроверенных {}, клиент-модов пропущено {}, дублей имени {}",
         res.copied,
         res.unchecked,
-        res.skipped_client
+        res.skipped_client,
+        res.collisions
     );
     Ok(res)
 }
@@ -462,12 +507,109 @@ mod tests {
             copied: 3,
             skipped_client: 1,
             unchecked: 2,
+            collisions: 4,
             skipped_projects: vec!["x.jar".into()],
         })
         .unwrap();
         assert_eq!(v["copied"], 3);
         assert_eq!(v["skippedClient"], 1);
         assert_eq!(v["unchecked"], 2);
+        assert_eq!(v["collisions"], 4);
         assert_eq!(v["skippedProjects"], serde_json::json!(["x.jar"]));
+    }
+
+    /// P3: два вложенных мода с одинаковым base_name — «mods/a/dupe.jar» и
+    /// «mods/b/dupe.jar» легли бы в один dst «mods/dupe.jar». Копируется
+    /// первый (copied=1), второй НЕ копируется: collisions=1 и имя в
+    /// skipped_projects с пометкой.
+    #[test]
+    fn collision_nested_same_base_name_copied_1_collisions_1() {
+        let mods_dst = Path::new("srv/mods");
+        let mut taken: HashMap<PathBuf, String> = HashMap::new();
+        let mut res = ModsFilterResult {
+            copied: 0,
+            skipped_client: 0,
+            unchecked: 0,
+            collisions: 0,
+            skipped_projects: Vec::new(),
+        };
+        let mut jobs: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+        account_copy(
+            &mut taken,
+            mods_dst,
+            &mut res,
+            &mut jobs,
+            PathBuf::from("inst/minecraft/mods/a/dupe.jar"),
+            "mods/a/dupe.jar",
+            true,
+        );
+        account_copy(
+            &mut taken,
+            mods_dst,
+            &mut res,
+            &mut jobs,
+            PathBuf::from("inst/minecraft/mods/b/dupe.jar"),
+            "mods/b/dupe.jar",
+            true,
+        );
+
+        assert_eq!(res.copied, 1, "второй дубль не увеличивает copied");
+        assert_eq!(res.collisions, 1);
+        assert_eq!(res.skipped_projects, vec!["dupe.jar (дубль имени)".to_string()]);
+        assert_eq!(jobs.len(), 1, "копия ровно одна");
+        assert_eq!(jobs[0].1, mods_dst.join("dupe.jar"));
+        assert_eq!(jobs[0].0, PathBuf::from("inst/minecraft/mods/a/dupe.jar"));
+    }
+
+    /// Тот же конфликт на живом прогоне (офлайн, манифеста в jar нет — оба
+    /// unchecked): на диске ровно один файл, второй ушёл в collisions.
+    #[tokio::test]
+    async fn copy_server_mods_nested_dupes_collide_once() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let inst = crate::instances::Instance::new("Тест", "1.20.1");
+        crate::instances::save(&paths, &inst).unwrap();
+
+        let mods = crate::instances::minecraft_dir(&crate::instances::instance_dir(
+            &paths, &inst.id,
+        ))
+        .join("mods");
+        write_jar(&mods.join("a").join("dupe.jar"), &[("META-INF/mods.toml", "a")]);
+        write_jar(&mods.join("b").join("dupe.jar"), &[("META-INF/mods.toml", "b")]);
+
+        let entry = crate::instances::ContentEntry {
+            kind: crate::instances::ContentKind::Mod,
+            file: "mods/a/dupe.jar".into(),
+            source: crate::instances::ContentSource::Local,
+            project_id: None,
+            version_id: None,
+            sha1: None,
+            url: None,
+            enabled: true,
+        };
+        let mut second = entry.clone();
+        second.file = "mods/b/dupe.jar".into();
+        crate::instances::save_content_manifest(&paths, &inst.id, &[entry, second]).unwrap();
+
+        let http = HttpClient::new(None).unwrap();
+        http.set_offline(true);
+        let srv = d.path().join("srv");
+        std::fs::create_dir_all(&srv).unwrap();
+
+        let res = copy_server_mods(&paths, &http, &inst.id, &srv).await.unwrap();
+        assert_eq!(res.collisions, 1, "второй вложенный дубль посчитан");
+        assert_eq!(res.unchecked, 1, "скопирован только первый (офлайн — unchecked)");
+        assert_eq!(res.copied, 0);
+        assert!(srv.join("mods/dupe.jar").is_file());
+        assert_eq!(
+            std::fs::read_dir(srv.join("mods")).unwrap().count(),
+            1,
+            "на сервере ровно один файл, перезаписи нет"
+        );
+        assert!(res
+            .skipped_projects
+            .contains(&"dupe.jar (дубль имени)".to_string()));
     }
 }

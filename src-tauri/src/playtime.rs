@@ -47,16 +47,34 @@ fn file_path(dir: &Path) -> PathBuf {
     dir.join(FILE_NAME)
 }
 
-/// Битый playtime.json уехать в `.bad`: иначе первая же запись сессии одного
-/// инстанса молча затёрла бы историю всех остальных (лёгкий карантин, как у
-/// settings.json).
+/// Битый playtime.json — в карантин: переименовать в `playtime.json.bad`
+/// (занятый слот не затираем — тогда `.bad.1`, `.bad.2`, ...). Иначе первая же
+/// запись сессии одного инстанса молча затёрла бы историю всех остальных, а
+/// вторая порча — молча затёрла бы прежний карантин: слоты оставляют данные
+/// для ручного восстановления (та же схема слотов, что у settings.json).
 fn quarantine_broken(path: &Path, reason: &str) {
-    let mut bad = path.as_os_str().to_os_string();
-    bad.push(".bad");
-    match crate::util::fs::rename_with_retry(path, Path::new(&bad)) {
-        Ok(()) => tracing::warn!("playtime.json невалиден ({reason}) — перемещён в {}", bad.display()),
-        Err(e) => tracing::warn!("playtime.json невалиден ({reason}), карантин не удался: {e}"),
+    for i in 0..10u32 {
+        let mut name = path.as_os_str().to_os_string();
+        match i {
+            0 => name.push(".bad"),
+            _ => name.push(format!(".bad.{i}")),
+        }
+        let candidate = PathBuf::from(name);
+        if candidate.exists() {
+            continue;
+        }
+        match crate::util::fs::rename_with_retry(path, &candidate) {
+            Ok(()) => {
+                tracing::warn!("playtime.json невалиден ({reason}) — перемещён в {}", candidate.display());
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("playtime.json невалиден ({reason}), карантин не удался: {e}");
+                return;
+            }
+        }
     }
+    tracing::warn!("playtime.json невалиден ({reason}); слоты карантина заняты — файл оставлен как есть");
 }
 
 /// Читать хранилище; файла нет → пустое, битый → карантин + пустое.
@@ -407,6 +425,51 @@ mod tests {
         record_on(dir.path(), "inst", "2026-10-08", 30).unwrap();
         assert!(dir.path().join("playtime.json.bad").exists());
         assert_eq!(stats_in_dir(dir.path(), "inst", 1, "2026-10-08")[0].secs, 30);
+    }
+
+    /// Вторая порча подряд не затирает первый карантин — новый файл уезжает
+    /// в свободный слот `.bad.1` (схема settings.json).
+    #[test]
+    fn quarantine_does_not_overwrite_previous_bad() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(crate::util::fs::long_path(dir.path())).unwrap();
+        let path = dir.path().join(FILE_NAME);
+        std::fs::write(crate::util::fs::long_path(&path), b"{ first broken").unwrap();
+        assert!(load(dir.path()).is_empty());
+        assert!(path.with_file_name("playtime.json.bad").exists());
+
+        std::fs::write(crate::util::fs::long_path(&path), b"{ second broken").unwrap();
+        assert!(load(dir.path()).is_empty());
+        let first = std::fs::read_to_string(crate::util::fs::long_path(&dir.path().join("playtime.json.bad"))).unwrap();
+        assert_eq!(first, "{ first broken", "прежний карантин не затёрт");
+        assert!(path.with_file_name("playtime.json.bad.1").exists(), "вторая порча в соседнем слоте");
+    }
+
+    /// `record_in_dir` пишет ровно в переданный каталог: run.rs (servers)
+    /// переведёт вызовы на `record_in_dir(&paths.root(), ...)` — CLI-каталог
+    /// данных не должен смешиваться с дефолтным.
+    #[test]
+    fn record_in_dir_writes_only_given_dir() {
+        let custom = tempfile::tempdir().unwrap();
+        let default_path = file_path(&default_dir());
+        let before = std::fs::read(crate::util::fs::long_path(&default_path)).ok();
+
+        record_in_dir(custom.path(), "inst", 42).unwrap();
+
+        assert!(
+            custom.path().join(FILE_NAME).exists(),
+            "запись ушла в переданный каталог"
+        );
+        assert_eq!(
+            stats_in_dir(custom.path(), "inst", 1, &local_today())[0].secs,
+            42,
+            "сессия записана в переданный каталог"
+        );
+        let after = std::fs::read(crate::util::fs::long_path(&default_path)).ok();
+        assert_eq!(before, after, "дефолтный playtime.json не создан и не изменён");
+        if before.is_none() {
+            assert!(!default_path.exists(), "дефолтный файл не появился");
+        }
     }
 
     #[test]
