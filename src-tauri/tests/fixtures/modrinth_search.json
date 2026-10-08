@@ -1,0 +1,33 @@
+{
+  "hits": [
+    {
+      "project_id": "AANobbMI",
+      "project_type": "mod",
+      "slug": "sodium",
+      "author": "jellysquid3",
+      "title": "Sodium",
+      "description": "A modern rendering engine",
+      "categories": ["fabric", "performance"],
+      "display_categories": ["performance"],
+      "versions": ["1.21.1", "1.21", "1.20.6"],
+      "downloads": 5000000,
+      "icon_url": "https://cdn.modrinth.com/data/AANobbMI/icon.png",
+      "date_modified": "2026-08-01T00:00:00Z"
+    },
+    {
+      "project_id": "P7dR8mSH",
+      "project_type": "mod",
+      "slug": "fabric-api",
+      "author": "modmuss50",
+      "title": "Fabric API",
+      "description": "Essential hooks for modding",
+      "categories": ["fabric", "library"],
+      "display_categories": ["library"],
+      "versions": ["1.21.1", "1.21"],
+      "downloads": 9000000,
+      "icon_url": null,
+      "date_modified": "2026-08-02T00:00:00Z"
+    }
+  ],
+  "total_hits": 2
+}
