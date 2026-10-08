@@ -17,6 +17,8 @@ import type {
   ArchiveResult,
   ForeignSource,
   PlaytimeDay,
+  ServerInfo,
+  ServerCreateResult,
   AuthlibServerInfo,
   ConfigContent,
   ConfigFile,
@@ -87,6 +89,15 @@ export const api = {
   /** D67: наигранные часы по дням (последние N дней, включая нулевые). */
   playtimeStats: (instanceId: string, days: number) =>
     invoke<PlaytimeDay[]>("playtime_stats", { instanceId, days }),
+  /** D68: выделенные серверы («Сервер из инстанса»). */
+  serverCreate: (instanceId: string, name: string, world: string | null, port: number, ramMb: number, onlineMode: boolean) =>
+    invoke<ServerCreateResult>("server_create", { instanceId, name, world, port, ramMb, onlineMode }),
+  serverList: (instanceId?: string) => invoke<ServerInfo[]>("server_list", { instanceId }),
+  serverStatus: (id: string) => invoke<ServerInfo>("server_status", { id }),
+  serverDelete: (id: string) => invoke<void>("server_delete", { id }),
+  serverAcceptEula: (id: string) => invoke<void>("server_accept_eula", { id }),
+  serverStart: (id: string) => invoke<number>("server_start", { id }),
+  serverStop: (id: string) => invoke<boolean>("server_stop", { id }),
   /** D63: официальная панорама титульного экрана из собственных файлов
    * игры инстанса (data-URL PNG) — null, пока ассеты не скачаны. */
   panoramaArt: (id: string) => invoke<string | null>("panorama_art", { id }),

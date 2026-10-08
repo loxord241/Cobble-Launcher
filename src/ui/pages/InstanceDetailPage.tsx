@@ -52,6 +52,7 @@ import WorldsTab from "../components/instance/WorldsTab";
 import PlaytimeChart from "../components/instance/PlaytimeChart";
 import ScreensTab from "../components/instance/ScreensTab";
 import ConfigsTab from "../components/instance/ConfigsTab";
+import ServerTab from "../components/server/ServerTab";
 import CopyContentDialog from "../components/instance/CopyContentDialog";
 import { askConfirm } from "../confirm";
 import PackArt from "../components/instance/PackArt";
@@ -71,9 +72,9 @@ import type {
   UpdateCheck,
 } from "../../api/types";
 
-type Tab = "overview" | "worlds" | "screens" | "configs" | "mods" | "logs";
+type Tab = "overview" | "worlds" | "screens" | "configs" | "mods" | "servers" | "logs";
 
-const TABS: Tab[] = ["overview", "worlds", "screens", "configs", "mods", "logs"];
+const TABS: Tab[] = ["overview", "worlds", "screens", "configs", "mods", "servers", "logs"];
 
 /** Логов этого инстанса ещё нет: стабильная ссылка для селектора стора. */
 const NO_LOGS: string[] = [];
@@ -748,7 +749,9 @@ export default function InstanceDetailPage({
                   ? t("instances.tab.screens")
                   : id === "configs"
                     ? t("instance.configs.title")
-                    : t(`instance.tab.${id}`)}
+                    : id === "servers"
+                      ? t("servers.tab")
+                      : t(`instance.tab.${id}`)}
           </button>
         ))}
       </div>
@@ -1047,6 +1050,8 @@ export default function InstanceDetailPage({
             )}
           </>
         )}
+
+        {tab === "servers" && <ServerTab instanceId={instanceId} />}
 
         {tab === "logs" && <LogsPanel instanceId={instanceId} setError={setError} />}
       </div>

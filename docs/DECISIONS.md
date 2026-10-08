@@ -1617,3 +1617,46 @@ modrinth+import, auth/, mojang/loaders/java/process, IPC-поверхность 
 `account_add_msa_start` аннотации обновлены; `modrinth_projects` + projectType).
 cargo 500+10 (clippy -D 0), tsc/vite чисто, i18n 543×4. Приёмки НЕ гнались
 (волна до команды «собирай»; следующий релиз — с полным прогоном 12/12).
+
+## D68 — «Сервер из инстанса»: выделенные серверы в один клик (2026-10-08, вечер)
+
+По команде владельца («делай сервера с субагентами»); реализуемость
+подтверждена исследователем живым прогоном (server.jar 1.20.1 скачан,
+EULA-гейт и `stop` через stdin проверены). Geyser/Bedrock-мост — осознанно
+ОТЛОЖЕН владельцем («когда-нибудь потом»). Волна A (ядро, 3 агента) +
+B (фронт, 1 агент) + интеграция; 105 команд.
+
+- **Реестр**: `servers.json` (BTreeMap, карантин .bad, атомарная запись);
+  каталог `%ДАННЫЕ%\servers\<id>` (slug+8 hex); сервер связан с инстансом
+  по instance_id, но удаление инстанса сервер не удаляет.
+- **Установка**: vanilla = downloads.server из version JSON (sha1+size,
+  доверенный движок, идемпотентно по размеру); fabric = официальный
+  бутстрап meta.fabricmc.net (хэша у эндпоинта нет — официальный источник,
+  доустановится при первом старте); forge/neoforge = installer с
+  sha1-сайдкарами + headless `--installServer` (обвязка как у клиента,
+  installed-маркер win_args.txt → повторный вызов без сети); Forge <1.17 —
+  честный отказ; quilt не поддерживается.
+- **Фильтр модов**: записи с project_id → батч /v2/projects?ids (клиент-only
+  = server_side unsupported → пропуск с отчётом); без project_id →
+  fabric.mod.json environment; нет данных → unchecked (копируем как есть);
+  офлайн не валит создание (все с project_id → unchecked, warn).
+- **Супервизор**: java с stdin-pipe; `.server.lock` {pid,startTime,startedAtMs}
+  — живость по PID+времени старта (D62-семантика против переиспользования
+  PID); «stop\n» → 60с → taskkill fallback; события server_event
+  (log пачками 50 строк/200мс с redaction, started/exited/crashed);
+  мост в окно — отдельная задача в lib.rs (канал серверов не на общей шине).
+  Java v1 — только найденная на машине (detect+probe, мажор из версии);
+  автозагрузка JRE не тянулась.
+- **EULA**: создаётся eula=false со ссылкой aka.ms; `server_accept_eula` —
+  только явное действие (UI: askConfirm + ссылка на текст).
+- **UI**: вкладка «Серверы» на странице инстанса (карточки, статусы,
+  лог-панель ~400 строк с автоскроллом, open через revealItemInDir —
+  capability opener не даёт open_path), мастер создания (имя/мир из
+  списка миров/порт/RAM/online-mode, busy на минуты установки, сводка
+  фильтрации модов).
+
+Контракт: UI-CONTRACT 105 (7 новых server_*). cargo 555+10, tsc/vite чисто,
+i18n 579×4. Приёмки — перед следующим релизом; живой прогон сервера
+(vanilla+fabric) сделаю при релизной волне. Ограничения: лог живёт в
+сессии вкладки (нет backfill); «Открыть папку» = reveal; при перезапуске
+лаунчера живой сервер теряет graceful-stop (taskkill, честный false).

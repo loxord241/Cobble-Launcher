@@ -372,6 +372,42 @@ export interface ArchiveResult {
   bytes: number;
 }
 
+/** D68: выделенный сервер, созданный из инстанса (running/pid/eula — на лету). */
+export interface ServerInfo {
+  id: string;
+  name: string;
+  instanceId: string;
+  mcVersion: string;
+  loader: string | null;
+  loaderVersion: string | null;
+  dir: string;
+  port: number;
+  ramMb: number;
+  onlineMode: boolean;
+  eulaAccepted: boolean;
+  world: string | null;
+  createdAt: number;
+  running: boolean;
+  pid: number | null;
+}
+
+/** D68: результат создания сервера (отчёт о фильтрации модов). */
+export interface ServerCreateResult {
+  server: ServerInfo;
+  modsServer: number;
+  modsClientSkipped: number;
+  modsUnchecked: number;
+  skippedProjects: string[];
+}
+
+/** D68: событие сервера (канал server_event). */
+export interface ServerEvent {
+  serverId: string;
+  kind: "log" | "started" | "exited" | "crashed";
+  line?: string;
+  code?: number;
+}
+
 /** D67: инстанс чужого лаунчера, найденный сканом (null — не определено). */
 export interface ForeignInstance {
   name: string;

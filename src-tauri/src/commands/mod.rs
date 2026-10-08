@@ -2353,6 +2353,84 @@ pub async fn foreign_import(
     .await
 }
 
+// ---------- D68: выделенные серверы («Сервер из инстанса») ----------
+
+/// Создать сервер из инстанса (серверное ПО + сервер-моды + мир + конфиги).
+#[tauri::command]
+pub async fn server_create(
+    state: State<'_, AppState>,
+    instance_id: String,
+    name: String,
+    world: Option<String>,
+    port: u16,
+    ram_mb: u32,
+    online_mode: bool,
+) -> Result<crate::servers::ServerCreateResult> {
+    let http = state.http().await;
+    crate::servers::server_create(
+        &state.paths,
+        &http,
+        &instance_id,
+        &name,
+        world.as_deref(),
+        port,
+        ram_mb,
+        online_mode,
+    )
+    .await
+}
+
+/// Список серверов (всех или одного инстанса).
+#[tauri::command]
+pub fn server_list(
+    state: State<'_, AppState>,
+    instance_id: Option<String>,
+) -> Vec<crate::servers::ServerInfo> {
+    crate::servers::server_list(&state.paths, instance_id.as_deref())
+}
+
+/// Статус одного сервера (running/pid/eula — на лету).
+#[tauri::command]
+pub fn server_status(state: State<'_, AppState>, id: String) -> Result<crate::servers::ServerInfo> {
+    crate::servers::server_status(&state.paths, &id)
+}
+
+/// Удалить сервер (каталог + запись реестра; только остановленный).
+#[tauri::command]
+pub async fn server_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::servers::server_delete(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Записать принятие EULA (только явное действие пользователя).
+#[tauri::command]
+pub fn server_accept_eula(state: State<'_, AppState>, id: String) -> Result<()> {
+    crate::servers::server_accept_eula(&state.paths, &id)
+}
+
+/// Запустить сервер; возвращает pid.
+#[tauri::command]
+pub fn server_start(state: State<'_, AppState>, id: String) -> Result<u32> {
+    let info = crate::servers::server_status(&state.paths, &id)?;
+    let spec = crate::servers::run::ServerRunSpec {
+        id: info.id.clone(),
+        dir: crate::servers::servers_root(&state.paths).join(&info.id),
+        ram_mb: info.ram_mb,
+        loader: info.loader.clone(),
+        loader_version: info.loader_version.clone(),
+        mc_version: info.mc_version.clone(),
+    };
+    crate::servers::run::server_start(&state.paths, &state.bus, spec, info.port)
+}
+
+/// Корректная остановка («stop» в stdin, до 60с; затем жёсткая). true = вышли сами.
+#[tauri::command]
+pub fn server_stop(state: State<'_, AppState>, id: String) -> Result<bool> {
+    crate::servers::run::server_stop(&state.paths, &id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

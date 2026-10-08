@@ -20,6 +20,7 @@ pub mod paths;
 pub mod playtime;
 pub mod storage;
 pub mod process;
+pub mod servers;
 pub mod settings;
 pub mod util;
 
@@ -298,6 +299,13 @@ pub fn run() -> tauri::Result<()> {
             commands::favorites_list,
             commands::favorites_toggle,
             commands::playtime_stats,
+            commands::server_create,
+            commands::server_list,
+            commands::server_status,
+            commands::server_delete,
+            commands::server_accept_eula,
+            commands::server_start,
+            commands::server_stop,
             commands::panorama_art,
             commands::crash_analyze,
             commands::java_list,
@@ -317,6 +325,25 @@ pub fn run() -> tauri::Result<()> {
             let state: tauri::State<commands::AppState> = app.state();
             let _ = state.app.set(app.handle().clone());
             commands::spawn_event_bridge(app.handle().clone(), state.bus.clone());
+            // D68: события серверов (свой канал servers/run.rs) → окно.
+            {
+                use tauri::Emitter as _;
+                let srv_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut rx = crate::servers::run::subscribe_server_events();
+                    loop {
+                        match rx.recv().await {
+                            Ok(ev) => {
+                                let _ = srv_handle.emit("server_event", &ev);
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!("серверный мост событий отстал на {n}");
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
+            }
             // D38: логотип владельца — иконка окна при старте.
             let logo = state.settings.blocking_read().logo.clone();
             let paths = state.paths.clone();

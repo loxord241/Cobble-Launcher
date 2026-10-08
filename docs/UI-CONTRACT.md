@@ -21,8 +21,8 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 ## Команды (invoke)
 
-Все 98 команд `invoke_handler` (`src-tauri/src/lib.rs:213-312`; пересчитано по
-реестру, D67), обработчики — `src-tauri/src/commands/mod.rs` (кроме
+Все 105 команд `invoke_handler` (`src-tauri/src/lib.rs:213-322`; пересчитано по
+реестру, D68), обработчики — `src-tauri/src/commands/mod.rs` (кроме
 `shortcut_take_pending` — он в `lib.rs:61`).
 
 ### Инстансы и процессы
@@ -69,6 +69,13 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `favorites_list` | — | `String[]` (D67: id проектов Modrinth, порядок добавления; `favorites.json`) | — |
 | `favorites_toggle` | `{projectId}` | `bool` (true = добавлен) | io, invalid_input |
 | `playtime_stats` | `{instanceId, days}` | `PlaytimeDay[]` (`{date, secs}`, нулевые дни включены, окно ≤90; пишет `playtime.json` супервизор: обычный выход/краш/убитый процесс) | — |
+| `server_create` | `{instanceId, name, world: string\|null, port, ramMb, onlineMode}` | `ServerCreateResult` (D68: серверное ПО vanilla/fabric/forge/neoforge + сервер-моды (клиент-only фильтруются по project client_side/server_side и fabric.mod.json) + копия мира + server.properties/eula-заготовка; каталог `servers/<id>` с откатом при ошибке) | not_found, invalid_input, io, offline_mode, network, http, hash_mismatch, timeout, internal |
+| `server_list` | `{instanceId?}` | `ServerInfo[]` (running/pid/eulaAccepted вычисляются на лету; реестр servers.json) | — |
+| `server_status` | `{id}` | `ServerInfo` | not_found |
+| `server_delete` | `{id}` | `void` (только остановленный; каталог best-effort) | not_found, invalid_input, io |
+| `server_accept_eula` | `{id}` | `void` (eula.txt eula=true — только явное действие пользователя) | not_found, io |
+| `server_start` | `{id}` | `u32` pid (java с stdin-pipe; событие `server_event` {serverId, kind: log/started/exited/crashed, line?, code?}) | not_found, invalid_input, io |
+| `server_stop` | `{id}` | `bool` (true = «stop» в stdin, вышли сами ≤60с; false = жёсткий kill; не запущен → Ok(false)) | not_found |
 | `manifest_versions` | `{showSnapshots, showOld}` | `VersionEntry[]` | network, json, io |
 | `loader_versions` | `{loader}` | `LoaderVersionEntry[]` (`fabric`/`quilt` — все, `neoforge` — 30 последних стабильных) | network, invalid_input, json |
 | `loader_install` | `{id, loader, loaderVersion?}` | `Instance` (после установки `versionId` = профиль загрузчика) | invalid_input, version_not_found, java_not_found, network, hash_mismatch, zip, io, internal |
