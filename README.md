@@ -67,7 +67,7 @@ optimization.
     </tr>
     <tr>
       <td><img src="docs/screenshots/instance.png" alt="Instance page: launch, tabs, statistics" width="420"></td>
-      <td><img src="docs/screenshots/settings.png" alt="Settings: themes, language, memory" width="420"></td>
+      <td><img src="docs/screenshots/settings.png" alt="Settings: five colour themes" width="420"></td>
     </tr>
   </table>
 </div>

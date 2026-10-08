@@ -68,7 +68,7 @@ sodium-стек для оптимизации.
     </tr>
     <tr>
       <td><img src="docs/screenshots/instance.png" alt="Страница инстанса: запуск, вкладки, статистика" width="420"></td>
-      <td><img src="docs/screenshots/settings.png" alt="Настройки: темы, язык, память" width="420"></td>
+      <td><img src="docs/screenshots/settings.png" alt="Настройки: пять цветовых тем" width="420"></td>
     </tr>
   </table>
 </div>

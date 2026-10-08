@@ -69,7 +69,7 @@ i zestaw sodium do optymalizacji.
     </tr>
     <tr>
       <td><img src="docs/screenshots/instance.png" alt="Strona instancji: uruchamianie, sekcje, statystyki" width="420"></td>
-      <td><img src="docs/screenshots/settings.png" alt="Ustawienia: motywy, język, pamięć" width="420"></td>
+      <td><img src="docs/screenshots/settings.png" alt="Ustawienia: pięć motywów kolorystycznych" width="420"></td>
     </tr>
   </table>
 </div>

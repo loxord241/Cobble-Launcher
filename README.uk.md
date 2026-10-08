@@ -68,7 +68,7 @@ React. Жодних браузерних рушіїв у фоні, жодних 
     </tr>
     <tr>
       <td><img src="docs/screenshots/instance.png" alt="Сторінка інстансу: запуск, вкладки, статистика" width="420"></td>
-      <td><img src="docs/screenshots/settings.png" alt="Налаштування: теми, мова, памʼять" width="420"></td>
+      <td><img src="docs/screenshots/settings.png" alt="Налаштування: пʼять колірних тем" width="420"></td>
     </tr>
   </table>
 </div>

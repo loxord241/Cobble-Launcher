@@ -12,9 +12,9 @@
     get(key) { try { return localStorage.getItem(key); } catch { return null; } },
     set(key, value) { try { localStorage.setItem(key, value); } catch { /* Private browsing: keep the current session usable. */ } }
   };
-  const browserLanguage = (navigator.language || 'en').toLowerCase().split('-')[0];
   const savedLanguage = storage.get('siteLang');
-  let language = languages.includes(savedLanguage) ? savedLanguage : languages.includes(browserLanguage) ? browserLanguage : 'en';
+  // Дефолт сайта — английский: без navigator-угадайки, сохранённый выбор главнее.
+  let language = languages.includes(savedLanguage) ? savedLanguage : 'en';
   let releaseVersion = null;
   let releaseState = 'loading';
   let activeScreenshot = null;
@@ -53,6 +53,36 @@
     dialogCaption.textContent = t(`gallery.${activeScreenshot}`);
   }
 
+  // Медиа (видео hero и скриншоты галереи) переключаются вместе с языком.
+  // ru-версии есть только у ru; uk/pl показывают en-варианты.
+  const mediaLanguage = () => (language === 'ru' ? 'ru' : 'en');
+  const capitalize = (value) => value.charAt(0).toUpperCase() + value.slice(1);
+
+  function applyMedia() {
+    const key = capitalize(mediaLanguage());
+    const nextSrc = video.dataset[`video${key}`];
+    const nextPoster = video.dataset[`poster${key}`];
+    if (!nextSrc || video.dataset.mediaLang === mediaLanguage()) return;
+    const time = video.currentTime;
+    const wasPlaying = !video.paused && !video.ended;
+    video.dataset.mediaLang = mediaLanguage();
+    video.src = nextSrc;
+    if (nextPoster) video.setAttribute('poster', nextPoster);
+    video.addEventListener('loadedmetadata', () => {
+      if (time > 0 && Number.isFinite(time)) video.currentTime = time;
+      if (wasPlaying && !motionPreference.matches) video.play().catch(() => {});
+    }, { once: true });
+    video.load();
+  }
+
+  function applyGalleryMedia() {
+    const key = capitalize(mediaLanguage());
+    document.querySelectorAll('img[data-img-en]').forEach(image => {
+      const next = image.dataset[`img${key}`];
+      if (next) image.src = next;
+    });
+  }
+
   function applyLanguage(nextLanguage) {
     language = languages.includes(nextLanguage) ? nextLanguage : 'en';
     document.documentElement.lang = language;
@@ -69,6 +99,13 @@
     updateReleaseView();
     updateVideoButton();
     updateLightbox();
+    if (activeScreenshot && galleryOpener) {
+      const image = galleryOpener.querySelector('img');
+      const next = image?.dataset[`img${capitalize(mediaLanguage())}`];
+      if (next) dialogImage.src = next;
+    }
+    applyMedia();
+    applyGalleryMedia();
   }
 
   function applyTheme(theme) {
@@ -130,7 +167,8 @@
     button.addEventListener('click', () => {
       activeScreenshot = button.dataset.gallery;
       galleryOpener = button;
-      dialogImage.src = `./assets/img/${activeScreenshot}.png`;
+      const image = button.querySelector('img');
+      dialogImage.src = image?.dataset[`img${capitalize(mediaLanguage())}`] ?? `./assets/img/${activeScreenshot}.png`;
       updateLightbox();
       if (!dialog.open) dialog.showModal();
       document.body.classList.add('has-dialog');
