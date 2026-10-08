@@ -32,17 +32,27 @@ function hours1(secs: number): string {
 export default function PlaytimeChart({ instanceId }: { instanceId: string }) {
   const [days, setDays] = useState<PlaytimeDay[] | null>(null);
 
+  // P3-ревизии: alive-флаг — не трогаем state после ухода с вкладки.
+  const aliveRef = useRef(true);
   const reload = useCallback(() => {
     api
       .playtimeStats(instanceId, DAYS)
-      .then(setDays)
+      .then((d) => {
+        if (aliveRef.current) setDays(d);
+      })
       // Статистика не прочиталась — тихая пустая подпись вместо сломанного вида.
-      .catch(() => setDays([]));
+      .catch(() => {
+        if (aliveRef.current) setDays([]);
+      });
   }, [instanceId]);
 
   // Секция живёт на вкладке «Обзор» — грузим при монтировании.
   useEffect(() => {
+    aliveRef.current = true;
     reload();
+    return () => {
+      aliveRef.current = false;
+    };
   }, [reload]);
 
   // Игра завершилась (phase → exited): ядро дописал статистику — перечитываем.

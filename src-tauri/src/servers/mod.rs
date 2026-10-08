@@ -28,9 +28,10 @@ const FILE_NAME: &str = "servers.json";
 /// Подкаталог каталогов серверов.
 const SERVERS_SUBDIR: &str = "servers";
 
-/// Границы RAM сервера (МБ).
-const MIN_RAM_MB: u32 = 512;
-const MAX_RAM_MB: u32 = 32768;
+/// Границы RAM сервера (МБ). pub(crate): супервизор клампит -Xmx теми же
+/// значениями (P3-ревизии: раньше клампил инстансными 256..65536).
+pub(crate) const MIN_RAM_MB: u32 = 512;
+pub(crate) const MAX_RAM_MB: u32 = 32768;
 
 /// Сериализация read-modify-write реестра (создание/удаление из UI).
 static SERVERS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -391,6 +392,14 @@ async fn create_inner(
     {
         let _guard = SERVERS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut reg = load_registry(paths);
+        // P3-ревизии: уникальность id проверялась до лока — перепроверяем под
+        // локом, чтобы параллельный create не затёр чужую запись.
+        if reg.contains_key(&rec.id) {
+            return Err(LauncherError::InvalidInput(format!(
+                "сервер с id {} уже существует — попробуйте другое имя",
+                rec.id
+            )));
+        }
         reg.insert(rec.id.clone(), rec.clone());
         save_registry(paths, &reg)?;
     }

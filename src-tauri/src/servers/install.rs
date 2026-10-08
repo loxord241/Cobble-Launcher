@@ -338,10 +338,23 @@ async fn install_vanilla(
     let manifest = crate::mojang::manifest::fetch_manifest(http, &paths.manifests_cache()).await?;
     let entry = crate::mojang::manifest::resolve_entry(&manifest, mc)?;
     progress(format!("Читаю данные версии {mc}"));
-    let Some(server) = fetch_server_download(http, entry).await? else {
-        return Err(LauncherError::InvalidInput(format!(
-            "для версии {mc} нет официального сервера"
-        )));
+    let dest = dir.join("server.jar");
+    let server = match fetch_server_download(http, entry).await {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return Err(LauncherError::InvalidInput(format!(
+                "для версии {mc} нет официального сервера"
+            )));
+        }
+        // P2-ревизии: офлайн с уже скачанным (значит, проверенным при загрузке)
+        // server.jar — принимаем файл, не требуем сеть ради манифеста.
+        Err(e @ LauncherError::OfflineMode(_)) if file_fresh(&dest, None) => {
+            tracing::warn!("офлайн: использую уже скачанный server.jar ({})", dest.display());
+            let _ = e;
+            progress("server.jar уже скачан".into());
+            return Ok(());
+        }
+        Err(e) => return Err(e),
     };
     let sha1 = server.sha1.clone().ok_or_else(|| {
         LauncherError::InvalidInput(
@@ -349,7 +362,12 @@ async fn install_vanilla(
         )
     })?;
     let dest = dir.join("server.jar");
-    if file_fresh(&dest, server.size) {
+    // P2-ревизии: совпавшего размера мало (битый сектор) — на fast-path
+    // сверяем и sha1; хэш всё равно обязателен, чтение 47 МБ ~секунда.
+    if file_fresh(&dest, server.size)
+        && crate::util::fs::sha1_file(&crate::util::fs::long_path(&dest))
+            .is_ok_and(|h| h.eq_ignore_ascii_case(&sha1))
+    {
         progress("server.jar уже скачан".into());
         return Ok(());
     }
@@ -464,7 +482,9 @@ async fn resolve_installer_java(
         .as_ref()
         .map(|j| j.major_version)
         .unwrap_or_else(|| crate::instances::run::fallback_major(mc));
-    let settings = crate::settings::Settings::load(&paths.settings_file())?;
+    // P3-ревизии: битый settings.json не должен валить установку — прокси
+    // некритичен, работаем на дефолтах (как resolve_java в run.rs).
+    let settings = crate::settings::Settings::load(&paths.settings_file()).unwrap_or_default();
     crate::instances::run::resolve_java(
         paths,
         &settings,

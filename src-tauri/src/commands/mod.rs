@@ -1312,9 +1312,10 @@ pub async fn instance_import(
     // Загрузчик ставится ВНУТРИ import_archive под тем же откатом A29:
     // раньше сбой install_loader после распаковки оставлял сохранённый
     // инстанс вне транзакции (повторный импорт плодил дубль с копией контента).
+    let settings = state.settings.read().await.clone();
     let (inst, _loader) = crate::import::import_archive(
         &state.paths,
-        &state.settings.read().await.clone(),
+        &settings,
         http,
         std::path::Path::new(&path),
         name.as_deref(),
@@ -2330,8 +2331,11 @@ pub fn playtime_stats(
 }
 
 #[tauri::command]
-pub fn foreign_scan() -> Vec<crate::import::foreign::ForeignSource> {
-    crate::import::foreign::scan_foreign_launchers()
+pub async fn foreign_scan() -> Vec<crate::import::foreign::ForeignSource> {
+    // P2-ревизии: dir_size по всем чужим инстансам — секунды диска, не на главном потоке.
+    tauri::async_runtime::spawn_blocking(crate::import::foreign::scan_foreign_launchers)
+        .await
+        .unwrap_or_default()
 }
 
 /// Импорт инстанса чужого лаунчера (независимая копия в наш каталог);
@@ -2343,9 +2347,11 @@ pub async fn foreign_import(
     target_name: String,
 ) -> Result<String> {
     let http = state.http().await;
+    // P1-ревизии: read-guard настроек не должен жить через минуты копирования.
+    let settings = state.settings.read().await.clone();
     crate::import::foreign::import_foreign_instance(
         &state.paths,
-        &state.settings.read().await.clone(),
+        &settings,
         http,
         std::path::Path::new(&dir),
         &target_name,
@@ -2412,23 +2418,34 @@ pub fn server_accept_eula(state: State<'_, AppState>, id: String) -> Result<()> 
 
 /// Запустить сервер; возвращает pid.
 #[tauri::command]
-pub fn server_start(state: State<'_, AppState>, id: String) -> Result<u32> {
-    let info = crate::servers::server_status(&state.paths, &id)?;
-    let spec = crate::servers::run::ServerRunSpec {
-        id: info.id.clone(),
-        dir: crate::servers::servers_root(&state.paths).join(&info.id),
-        ram_mb: info.ram_mb,
-        loader: info.loader.clone(),
-        loader_version: info.loader_version.clone(),
-        mc_version: info.mc_version.clone(),
-    };
-    crate::servers::run::server_start(&state.paths, &state.bus, spec, info.port)
+pub async fn server_start(state: State<'_, AppState>, id: String) -> Result<u32> {
+    // P1-ревизии: спавн гоняет пробы java -version — только не на главном потоке.
+    let paths = state.paths.clone();
+    let bus = state.bus.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let info = crate::servers::server_status(&paths, &id)?;
+        let spec = crate::servers::run::ServerRunSpec {
+            id: info.id.clone(),
+            dir: crate::servers::servers_root(&paths).join(&info.id),
+            ram_mb: info.ram_mb,
+            loader: info.loader.clone(),
+            loader_version: info.loader_version.clone(),
+            mc_version: info.mc_version.clone(),
+        };
+        crate::servers::run::server_start(&paths, &bus, spec, info.port)
+    })
+    .await
+    .map_err(join_err)?
 }
 
 /// Корректная остановка («stop» в stdin, до 60с; затем жёсткая). true = вышли сами.
 #[tauri::command]
-pub fn server_stop(state: State<'_, AppState>, id: String) -> Result<bool> {
-    crate::servers::run::server_stop(&state.paths, &id)
+pub async fn server_stop(state: State<'_, AppState>, id: String) -> Result<bool> {
+    // P1-ревизии: до 60с ожидания graceful-выхода — только не на главном потоке.
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::servers::run::server_stop(&paths, &id))
+        .await
+        .map_err(join_err)?
 }
 
 #[cfg(test)]

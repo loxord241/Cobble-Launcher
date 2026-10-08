@@ -52,6 +52,11 @@ pub fn server_start(
     // События серверов идут через subscribe_server_events() (см. шапку модуля).
     let _ = bus;
     crate::instances::valid_id(&spec.id)?;
+    // P2-ревизии: двойной старт одного id (обе проверки is_running проходят
+    // до записи лока) — сериализуем секцию проверка→спавн→лок глобально:
+    // старты редки, а per-id карта усложнила бы уборку.
+    static START_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _start_guard = START_GUARD.lock().unwrap_or_else(|e| e.into_inner());
 
     // 1. Каталог сервера существует. Совпадение с каноническим
     //    `<servers_root>/<id>` — нестрогое (warn): cwd берём из spec.
@@ -191,7 +196,13 @@ pub fn server_stop(paths: &crate::paths::Paths, id: &str) -> Result<bool> {
             "сервер {id}: stdin недоступен (лаунчер перезапускался) — taskkill /F /T PID {pid}"
         );
         force_kill_tree(pid);
-        crate::util::fs::remove_file_ignore(crate::util::fs::long_path(&lock_path(paths, id)).as_path());
+        // P3-ревизии: между чтением pid и удалением мог стартовать новый
+        // запуск — снимаем лок только если он всё ещё описывает убитый процесс.
+        if read_lock(paths, id).is_some_and(|l| l.pid == pid) {
+            crate::util::fs::remove_file_ignore(
+                crate::util::fs::long_path(&lock_path(paths, id)).as_path(),
+            );
+        }
         return Ok(false);
     }
 
@@ -337,6 +348,13 @@ fn lock_path(paths: &crate::paths::Paths, id: &str) -> PathBuf {
     server_dir(paths, id).join(".server.lock")
 }
 
+/// Прочитать .server.lock (None — нет/битый).
+fn read_lock(paths: &crate::paths::Paths, id: &str) -> Option<ServerLock> {
+    let text =
+        std::fs::read_to_string(crate::util::fs::long_path(&lock_path(paths, id))).ok()?;
+    ServerLock::parse(&text)
+}
+
 /// Unix-время в миллисекундах — метка старта сервера.
 fn unix_ms() -> u64 {
     std::time::SystemTime::now()
@@ -347,22 +365,11 @@ fn unix_ms() -> u64 {
 
 // ---------- проверки перед спавном ----------
 
-/// EULA принята? `eula.txt` существует и содержит `eula=true` — регистр и
-/// пробелы вокруг `=` не важны (Minecraft читает файл как properties).
+/// EULA принята? Единый парсер с UI (worlds::read_eula_accepted): толерантный
+/// к регистру/пробелам, побеждает последняя строка `eula=` — раньше здесь был
+/// свой парсер, и рукописанный «eula = TRUE» расходился с карточкой (P2-ревизии).
 fn eula_accepted(dir: &Path) -> bool {
-    let Ok(text) =
-        std::fs::read_to_string(crate::util::fs::long_path(&dir.join("eula.txt")))
-    else {
-        return false;
-    };
-    text.lines().any(|line| {
-        let line = line.trim();
-        let Some((key, value)) = line.split_once('=') else {
-            return false;
-        };
-        key.trim().eq_ignore_ascii_case("eula")
-            && value.trim().eq_ignore_ascii_case("true")
-    })
+    crate::servers::worlds::read_eula_accepted(dir)
 }
 
 /// Свободен ли порт: пробный bind на 0.0.0.0:port (как будет делать сервер).
@@ -410,7 +417,7 @@ fn resolve_java(paths: &crate::paths::Paths, need_major: u32) -> Result<PathBuf>
 fn xmx_flag(ram_mb: u32) -> String {
     format!(
         "-Xmx{}M",
-        ram_mb.clamp(crate::instances::MIN_RAM_MB, crate::instances::MAX_RAM_MB)
+        ram_mb.clamp(crate::servers::MIN_RAM_MB, crate::servers::MAX_RAM_MB)
     )
 }
 
@@ -494,14 +501,19 @@ fn find_win_args(maven_dir: &Path, exact: &str) -> Option<PathBuf> {
     if direct.is_file() {
         return Some(direct);
     }
-    let mut hits: Vec<PathBuf> = std::fs::read_dir(crate::util::fs::long_path(maven_dir))
+    // P2-ревизии: лексикографический первый hit мог поднять старую сборку
+    // после переустановок — берём самую свежую по mtime win_args.txt.
+    std::fs::read_dir(crate::util::fs::long_path(maven_dir))
         .ok()?
         .flatten()
         .map(|e| e.path().join("win_args.txt"))
         .filter(|p| p.is_file())
-        .collect();
-    hits.sort();
-    hits.into_iter().next()
+        .max_by_key(|p| {
+            std::fs::metadata(crate::util::fs::long_path(p))
+                .and_then(|m| m.modified())
+                .map(|t| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0))
+                .unwrap_or(0)
+        })
 }
 
 // ---------- супервизия ----------
@@ -866,13 +878,13 @@ mod tests {
         assert!(
             build_command(Path::new("java"), &s)
                 .unwrap()
-                .contains(&format!("-Xmx{}M", crate::instances::MIN_RAM_MB))
+                .contains(&format!("-Xmx{}M", crate::servers::MIN_RAM_MB))
         );
         s.ram_mb = 99_999_999;
         assert!(
             build_command(Path::new("java"), &s)
                 .unwrap()
-                .contains(&format!("-Xmx{}M", crate::instances::MAX_RAM_MB))
+                .contains(&format!("-Xmx{}M", crate::servers::MAX_RAM_MB))
         );
     }
 

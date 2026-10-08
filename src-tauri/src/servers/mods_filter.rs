@@ -239,8 +239,10 @@ pub async fn copy_server_mods(
         let disposition = match (&sides, e.project_id.as_deref()) {
             (Some(map), Some(pid)) if valid_project_id(pid) => match map.get(pid) {
                 Some((c, s)) => classify(Some((c, s)), None),
-                // Проект удалён/скрыт на Modrinth: копируем непроверенным.
-                None => classify(None, None),
+                // Проект удалён/скрыт на Modrinth: локальный fabric.mod.json
+                // всё же знает environment — используем его, а не слепую копию
+                // (P2-ревизии: клиент-моду с мёртвой ссылкой катило на сервер).
+                None => classify(None, read_fabric_environment(&src).as_deref()),
             },
             // Нет project_id, офлайн или id не прошёл валидацию: manifest/env.
             _ => classify(None, env.as_deref()),

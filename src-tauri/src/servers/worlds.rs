@@ -46,7 +46,14 @@ fn copy_tree(src: &Path, dst: &Path, skip_file: &str) -> Result<()> {
         let name = entry.file_name();
         let child_src = entry.path();
         let child_dst = dst.join(&name);
-        if entry.file_type()?.is_dir() {
+        // P2-ревизии: symlink/junction внутри мира — пропуск с warn, а не
+        // падение всей копии (облачные синхронизации и моды так делают).
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            tracing::warn!("copy_world: пропуск symlink {}", entry.path().display());
+            continue;
+        }
+        if ft.is_dir() {
             copy_tree(&child_src, &child_dst, skip_file)?;
         } else if name != skip_file {
             std::fs::copy(long_path(&child_src), long_path(&child_dst))?;
@@ -97,8 +104,13 @@ pub fn escape_properties_value(value: &str) -> String {
             ' ' if i == 0 => out.push_str("\\ "),
             '\n' | '\r' | '\t' => out.push(' '),
             c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
-                // native2ascii: не-ASCII и управляющие → \uXXXX
-                out.push_str(&format!("\\u{:04x}", c as u32));
+                // native2ascii: не-ASCII и управляющие → \uXXXX. P2-ревизии:
+                // кодпойнты вне BMP (эмодзи) — только суррогатной парой UTF-16,
+                // иначе Properties.read срезает \uXXXX до 4 hex и портит строку.
+                let mut buf = [0u16; 2];
+                for unit in c.encode_utf16(&mut buf) {
+                    out.push_str(&format!("\\u{:04x}", unit));
+                }
             }
             c => out.push(c),
         }
@@ -172,13 +184,20 @@ pub fn write_eula_stub(dir: &Path) -> Result<()> {
 /// Принята ли EULA (последняя строка `eula=` равна `true`; файла/строки нет
 /// или значение иное → false).
 pub fn read_eula_accepted(dir: &Path) -> bool {
+    // P2-ревизии: единый парсер для UI и гейта старта — толерантный к регистру
+    // и пробелам вокруг «=», побеждает последняя подходящая строка (как
+    // Properties у самой игры).
     read_eula_lines(dir)
         .unwrap_or_default()
         .iter()
         .rev()
-        .find_map(|l| l.trim().strip_prefix("eula="))
-        .map(|v| v.trim().eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .find_map(|l| {
+            let (key, value) = l.trim().split_once('=')?;
+            key.trim()
+                .eq_ignore_ascii_case("eula")
+                .then(|| value.trim().to_ascii_lowercase())
+        })
+        .is_some_and(|v| v == "true")
 }
 
 /// Каталог мира сервера (для UI/диагностики).

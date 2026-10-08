@@ -46,6 +46,8 @@ export default function ServerTab({ instanceId }: { instanceId: string }) {
   /** Сервер, над которым идёт действие (старт/стоп/EULA/удаление) — блок кнопок. */
   const [busyId, setBusyId] = useState<string | null>(null);
   const [overrides, setOverrides] = useState<Record<string, RunOverride>>({});
+  /** P2-ревизии: поколение событий на сервер — гасит поздний ответ serverStatus. */
+  const eventGenRef = useRef<Map<string, number>>(new Map());
   const [logs, setLogs] = useState<Record<string, ServerLogEntry[]>>({});
   /** Явный выбор пользователя; не задан → панель раскрыта при running. */
   const [logOpen, setLogOpen] = useState<Record<string, boolean>>({});
@@ -89,6 +91,10 @@ export default function ServerTab({ instanceId }: { instanceId: string }) {
         return;
       }
       if (ev.kind === "started") {
+        // P2-ревизии: ответ serverStatus, прочитанный до смерти процесса,
+        // не должен воскрешать карточку — метки поколений.
+        const gen = (eventGenRef.current.get(ev.serverId) ?? 0) + 1;
+        eventGenRef.current.set(ev.serverId, gen);
         setOverrides((cur) => ({
           ...cur,
           [ev.serverId]: { running: true, pid: cur[ev.serverId]?.pid ?? null },
@@ -97,16 +103,18 @@ export default function ServerTab({ instanceId }: { instanceId: string }) {
         setLogOpen((cur) => ({ ...cur, [ev.serverId]: true }));
         void api
           .serverStatus(ev.serverId)
-          .then((st) =>
+          .then((st) => {
+            if (eventGenRef.current.get(ev.serverId) !== gen) return;
             setOverrides((cur) => ({
               ...cur,
               [ev.serverId]: { running: st.running, pid: st.pid },
-            })),
-          )
+            }));
+          })
           .catch(() => undefined);
         return;
       }
       // exited | crashed: статус в оверлей + статусная строка в хвост лога.
+      eventGenRef.current.set(ev.serverId, (eventGenRef.current.get(ev.serverId) ?? 0) + 1);
       setOverrides((cur) => ({ ...cur, [ev.serverId]: { running: false, pid: null } }));
       const entry: ServerLogEntry =
         ev.kind === "crashed"

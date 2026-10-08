@@ -94,9 +94,11 @@ export default function AddContentModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Смена вкладки — повторный поиск по выбранному типу контента (как в ModsPage).
+  // Смена вкладки — повторный поиск по выбранному типу контента. P2-ревизии:
+  // безусловно (не только при searched) — переключение до первого ответа
+  // иначе оставляло список модов под вкладкой «Шейдеры».
   useEffect(() => {
-    if (searched) void doSearch();
+    void doSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
@@ -220,7 +222,7 @@ export default function AddContentModal({
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void doSearch()}
+              onKeyDown={(e) => e.key === "Enter" && !busy && void doSearch()}
               placeholder={t("mods.searchPlaceholder")}
               className="w-full bg-transparent font-mono text-sm text-text outline-none placeholder:font-ui placeholder:text-text-muted"
               aria-label={t("mods.searchPlaceholder")}
