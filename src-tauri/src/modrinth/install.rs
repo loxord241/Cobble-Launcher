@@ -11,6 +11,13 @@ use std::sync::Arc;
 
 use super::api::{self, Version};
 
+/// Совместима ли версия с Minecraft инстанса: game_versions содержит mc
+/// или универсальную "*". Пустой список — заявления нет → не совместима
+/// (та же семантика, что у авто-подбора ниже). Чистая — покрытие без сети.
+fn version_supports_mc(version: &Version, mc: &str) -> bool {
+    version.game_versions.iter().any(|g| g == mc || g == "*")
+}
+
 /// Совместимая версия: game_versions содержит mc (или универсальная "*"),
 /// loaders содержит loader (кейс-независимо); `loader=None` — фильтр по
 /// загрузчику не применяется (ресурспаки/шейдеры).
@@ -20,13 +27,44 @@ pub fn pick_compatible_version<'a>(
     loader: Option<&str>,
 ) -> Option<&'a Version> {
     versions.iter().find(|v| {
-        let mc_ok = v.game_versions.iter().any(|g| g == mc || g == "*");
         let loader_ok = match loader {
             None => true,
             Some(l) => v.loaders.iter().any(|x| x.eq_ignore_ascii_case(l)),
         };
-        mc_ok && loader_ok && !v.files.is_empty()
+        version_supports_mc(v, mc) && loader_ok && !v.files.is_empty()
     })
+}
+
+/// Выбор версии для установки: явный id (таб «Версии») — тоже с проверкой
+/// game_versions инстанса, иначе несовместимая версия ставилась бы молча.
+/// Чистая функция — тесты без сети.
+fn pick_version<'a>(
+    versions: &'a [Version],
+    project_id: &str,
+    version_id: Option<&str>,
+    mc: &str,
+    loader: Option<&str>,
+) -> Result<&'a Version> {
+    match version_id {
+        Some(vid) => {
+            let found = versions
+                .iter()
+                .find(|v| v.id == vid)
+                .ok_or_else(|| LauncherError::VersionNotFound(vid.to_string()))?;
+            if !version_supports_mc(found, mc) {
+                return Err(LauncherError::VersionNotFound(format!(
+                    "версия {vid} проекта {project_id} не совместима с Minecraft {mc} (заявлено: {:?})",
+                    found.game_versions
+                )));
+            }
+            Ok(found)
+        }
+        None => pick_compatible_version(versions, mc, loader).ok_or_else(|| {
+            LauncherError::VersionNotFound(format!(
+                "совместимая версия {project_id} для {mc} ({loader:?})"
+            ))
+        }),
+    }
 }
 
 /// Каталог установки по типу контента (спека §6.6: правильные каталоги).
@@ -136,19 +174,7 @@ async fn install_recursive(
     api::validate_id_or_slug(project_id)?;
 
     let versions = api::project_versions(&client, project_id).await?;
-    let version = if let Some(vid) = version_id {
-        versions
-            .iter()
-            .find(|v| v.id == vid)
-            .ok_or_else(|| LauncherError::VersionNotFound(vid.into()))?
-    } else {
-        pick_compatible_version(&versions, &inst.mc_version, loader).ok_or_else(|| {
-            LauncherError::VersionNotFound(format!(
-                "совместимая версия {project_id} для {} ({:?})",
-                inst.mc_version, loader
-            ))
-        })?
-    };
+    let version = pick_version(&versions, project_id, version_id, &inst.mc_version, loader)?;
 
     // Обязательные зависимости — сначала (рекурсия).
     for dep in &version.dependencies {
@@ -282,6 +308,113 @@ mod tests {
         let paths = Paths::new(dir.path().to_path_buf());
         paths.ensure_dirs().unwrap();
         paths
+    }
+
+    /// Тестовая версия Modrinth: id, game_versions, loaders, один primary-файл.
+    fn version(id: &str, game_versions: &[&str], loaders: &[&str]) -> Version {
+        Version {
+            id: id.into(),
+            project_id: "proj".into(),
+            version_number: format!("1.0.0+{id}"),
+            version_type: Some("release".into()),
+            game_versions: game_versions.iter().map(|s| s.to_string()).collect(),
+            loaders: loaders.iter().map(|s| s.to_string()).collect(),
+            dependencies: vec![],
+            files: vec![api::VersionFile {
+                hashes: [("sha1".to_string(), "h".to_string())].into_iter().collect(),
+                url: "https://cdn.example/f.jar".into(),
+                filename: "f.jar".into(),
+                primary: true,
+                size: 10,
+            }],
+            changelog: None,
+            date_published: None,
+        }
+    }
+
+    /// Каталог установки по kind: конвенция Iris/OptiFine — шейдер zip в
+    /// shaderpacks/, ресурспак в resourcepacks/, мод в mods/.
+    #[test]
+    fn dir_for_kind_maps_content_dirs() {
+        assert_eq!(dir_for_kind(ContentKind::Mod), "mods");
+        assert_eq!(dir_for_kind(ContentKind::ResourcePack), "resourcepacks");
+        assert_eq!(dir_for_kind(ContentKind::Shader), "shaderpacks");
+        assert_eq!(dir_for_kind(ContentKind::Datapack), "datapacks");
+    }
+
+    /// project_type из ответа API → kind; неизвестный тип — InvalidInput
+    /// (не тихая установка в mods/).
+    #[test]
+    fn kind_for_project_type_maps_and_rejects() {
+        assert_eq!(kind_for_project_type("mod").unwrap(), ContentKind::Mod);
+        assert_eq!(
+            kind_for_project_type("resourcepack").unwrap(),
+            ContentKind::ResourcePack
+        );
+        assert_eq!(kind_for_project_type("shader").unwrap(), ContentKind::Shader);
+        assert_eq!(
+            kind_for_project_type("datapack").unwrap(),
+            ContentKind::Datapack
+        );
+        let err = kind_for_project_type("modpack").unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+    }
+
+    /// Совместимость game_versions: точное совпадение, универсальная "*",
+    /// несовпадение и пустой список (заявления нет — не ставим).
+    #[test]
+    fn version_supports_mc_semantics() {
+        assert!(version_supports_mc(&version("v", &["1.21.1"], &[]), "1.21.1"));
+        assert!(version_supports_mc(&version("v", &["1.20", "*"], &[]), "1.20.1"));
+        assert!(!version_supports_mc(&version("v", &["1.20.1"], &[]), "1.21.1"));
+        assert!(!version_supports_mc(&version("v", &[], &[]), "1.21.1"));
+    }
+
+    /// Выбор версии (чистая часть install_recursive): явный совместимый id —
+    /// ок; явный id с чужим game_versions и неизвестный id — version_not_found;
+    /// авто-подбор без загрузчика (ресурспаки/шейдеры) берёт универсальную "*",
+    /// с загрузчиком игнорирует чужие загрузчики.
+    #[test]
+    fn pick_version_checks_game_versions_and_loader() {
+        let vs = vec![
+            version("v-new", &["1.21.1"], &["fabric"]),
+            version("v-universal", &["*"], &[]),
+            version("v-old", &["1.20.1"], &["fabric"]),
+        ];
+        let got = pick_version(&vs, "proj", Some("v-old"), "1.20.1", Some("fabric"))
+            .unwrap();
+        assert_eq!(got.id, "v-old");
+        let err = pick_version(&vs, "proj", Some("v-old"), "1.21.1", None).unwrap_err();
+        assert_eq!(err.code(), "version_not_found", "{err}");
+        let err = pick_version(&vs, "proj", Some("ghost"), "1.21.1", None).unwrap_err();
+        assert_eq!(err.code(), "version_not_found");
+        let got = pick_version(&vs, "proj", None, "1.20.4", None).unwrap();
+        assert_eq!(got.id, "v-universal", "универсальная версия подходит любому mc");
+        let got = pick_version(&vs, "proj", None, "1.21.1", Some("fabric")).unwrap();
+        assert_eq!(got.id, "v-new");
+        assert!(
+            pick_version(&vs, "proj", None, "1.21.1", Some("forge")).is_err(),
+            "чужой загрузчик отсеивает версию"
+        );
+    }
+
+    /// Ресурспак/шейдер: у версий пустые loaders, авто-подбор без фильтра по
+    /// загрузчику находит совместимую (тот же pick_compatible_version, что у модов).
+    #[test]
+    fn pick_compatible_version_without_loader_finds_resourcepack() {
+        let vs = vec![
+            version("rp-new", &["1.21.1"], &[]),
+            version("rp-old", &["1.20.1"], &[]),
+        ];
+        assert_eq!(
+            pick_compatible_version(&vs, "1.21.1", None).unwrap().id,
+            "rp-new"
+        );
+        assert_eq!(
+            pick_compatible_version(&vs, "1.20.1", None).unwrap().id,
+            "rp-old"
+        );
+        assert!(pick_compatible_version(&vs, "1.19.4", None).is_none());
     }
 
     /// id с `../` или пробелом — InvalidInput ДО сети: клиент в офлайн-режиме,

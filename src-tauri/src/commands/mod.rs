@@ -732,13 +732,27 @@ pub async fn instance_icon_remove(state: State<'_, AppState>, id: String) -> Res
 /// Экспорт инстанса в .mrpack (формат Modrinth) в каталог exports/.
 #[tauri::command]
 pub async fn instance_export(state: State<'_, AppState>, id: String) -> Result<ArchiveResult> {
-    let paths = state.paths.clone();
+    // D67: тот же UX (exports/<имя>.mrpack, уведомление с путём), но полный
+    // формат: files[] с url+sha1/sha512+projectId, overrides, отчёт пропусков.
     let inst = instances::load(&state.paths, &id)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        instances::content::export_mrpack(&paths, &inst)
+    std::fs::create_dir_all(crate::util::fs::long_path(&state.paths.exports_dir()))?;
+    let name = format!("{}.mrpack", crate::util::names::sanitize_user_name(&inst.name, "instance"));
+    let dest = state.paths.exports_dir().join(name);
+    let http = state.http().await;
+    let res = crate::instances::export::export_instance_mrpack_in(
+        &state.paths,
+        http.as_ref(),
+        &id,
+        &dest,
+        false,
+    )
+    .await?;
+    let bytes = std::fs::metadata(&res.path).map(|m| m.len()).unwrap_or(0);
+    Ok(ArchiveResult {
+        path: res.path,
+        files: (res.files_sourced + res.files_overrides) as usize,
+        bytes,
     })
-    .await
-    .map_err(join_err)?
 }
 
 #[tauri::command]
@@ -2284,6 +2298,59 @@ pub async fn update_check(state: State<'_, AppState>) -> Result<UpdateInfo> {
         checked: true,
         note,
     })
+}
+
+// ---------- D67: избранное каталога, наигранные часы, экспорт .mrpack, чужие лаунчеры ----------
+
+/// Избранные проекты каталога (локальный список id Modrinth, порядок добавления).
+#[tauri::command]
+pub fn favorites_list(state: State<'_, AppState>) -> Vec<String> {
+    crate::favorites::list_in(state.paths.root())
+}
+
+/// Добавить/убрать проект из избранного. Возвращает новое состояние (true = в избранном).
+#[tauri::command]
+pub fn favorites_toggle(state: State<'_, AppState>, project_id: String) -> Result<bool> {
+    crate::favorites::toggle_in(state.paths.root(), &project_id)
+}
+
+/// Наигранные часы по дням (последние `days` дней, включая нулевые).
+#[tauri::command]
+pub fn playtime_stats(
+    state: State<'_, AppState>,
+    instance_id: String,
+    days: u32,
+) -> Vec<crate::playtime::PlaytimeDay> {
+    crate::playtime::stats_in_dir(
+        state.paths.root(),
+        &instance_id,
+        days,
+        &crate::playtime::local_today(),
+    )
+}
+
+#[tauri::command]
+pub fn foreign_scan() -> Vec<crate::import::foreign::ForeignSource> {
+    crate::import::foreign::scan_foreign_launchers()
+}
+
+/// Импорт инстанса чужого лаунчера (независимая копия в наш каталог);
+/// возвращает id созданного инстанса.
+#[tauri::command]
+pub async fn foreign_import(
+    state: State<'_, AppState>,
+    dir: String,
+    target_name: String,
+) -> Result<String> {
+    let http = state.http().await;
+    crate::import::foreign::import_foreign_instance(
+        &state.paths,
+        &state.settings.read().await.clone(),
+        http,
+        std::path::Path::new(&dir),
+        &target_name,
+    )
+    .await
 }
 
 #[cfg(test)]

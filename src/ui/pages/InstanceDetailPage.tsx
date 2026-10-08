@@ -49,6 +49,7 @@ import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
 import OptimizeHelpModal from "../components/OptimizeHelpModal";
 import WorldsTab from "../components/instance/WorldsTab";
+import PlaytimeChart from "../components/instance/PlaytimeChart";
 import ScreensTab from "../components/instance/ScreensTab";
 import ConfigsTab from "../components/instance/ConfigsTab";
 import CopyContentDialog from "../components/instance/CopyContentDialog";
@@ -775,6 +776,10 @@ export default function InstanceDetailPage({
                 )}
               </div>
             </section>
+
+            {/* D67: график наигранных часов за 14 дней — карточка в стиле
+                соседних секций; данные и пустое состояние — внутри компонента. */}
+            <PlaytimeChart instanceId={instanceId} />
 
             <section className="rounded-lg border border-border-app bg-card p-4">
               <h3 className="text-sm font-semibold">{t("instance.overview.info")}</h3>

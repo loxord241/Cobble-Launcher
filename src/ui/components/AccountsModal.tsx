@@ -1,5 +1,18 @@
 import { useEffect, useState } from "react";
-import { X, Trash2, Globe, Shield, User, Plus, ExternalLink, RefreshCw, Server } from "lucide-react";
+import {
+  X,
+  Trash2,
+  Globe,
+  Shield,
+  User,
+  Plus,
+  ExternalLink,
+  RefreshCw,
+  Server,
+  ArrowLeft,
+  KeyRound,
+  LoaderCircle,
+} from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   useAccounts,
@@ -23,9 +36,39 @@ type Tab = "msa" | "ely" | "offline" | "custom";
 // те же правила, что в онбординге и Shell (раньше модалка пропускала что угодно).
 const NICK_RE = /^[A-Za-z0-9_]{3,16}$/;
 
+/** Ответ `account_add_msa_start` (D64) — форма из api/client.ts (snake_case,
+ * интервалы в секундах). */
+interface MsaDeviceCodeStart {
+  user_code: string;
+  verification_uri: string;
+  device_code: string;
+  interval_secs: number;
+  expires_in_secs: number;
+}
+
+/** Активная сессия device-code входа. Дедлайн храним абсолютным (unix-ms):
+ * вебвью троттлит таймеры в фоне, слепой декремент показывал бы «осталось»
+ * врунчё — остаток каждый тик считается от дедлайна. */
+interface MsaCodeFlow {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  intervalSecs: number;
+  expiresAtMs: number;
+}
+
 export default function AccountsModal({ onClose }: { onClose: () => void }) {
-  const { list: accounts, setActive, remove, addOffline, addMsaBrowser, addEly, addAuthlib, load } =
-    useAccounts();
+  const {
+    list: accounts,
+    setActive,
+    remove,
+    addOffline,
+    addMsaBrowser,
+    addMsaPoll,
+    addEly,
+    addAuthlib,
+    load,
+  } = useAccounts();
   const { settings } = useSettings();
   const [activeTab, setActiveTab] = useState<Tab>("offline");
 
@@ -120,6 +163,118 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  // ---------- Device-code вход Microsoft (D64): запасной путь для машин,
+  // где браузерный колбэк не доходит (жёсткие политики, чужой дефолтный
+  // браузер). Ядро выдаёт user_code + verification_uri, пользователь вводит
+  // код на странице Microsoft, фронт опрашивает готовность по interval. ----------
+
+  const [msaCode, setMsaCode] = useState<MsaCodeFlow | null>(null);
+  // Цикл опроса запущен (гасится ошибкой/успехом/истечением/«Назад»).
+  const [msaCodeWaiting, setMsaCodeWaiting] = useState(false);
+  const [msaCodeSecsLeft, setMsaCodeSecsLeft] = useState(0);
+  const [msaCodeError, setMsaCodeError] = useState<string | null>(null);
+  // Истечение — производное состояние: не может разойтись с таймером.
+  const msaCodeExpired = msaCode !== null && msaCodeSecsLeft <= 0;
+  const msaCodeLeftLabel = `${String(Math.floor(msaCodeSecsLeft / 60)).padStart(2, "0")}:${String(
+    msaCodeSecsLeft % 60,
+  ).padStart(2, "0")}`;
+  // Инструкция содержит {url}: t() возвращает готовую строку — вырезаем из
+  // неё verificationUri, чтобы ссылка была кликабельной (вхождение одно).
+  const msaCodeHint = msaCode
+    ? t("accounts.msaCode.hint", { url: msaCode.verificationUri })
+    : "";
+  const msaCodeHintUrlAt = msaCode ? msaCodeHint.indexOf(msaCode.verificationUri) : -1;
+
+  // Обратный отсчёт мм:сс — тик раз в секунду от абсолютного дедлайна.
+  useEffect(() => {
+    if (!msaCode) return;
+    const tick = () =>
+      setMsaCodeSecsLeft(Math.max(0, Math.round((msaCode.expiresAtMs - Date.now()) / 1000)));
+    tick();
+    const iv = window.setInterval(tick, 1000);
+    return () => window.clearInterval(iv);
+  }, [msaCode]);
+
+  // Опрос готовности: шаг interval_secs из ответа ядра. Перекрывающиеся тики
+  // (медленный IPC) пропускаем; успех/ошибка/истечение/размонтирование —
+  // cleanup гасит интервал, утечек нет.
+  useEffect(() => {
+    if (!msaCode || !msaCodeWaiting || msaCodeExpired) return;
+    let stopped = false;
+    let inFlight = false;
+    const poll = () => {
+      if (inFlight) return;
+      inFlight = true;
+      addMsaPoll(msaCode.deviceCode)
+        .then(async (acc) => {
+          if (stopped) return;
+          if (acc) {
+            // Тот же финал, что у браузерного пути: стор сам перезагрузил
+            // список (load внутри addMsaPoll), активируем профиль и закрываем
+            // экран кода.
+            setMsaCodeWaiting(false);
+            setMsaCode(null);
+            try {
+              await setActive(acc.id);
+              setStatusMsg(t("accounts.msaSuccess", { name: acc.name }));
+            } catch (err) {
+              setError(apiErrorText(err));
+            }
+          }
+        })
+        .catch((err: unknown) => {
+          if (stopped) return;
+          setMsaCodeWaiting(false);
+          setMsaCodeError(apiErrorText(err));
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    const iv = window.setInterval(poll, Math.max(1, msaCode.intervalSecs) * 1000);
+    return () => {
+      stopped = true;
+      window.clearInterval(iv);
+    };
+  }, [msaCode, msaCodeWaiting, msaCodeExpired, addMsaPoll, setActive]);
+
+  // Старт device-code входа. Офлайн-режим (F16) отклоняется ядром на этом же
+  // вызове (offline_mode, auth/msa.rs) — ровно как основной браузерный вход:
+  // никаких UI-фейк-проверок, текст — через apiErrorText, экран кода не
+  // открывается, опрос не начинается.
+  const startMsaCode = async () => {
+    setBusy(true);
+    setError(null);
+    setStatusMsg(null);
+    setMsaCodeError(null);
+    try {
+      const r: MsaDeviceCodeStart = await api.accountAddMsaStart();
+      const intervalSecs = Math.max(1, r.interval_secs);
+      const expiresSecs = Math.max(1, r.expires_in_secs);
+      setMsaCode({
+        deviceCode: r.device_code,
+        userCode: r.user_code,
+        verificationUri: r.verification_uri,
+        intervalSecs,
+        expiresAtMs: Date.now() + expiresSecs * 1000,
+      });
+      setMsaCodeSecsLeft(expiresSecs);
+      setMsaCodeWaiting(true);
+    } catch (err) {
+      setError(apiErrorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // «Назад»: гасим экран кода — интервалы снимают эффекты (deps меняются).
+  const exitMsaCode = () => {
+    setMsaCode(null);
+    setMsaCodeWaiting(false);
+    setMsaCodeError(null);
+    setMsaCodeSecsLeft(0);
   };
 
   const handleAddEly = async (e: React.FormEvent) => {
@@ -495,21 +650,135 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
               </form>
             )}
 
-            {/* Microsoft форма */}
+            {/* Microsoft форма (вход по коду — экран замещает содержимое секции) */}
             {activeTab === "msa" && (
-              <div className="flex flex-col gap-3 rounded-lg border border-border-app bg-bg p-4">
-                <p className="text-xs leading-relaxed text-text-muted">
-                  {t("accounts.msaHint")}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => void handleAddMsa()}
-                  disabled={busy}
-                  className="btn-primary flex h-10 items-center justify-center gap-2 text-sm"
-                >
-                  <ExternalLink size={16} />
-                  {busy ? t("accounts.msaWaiting") : t("accounts.msaLoginBtn")}
-                </button>
+              <div
+                key={msaCode ? "msa-code" : "msa-entry"}
+                className="anim-fade-up flex flex-col gap-3 rounded-lg border border-border-app bg-bg p-4"
+              >
+                {msaCode ? (
+                  <>
+                    {/* Экран кода: заголовок + «Назад» */}
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-text">
+                        {t("accounts.msaCode.title")}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={exitMsaCode}
+                        className="btn-ghost h-8 gap-2 px-2.5 text-xs"
+                      >
+                        <ArrowLeft size={14} aria-hidden />
+                        {t("accounts.msaCode.back")}
+                      </button>
+                    </div>
+                    {/* Инструкция: {url} из перевода — кликабельная ссылка
+                        через системный opener (как ссылки Ely.by выше). */}
+                    <p className="text-xs leading-relaxed text-text-muted">
+                      {msaCodeHintUrlAt >= 0 ? (
+                        <>
+                          {msaCodeHint.slice(0, msaCodeHintUrlAt)}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void openUrl(msaCode.verificationUri).catch(() => {})
+                            }
+                            className="text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
+                          >
+                            {msaCode.verificationUri}
+                          </button>
+                          {msaCodeHint.slice(msaCodeHintUrlAt + msaCode.verificationUri.length)}
+                        </>
+                      ) : (
+                        msaCodeHint
+                      )}
+                    </p>
+                    <div className="flex flex-col gap-1">
+                      <div className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                        {t("accounts.msaCode.code")}
+                      </div>
+                      <div className="rounded-md border border-border-strong bg-card px-3 py-2 text-center">
+                        <span className="select-all font-mono text-2xl font-semibold tracking-[0.35em] text-text">
+                          {msaCode.userCode}
+                        </span>
+                      </div>
+                    </div>
+                    {msaCodeError ? (
+                      <div className="flex flex-col gap-2">
+                        <p
+                          role="alert"
+                          className="rounded border border-error/40 bg-error/10 p-2 text-xs text-error"
+                        >
+                          {msaCodeError}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMsaCodeError(null);
+                            setMsaCodeWaiting(true);
+                          }}
+                          className="btn-ghost h-8 w-fit gap-2 px-2.5 text-xs"
+                        >
+                          <RefreshCw size={14} aria-hidden />
+                          {t("accounts.msaCode.retry")}
+                        </button>
+                      </div>
+                    ) : msaCodeExpired ? (
+                      <div className="flex flex-col gap-2">
+                        <p
+                          role="alert"
+                          className="rounded border border-error/40 bg-error/10 p-2 text-xs text-error"
+                        >
+                          {t("accounts.msaCode.expired")}
+                        </p>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void startMsaCode()}
+                          className="btn-ghost h-8 w-fit gap-2 px-2.5 text-xs"
+                        >
+                          <RefreshCw size={14} aria-hidden />
+                          {t("accounts.msaCode.retry")}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="flex items-center gap-2 text-xs text-text-muted">
+                          <LoaderCircle size={14} aria-hidden className="animate-spin" />
+                          {t("accounts.msaCode.waiting")}
+                        </p>
+                        <span className="font-mono text-xs text-text-muted">
+                          {t("accounts.msaCode.left", { time: msaCodeLeftLabel })}
+                        </span>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <p className="text-xs leading-relaxed text-text-muted">
+                      {t("accounts.msaHint")}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void handleAddMsa()}
+                      disabled={busy}
+                      className="btn-primary flex h-10 items-center justify-center gap-2 text-sm"
+                    >
+                      <ExternalLink size={16} />
+                      {busy ? t("accounts.msaWaiting") : t("accounts.msaLoginBtn")}
+                    </button>
+                    {/* D64: тихий запасной путь — не конкурирует с основным. */}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void startMsaCode()}
+                      className="btn-ghost h-8 w-fit self-center gap-2 px-2.5 text-xs"
+                    >
+                      <KeyRound size={14} aria-hidden />
+                      {t("accounts.msaCode.openBtn")}
+                    </button>
+                  </>
+                )}
               </div>
             )}
 

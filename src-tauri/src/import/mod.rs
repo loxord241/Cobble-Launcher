@@ -1,6 +1,8 @@
 //! Импорт (спека §6.11): CF-zip, MultiMC/Prism zip, свой формат.
 //! Чужие архивы — недоверенный вход: zip-slip-защита в util::zip.
 
+pub mod foreign;
+
 use crate::errors::{LauncherError, Result};
 use crate::instances::Instance;
 use crate::paths::Paths;

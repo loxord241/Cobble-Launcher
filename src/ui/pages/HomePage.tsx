@@ -3,13 +3,16 @@
 // с артом во всю плитку, переключатель типа (модпаки/моды), поиск, сортировка,
 // фильтр загрузчика, бесконечный скролл. Клик по плитке/кнопке «Установить»
 // открывает окно проекта — установка происходит внутри окна. Инстансы живут
-// на странице «Инстансы».
+// на странице «Инстансы». Ряд «Избранное» (D67): горизонтальная лента плиток
+// проектов, отмеченных сердцем, над выдачей — рисуется, только когда список
+// непуст; сердце на плитке каталога и в ряду переключает favoritesToggle.
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Dices, Download, Search, SearchX } from "lucide-react"
 import { api } from "../../api/client"
 import { apiErrorText, currentLanguage, plural, t } from "../../i18n"
 import { prettySlug } from "../format"
-import type { SearchHit } from "../../api/types"
+import FavoritesRow, { HeartToggle } from "../components/FavoritesRow"
+import type { ProjectMeta, SearchHit } from "../../api/types"
 
 // Самый тяжёлый лист каталога (4 таба + галерея + markdown) грузится только
 // при первом открытии окна проекта — стартовый чанк меньше.
@@ -89,6 +92,66 @@ function useGalleryArt(projectId: string | undefined): string | null | undefined
 function useIconTooSmall(): [boolean, (e: { currentTarget: HTMLImageElement }) => void] {
   const [small, setSmall] = useState(false)
   return [small, (e) => setSmall(e.currentTarget.naturalWidth < 220)]
+}
+
+// ---------- Избранное (D67) ----------
+
+/** Метаданные плитки избранного (кэш на сессию — как galleryCache выше). */
+const metaCache = new Map<string, Promise<ProjectMeta | null>>()
+
+function loadProjectMeta(projectId: string): Promise<ProjectMeta | null> {
+  let p = metaCache.get(projectId)
+  if (!p) {
+    p = api
+      .modrinthProjects([projectId])
+      .then((list) => list[0] ?? null)
+      .catch(() => null)
+    metaCache.set(projectId, p)
+  }
+  return p
+}
+
+/**
+ * Полный SearchHit для плитки избранного: с D67 modrinthProjects несёт и
+ * project_type, но не все поля (автор/категории/версии) — поиск по названию
+ * с ТОЧНЫМ совпадением project_id досыталяет hit полностью. Решение
+ * по названию + ТОЧНОЕ совпадение project_id в выдаче — hit настоящий, без
+ * выдуманных полей. null — не нашли (модалка останется на метаданных).
+ */
+const hitCache = new Map<string, Promise<SearchHit | null>>()
+
+function resolveFavoriteHit(projectId: string, title: string): Promise<SearchHit | null> {
+  let p = hitCache.get(projectId)
+  if (!p) {
+    p = api
+      .modrinthSearch(title, undefined, undefined, undefined, "relevance", 20, 0)
+      .then((r) => r.hits.find((h) => h.project_id === projectId) ?? null)
+      .catch(() => null)
+    hitCache.set(projectId, p)
+  }
+  return p
+}
+
+/**
+ * Стартовый hit плитки избранного из ProjectMeta: название/описание/иконка
+ * настоящие, остальное пусто — модалка это переживает (чипов без данных нет,
+ * detail грузит сама), а пустой проектный сценарий — безопасный дефолт.
+ * Как только поиск ответит, hit заменяется полным (см. openFavorite).
+ */
+function metaToHit(meta: ProjectMeta): SearchHit {
+  return {
+    project_id: meta.projectId,
+    project_type: meta.projectType || "mod",
+    slug: "",
+    author: "",
+    title: meta.title,
+    description: meta.description,
+    categories: [],
+    versions: [],
+    downloads: 0,
+    icon_url: meta.iconUrl,
+    date_modified: "",
+  }
 }
 
 /**
@@ -186,7 +249,23 @@ function HeroTile({ hit, onOpen }: { hit: SearchHit, onOpen: () => void }) {
  * проявляются доп-метаданные (автор, обновление) и мини-кнопка «Установить»
  * (ghost). Клик по плитке И по кнопке открывает окно проекта (D39).
  */
-function CatalogTile({ hit, idx, onOpen }: { hit: SearchHit, idx: number, onOpen: () => void }) {
+function CatalogTile({
+  hit,
+  idx,
+  favorite,
+  favPending,
+  onOpen,
+  onToggleFavorite,
+}: {
+  hit: SearchHit,
+  idx: number,
+  /** Проект в избранном — сердце заполнено. */
+  favorite: boolean,
+  /** Переключение сердца в полёте — кнопка погашена. */
+  favPending: boolean,
+  onOpen: () => void,
+  onToggleFavorite: () => void,
+}) {
   // Загрузчик для подписи под именем: Modrinth кладёт его в categories.
   const loader = hit.categories.find((c) => LOADERS.includes(c))
   // D65-фикс качества: галерея (~350px) во всю плитку — резкая; мелкая
@@ -254,6 +333,15 @@ function CatalogTile({ hit, idx, onOpen }: { hit: SearchHit, idx: number, onOpen
       {hit.versions[0] && (
         <span className="chip-mono absolute left-2.5 top-2.5">{hit.versions[0]}</span>
       )}
+      {/* Сердце избранного — видно всегда (запрет hover-зависимости), клик
+          не открывает проект. Правый верх — chip версии занимает левый. */}
+      <HeartToggle
+        projectId={hit.project_id}
+        title={hit.title}
+        active={favorite}
+        disabled={favPending}
+        onToggle={() => onToggleFavorite()}
+      />
       {/* Hover/фокус: автор, обновление и мини-кнопка «Установить». Проявляется
           и с клавиатуры (group-focus-within) — не только мышью; pointer-events
           не дают кликать по невидимому слою вне hover. */}
@@ -304,6 +392,14 @@ export default function HomePage({ query }: { query: string }) {
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<SearchHit | null>(null)
   const [luckyBusy, setLuckyBusy] = useState(false)
+  // Избранное (D67): id в порядке добавления (favoritesList) + метаданные
+  // плиток (modrinthProjects). Ряд рисуется, только когда список непуст —
+  // правило честности «нет данных — нет элемента».
+  const [favoriteIds, setFavoriteIds] = useState<string[]>([])
+  const [favMeta, setFavMeta] = useState<Record<string, ProjectMeta>>({})
+  // Сердца с переключением в полёте: кнопку гасим, параллельные toggle одного
+  // проекта не гоняем (их ответы могли бы прийти не в порядке кликов).
+  const [favPending, setFavPending] = useState<Set<string>>(() => new Set())
   const sentinelRef = useRef<HTMLDivElement>(null)
   const stuckRef = useRef<HTMLDivElement>(null)
   const [stuck, setStuck] = useState(false)
@@ -462,6 +558,102 @@ export default function HomePage({ query }: { query: string }) {
     if (category !== "" && searched && !categories.includes(category)) setCategory("")
   }, [category, categories, searched])
 
+  // ---------- Избранное (D67) ----------
+
+  /** Идемпотентно добавить/убрать id — оптимистичный апдейт, сверка, откат. */
+  const applyFavorite = (projectId: string, present: boolean) => {
+    setFavoriteIds((prev) => {
+      const has = prev.includes(projectId)
+      if (present === has) return prev
+      return present ? [...prev, projectId] : prev.filter((id) => id !== projectId)
+    })
+  }
+
+  const rememberMeta = (meta: ProjectMeta) => {
+    setFavMeta((prev) => (prev[meta.projectId] ? prev : { ...prev, [meta.projectId]: meta }))
+  }
+
+  // Первичная загрузка: список id + метаданные одним батчем. Ответ сливаем
+  // через union, а не подменой: сердце могли успеть нажать, пока список ехал, —
+  // подмена стёрла бы оптимистичную плитку (расхождение закроет сверка toggle).
+  useEffect(() => {
+    let alive = true
+    api
+      .favoritesList()
+      .then(async (ids) => {
+        if (!alive) return
+        setFavoriteIds((prev) => {
+          const merged = [...prev]
+          for (const id of ids) if (!merged.includes(id)) merged.push(id)
+          return merged
+        })
+        if (ids.length === 0) return
+        try {
+          const metas = await api.modrinthProjects(ids)
+          if (!alive) return
+          setFavMeta((prev) => {
+            const next = { ...prev }
+            for (const m of metas) next[m.projectId] = m
+            return next
+          })
+        } catch (e) {
+          if (alive) setError(apiErrorText(e))
+        }
+      })
+      .catch((e) => {
+        if (alive) setError(apiErrorText(e))
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // Переключение сердца: оптимистично меняем список, ядро подтверждает
+  // (boolean = «добавлено» — по нему сверяемся), при ошибке откатываем и
+  // показываем её общим notice страницы. Свежедобавленному подтягиваем
+  // метаданные плитки (кэш на сессию — повторно ядро не дёргаем).
+  const toggleFavorite = async (projectId: string) => {
+    if (favPending.has(projectId)) return
+    const wasFavorite = favoriteIds.includes(projectId)
+    setFavPending((prev) => {
+      const next = new Set(prev)
+      next.add(projectId)
+      return next
+    })
+    applyFavorite(projectId, !wasFavorite)
+    if (!wasFavorite) void loadProjectMeta(projectId).then((m) => m && rememberMeta(m))
+    try {
+      const added = await api.favoritesToggle(projectId)
+      applyFavorite(projectId, added)
+    } catch (e) {
+      applyFavorite(projectId, wasFavorite)
+      setError(apiErrorText(e))
+    } finally {
+      setFavPending((prev) => {
+        const next = new Set(prev)
+        next.delete(projectId)
+        return next
+      })
+    }
+  }
+
+  // Клик по плитке избранного: окно проекта открывается МГНОВЕННО по
+  // метаданным (как из каталога), полный hit (downloads/author/тип проекта)
+  // догоняет поиском по точному совпадению project_id и заменяет объект —
+  // модалка с тем же project_id не перечитывает вкладки, только подставляет
+  // данные. Пока поиск ехал, окно могли закрыть/открыть другое — меняем
+  // только своё.
+  const openFavorite = (meta: ProjectMeta) => {
+    setDetail(metaToHit(meta))
+    void resolveFavoriteHit(meta.projectId, meta.title).then((hit) => {
+      if (hit) setDetail((cur) => (cur?.project_id === meta.projectId ? hit : cur))
+    })
+  }
+
+  // Элементы ряда: порядок favoritesList; плитки, чьи метаданные ещё не
+  // доехали, FavoritesRow рисует скелетами (в ритме скелетов страницы).
+  const favoriteItems = favoriteIds.map((id) => ({ projectId: id, meta: favMeta[id] ?? null }))
+
   return (
     <div className="mx-auto flex max-w-[1240px] flex-col gap-4">
       {/* Маркер залипания sticky-панели: 0-высоты, невидим; когда панель
@@ -597,6 +789,17 @@ export default function HomePage({ query }: { query: string }) {
         </p>
       )}
 
+      {/* Ряд «Избранное» (D67): горизонтальная лента отмеченных сердцем
+          проектов над выдачей; пустой список — элемента нет (честность). */}
+      {favoriteItems.length > 0 && (
+        <FavoritesRow
+          items={favoriteItems}
+          pendingIds={favPending}
+          onOpen={openFavorite}
+          onToggle={(id) => void toggleFavorite(id)}
+        />
+      )}
+
       {!searched ? (
         // До первого ответа — скелет-плитки в ритме реальной сетки (арт-заглушка
         // + две полоски текста у низа); пустое состояние — только после поиска.
@@ -625,7 +828,15 @@ export default function HomePage({ query }: { query: string }) {
           {featured && <HeroTile hit={featured} onOpen={() => setDetail(featured)} />}
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
             {visibleHits.map((h, idx) => (
-              <CatalogTile key={h.project_id} hit={h} idx={idx} onOpen={() => setDetail(h)} />
+              <CatalogTile
+                key={h.project_id}
+                hit={h}
+                idx={idx}
+                favorite={favoriteIds.includes(h.project_id)}
+                favPending={favPending.has(h.project_id)}
+                onOpen={() => setDetail(h)}
+                onToggleFavorite={() => void toggleFavorite(h.project_id)}
+              />
             ))}
           </div>
           {hits.length < total && (

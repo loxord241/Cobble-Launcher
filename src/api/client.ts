@@ -15,6 +15,8 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 import type {
   Account,
   ArchiveResult,
+  ForeignSource,
+  PlaytimeDay,
   AuthlibServerInfo,
   ConfigContent,
   ConfigFile,
@@ -75,6 +77,16 @@ export const api = {
     invoke<{ ok: boolean }>("instance_launch", { id, player }),
   instanceImport: (path: string, name?: string) =>
     invoke<Instance>("instance_import", { path, name }),
+  /** D67: скан установленных чужих лаунчеров и импорт их инстансов. */
+  foreignScan: () => invoke<ForeignSource[]>("foreign_scan"),
+  foreignImport: (dir: string, targetName: string) =>
+    invoke<string>("foreign_import", { dir, targetName }),
+  /** D67: избранное каталога (локальные id проектов Modrinth). */
+  favoritesList: () => invoke<string[]>("favorites_list"),
+  favoritesToggle: (projectId: string) => invoke<boolean>("favorites_toggle", { projectId }),
+  /** D67: наигранные часы по дням (последние N дней, включая нулевые). */
+  playtimeStats: (instanceId: string, days: number) =>
+    invoke<PlaytimeDay[]>("playtime_stats", { instanceId, days }),
   /** D63: официальная панорама титульного экрана из собственных файлов
    * игры инстанса (data-URL PNG) — null, пока ассеты не скачаны. */
   panoramaArt: (id: string) => invoke<string | null>("panorama_art", { id }),

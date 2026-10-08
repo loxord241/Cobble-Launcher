@@ -13,6 +13,7 @@ pub mod snapshots;
 pub mod worlds;
 pub mod run;
 pub mod store;
+pub mod export;
 
 use crate::errors::{LauncherError, Result};
 use crate::util::fs::{atomic_write, long_path};
@@ -133,9 +134,10 @@ pub fn instance_versions_dir(paths: &crate::paths::Paths, id: &str) -> PathBuf {
 }
 
 /// Тип установленного контента (спека §7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ContentKind {
+    #[default]
     Mod,
     ResourcePack,
     Shader,
@@ -154,6 +156,9 @@ pub enum ContentSource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentEntry {
+    /// Тип контента (каталог/обновления/обложки). Default = mod: манифесты
+    /// до появления kind читаются без миграции — старые записи считаются модами.
+    #[serde(default)]
     pub kind: ContentKind,
     /// Путь относительно minecraft/ (например, `mods/sodium.jar`).
     pub file: String,

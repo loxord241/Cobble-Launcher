@@ -5,6 +5,7 @@ pub mod auth;
 pub mod commands;
 pub mod errors;
 pub mod events;
+pub mod favorites;
 pub mod import;
 pub mod instances;
 pub mod java;
@@ -16,6 +17,7 @@ pub mod optimize;
 pub mod mclogs;
 pub mod branding;
 pub mod paths;
+pub mod playtime;
 pub mod storage;
 pub mod process;
 pub mod settings;
@@ -291,6 +293,11 @@ pub fn run() -> tauri::Result<()> {
             commands::logo_set_custom,
             commands::apply_logo,
             commands::instance_import,
+            commands::foreign_scan,
+            commands::foreign_import,
+            commands::favorites_list,
+            commands::favorites_toggle,
+            commands::playtime_stats,
             commands::panorama_art,
             commands::crash_analyze,
             commands::java_list,

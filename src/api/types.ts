@@ -293,6 +293,8 @@ export interface ProjectMeta {
   title: string;
   description: string;
   iconUrl?: string;
+  /** D67: "mod"/"resourcepack"/"shader"/… — сценарий установки без догрузки hit'а. */
+  projectType: string;
 }
 
 // ---------- D39: окно проекта Modrinth (стиль CurseForge) ----------
@@ -368,6 +370,29 @@ export interface ArchiveResult {
   path: string;
   files: number;
   bytes: number;
+}
+
+/** D67: инстанс чужого лаунчера, найденный сканом (null — не определено). */
+export interface ForeignInstance {
+  name: string;
+  dir: string;
+  mcVersion: string | null;
+  loader: string | null;
+  loaderVersion: string | null;
+  sizeBytes: number;
+}
+
+/** D67: найденный лаунчер (kind: prism | gdlauncher | atlauncher | vanilla). */
+export interface ForeignSource {
+  kind: string;
+  root: string;
+  instances: ForeignInstance[];
+}
+
+/** D67: наигранные часы за один день (даты YYYY-MM-DD, нулевые включены). */
+export interface PlaytimeDay {
+  date: string;
+  secs: number;
 }
 
 /** Результат установки модпака (зеркало commands::ModpackInstallResult):

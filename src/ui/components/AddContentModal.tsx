@@ -25,6 +25,12 @@ function projectTypeOf(tab: ContentType): string {
   return tab === "datapacks" ? "datapack" : tab;
 }
 
+/** Фильтр загрузчика осмыслен только для модов/датапаков: у ресурспаков и
+ * шейдеров своих загрузчиков нет — не сужаем выдачу чужим фильтром. */
+function loaderFilterOf(tab: ContentType, loader: string | undefined): string | undefined {
+  return tab === "resourcepack" || tab === "shader" ? undefined : loader;
+}
+
 export default function AddContentModal({
   instance,
   onClose,
@@ -64,7 +70,7 @@ export default function AddContentModal({
       const r = await api.modrinthSearch(
         query.trim() || TABS.find((x) => x.id === tab)!.defaultQuery,
         instance.mcVersion,
-        instance.loader,
+        loaderFilterOf(tab, instance.loader),
         projectTypeOf(tab),
         undefined,
         PAGE_SIZE,
@@ -104,7 +110,7 @@ export default function AddContentModal({
       const r = await api.modrinthSearch(
         query.trim() || TABS.find((x) => x.id === tab)!.defaultQuery,
         instance.mcVersion,
-        instance.loader,
+        loaderFilterOf(tab, instance.loader),
         projectTypeOf(tab),
         undefined,
         PAGE_SIZE,
@@ -199,6 +205,13 @@ export default function AddContentModal({
             </button>
           ))}
         </div>
+
+        {/* Шейдерам нужен шейдер-конвейер: тихая подсказка под вкладкой. */}
+        {tab === "shader" && (
+          <p className="mt-1.5 text-[12px] leading-snug text-text-muted">
+            {t("mods.shader.needsIris")}
+          </p>
+        )}
 
         {/* Ряд поиска: Enter или кнопка. */}
         <div className="mt-2 flex items-center gap-2">

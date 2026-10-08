@@ -856,4 +856,78 @@ mod tests {
         remove(&paths, &inst.id, "datapacks/w.zip").unwrap();
         assert!(load_content_manifest(&paths, &inst.id).is_empty());
     }
+
+    /// Обратная совместимость: манифест до появления kind (без поля) читается
+    /// без миграции — запись получает kind=mod (serde default), а не роняет
+    /// весь список (иначе весь контент инстанса «исчезал» бы из UI).
+    #[test]
+    fn legacy_manifest_without_kind_reads_as_mod() {
+        let (_d, paths, inst) = setup();
+        let legacy = r#"[
+            {
+                "file": "mods/a.jar",
+                "source": "modrinth",
+                "projectId": "aaa",
+                "versionId": "v1",
+                "sha1": "deadbeef",
+                "enabled": true
+            }
+        ]"#;
+        let path = crate::instances::content_manifest_path(&paths, &inst.id);
+        std::fs::write(long(&path), legacy).unwrap();
+        let manifest = load_content_manifest(&paths, &inst.id);
+        assert_eq!(manifest.len(), 1, "старый манифест читается целиком");
+        assert_eq!(manifest[0].kind, crate::instances::ContentKind::Mod);
+        assert_eq!(manifest[0].file, "mods/a.jar");
+        // Запись operable: toggle по ней работает как для обычного мода.
+        let e = toggle(&paths, &inst.id, "mods/a.jar").unwrap();
+        assert!(!e.enabled);
+    }
+
+    /// kind сквозь манифест: сериализация в нижний регистр ("resourcepack"/
+    /// "shader" — контракт фронта), чтение обратно с сохранением типа,
+    /// вкл/выкл и удаление по kind работают в СВОИХ каталогах.
+    #[test]
+    fn kind_roundtrip_toggle_and_uninstall() {
+        let (_d, paths, inst) = setup();
+        let mc = minecraft_dir(&instance_dir(&paths, &inst.id));
+        std::fs::create_dir_all(long(&mc.join("resourcepacks"))).unwrap();
+        std::fs::create_dir_all(long(&mc.join("shaderpacks"))).unwrap();
+        std::fs::write(long(&mc.join("resourcepacks/r.zip")), b"RP").unwrap();
+        std::fs::write(long(&mc.join("shaderpacks/s.zip")), b"SH").unwrap();
+        let mut rp = entry("resourcepacks/r.zip", None);
+        rp.kind = crate::instances::ContentKind::ResourcePack;
+        let mut sh = entry("shaderpacks/s.zip", None);
+        sh.kind = crate::instances::ContentKind::Shader;
+        save_content_manifest(&paths, &inst.id, &[rp, sh]).unwrap();
+
+        // Сериализация: lowercase-имена вариантов (rename_all = "lowercase").
+        // Разбираем JSON, а не подстроку — pretty-печатание не контракт.
+        let raw = std::fs::read(
+            long(&crate::instances::content_manifest_path(&paths, &inst.id)),
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(parsed[0]["kind"], "resourcepack", "{parsed}");
+        assert_eq!(parsed[1]["kind"], "shader", "{parsed}");
+
+        // Чтение обратно: kind сохранён.
+        let manifest = load_content_manifest(&paths, &inst.id);
+        assert_eq!(manifest[0].kind, crate::instances::ContentKind::ResourcePack);
+        assert_eq!(manifest[1].kind, crate::instances::ContentKind::Shader);
+
+        // Toggle шейдера: переименование в shaderpacks/, логический путь цел.
+        let e = toggle(&paths, &inst.id, "shaderpacks/s.zip").unwrap();
+        assert!(!e.enabled);
+        assert!(long(&mc.join("shaderpacks/s.zip.disabled")).exists());
+        assert!(!long(&mc.join("shaderpacks/s.zip")).exists());
+
+        // Uninstall ресурспака: файл + запись, шейдер не задет.
+        remove(&paths, &inst.id, "resourcepacks/r.zip").unwrap();
+        assert!(!long(&mc.join("resourcepacks/r.zip")).exists());
+        let manifest = load_content_manifest(&paths, &inst.id);
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(manifest[0].kind, crate::instances::ContentKind::Shader);
+        assert_eq!(manifest[0].file, "shaderpacks/s.zip");
+    }
 }

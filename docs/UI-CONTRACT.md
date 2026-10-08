@@ -21,8 +21,8 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 ## Команды (invoke)
 
-Все 93 команды `invoke_handler` (`src-tauri/src/lib.rs:211-305`; пересчитано по
-реестру, D64), обработчики — `src-tauri/src/commands/mod.rs` (кроме
+Все 98 команд `invoke_handler` (`src-tauri/src/lib.rs:213-312`; пересчитано по
+реестру, D67), обработчики — `src-tauri/src/commands/mod.rs` (кроме
 `shortcut_take_pending` — он в `lib.rs:61`).
 
 ### Инстансы и процессы
@@ -60,10 +60,15 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `modpack_install` | `{projectId, name?}` | `ModpackInstallResult` {instance, group} (последняя версия проекта → `.mrpack` → тот же установщик; группа `mrpack:<projectId>:<uuid8>`) | invalid_input, version_not_found, zip, zip_slip, java_not_found, network, hash_mismatch, cancelled, io, json |
 | `downloads_cancel_group` | `{group}` | `null` (Rust `Result<()>`; снимает движок группы с регистрации и гасит его задачи; для уже завершённой группы — no-op; D64: отмена установки модпака) | — |
 | `instance_backup` | `{id}` | `ArchiveResult` (zip в `backups/`; сейвы входят, `.lock`/`logs`/`crash-reports`/`cache` — нет) | not_found, io, zip, internal |
-| `instance_export` | `{id}` | `ArchiveResult` (`.mrpack` в `exports/`; сейвы НЕ входят, контент без url → `overrides/`) | not_found, io, json, zip, internal |
+| `instance_export` | `{id}` | `ArchiveResult` (D67: полный `.mrpack` — `files[]` с url+sha1/sha512+projectId, `overrides/`, отчёт пропусков; путь прежний `exports/`, сейвы не входят; движок `instances/export.rs`) | not_found, io, json, zip, internal, instance_running |
 | `instance_icon_set` | `{id, path}` | `Instance` (PNG/JPEG/WebP ≤ 300 КБ) | invalid_input, not_found, io, internal |
 | `instance_icon_remove` | `{id}` | `Instance` | not_found, io, internal |
 | `instance_import` | `{path, name?}` | `Instance` (CF-zip / MultiMC-Prism / свой формат; распознанный загрузчик ставится сразу) | invalid_input, zip, zip_slip, version_not_found, java_not_found, network, hash_mismatch, io, json |
+| `foreign_scan` | — | `ForeignSource[]` (D67: `{kind, root, instances: [{name, dir, mcVersion|null, loader|null, loaderVersion|null, sizeBytes}]}`; скан стандартных путей Windows, без сети) | — |
+| `foreign_import` | `{dir, targetName}` | `String` id созданного инстанса (D67: независимая копия; загрузчик ставится с откатом A29; офлайн с загрузчиком → offline_mode) | not_found, invalid_input, io, offline_mode, network, http |
+| `favorites_list` | — | `String[]` (D67: id проектов Modrinth, порядок добавления; `favorites.json`) | — |
+| `favorites_toggle` | `{projectId}` | `bool` (true = добавлен) | io, invalid_input |
+| `playtime_stats` | `{instanceId, days}` | `PlaytimeDay[]` (`{date, secs}`, нулевые дни включены, окно ≤90; пишет `playtime.json` супервизор: обычный выход/краш/убитый процесс) | — |
 | `manifest_versions` | `{showSnapshots, showOld}` | `VersionEntry[]` | network, json, io |
 | `loader_versions` | `{loader}` | `LoaderVersionEntry[]` (`fabric`/`quilt` — все, `neoforge` — 30 последних стабильных) | network, invalid_input, json |
 | `loader_install` | `{id, loader, loaderVersion?}` | `Instance` (после установки `versionId` = профиль загрузчика) | invalid_input, version_not_found, java_not_found, network, hash_mismatch, zip, io, internal |
@@ -74,13 +79,13 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 |---|---|---|---|
 | `account_list` | — | `Account[]` | — |
 | `account_add_offline` | `{name}` | `Account` (kind `offline`, uuid = offline-UUID ника; сразу активный) | invalid_input, io, json, internal |
-| `account_add_msa_start` | — | `DeviceCodeStart` (snake_case: `device_code`, `user_code`, `verification_uri`, `interval`, `expires_in`; аннотация в `client.ts` с `interval_secs`/`expires_in_secs` не соответствует wire-полям — UI эти поля не читает) | invalid_input (нет `azureClientId`), network, http, json |
+| `account_add_msa_start` | — | `DeviceCodeStart` (snake_case: `device_code`, `user_code`, `verification_uri`, `interval`, `expires_in`; UI с D67 читает: экран «Войти по коду» в модалке аккаунтов) | invalid_input (нет `azureClientId`), network, http, json |
 | `account_add_msa_poll` | `{deviceCode}` | `Account \| null` (`null` — пользователь ещё не ввёл код; refresh-токен → keyring) | invalid_input, network, http, json, internal |
 | `account_add_msa_browser` | — | `Account` (auth-code flow: локальный порт 127.0.0.1, системный браузер, таймаут 300 с) | invalid_input, network, http, json, internal, io |
 | `account_add_ely` | `{username, password}` | `Account` (kind `ely`; пароль не сохраняется, в keyring — refresh-токен) | invalid_input, network, http, json, internal |
 | `account_remove` | `{id}` | `{ok}` (удаляет и запись в keyring) | not_found, io, internal |
 | `account_active_set` | `{id}` | `{ok}` | not_found, io |
-| `modrinth_projects` | `{ids: string[]}` | `ProjectMeta[]` (батч /v2/projects?ids=, чанки по 100; поле `id` алиасится в projectId) | invalid_input, network, http, json |
+| `modrinth_projects` | `{ids: string[]}` | `ProjectMeta[]` (батч /v2/projects?ids=, чанки по 100; поле `id` алиасится в projectId) | invalid_input, network, http, json | (D67 добавил `projectType`)
 | `modrinth_project` | `{idOrSlug}` | `ProjectDetail` (camelCase: тело markdown, галерея, лицензия, статистика; D39) | invalid_input, network, http, json |
 | `modrinth_versions` | `{projectId}` | `ModrinthVersion[]` (camelCase, с changelog; D39) | invalid_input, network, http, json |
 | `content_backfill_projects` | `{instanceId}` | `number` (сколько манифестов залечено sha1→projectId) | not_found, network, http, json |

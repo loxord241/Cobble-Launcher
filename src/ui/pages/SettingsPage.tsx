@@ -1,14 +1,15 @@
 // Настройки «Сланца»: панели с капс-заголовками; разделы Темы (карточки),
 // Общие (RAM/параллелизм/снапшоты), Java (сканирование и установка Adoptium), Сеть и Данные.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, RefreshCw, Check, Coffee, Trash2, Upload } from "lucide-react";
+import { Download, RefreshCw, Check, Coffee, Trash2, Upload, Search } from "lucide-react";
 import { isHexColor, useSettings } from "../../state/settings";
+import { useInstances } from "../../state/instances";
 import { api } from "../../api/client";
 import { apiErrorText, t } from "../../i18n";
 import { formatSize } from "../format";
 import { pickJsonPath, pickPngPath, pickSavePath } from "../components/pickFile";
 import ThemeCards from "../components/ThemeCards";
-import type { JavaInstall, RamGuide, Settings, StorageStats } from "../../api/types";
+import type { ForeignInstance, ForeignSource, JavaInstall, RamGuide, Settings, StorageStats } from "../../api/types";
 import UpdatesSection from "../components/UpdatesSection";
 
 /** D20: пауза перед записью в ядро — поля не пишутся на каждый keystroke. */
@@ -23,6 +24,15 @@ function clampBounded(raw: string, min: number, max: number, fallback: number): 
 
 /** Пресеты акцентного цвета (первый — сланцевый синий по умолчанию). */
 const ACCENT_PRESETS = ["#7FB2F0", "#6FBF8F", "#E8A25C", "#E06C6C", "#A78BE0"];
+
+/** D67: мелкая метка «версия · загрузчик» чужого инстанса. Правило «нет
+ * данных — нет элемента»: null-поля честно не показываем. */
+function foreignMeta(inst: ForeignInstance): string {
+  const parts: string[] = [];
+  if (inst.mcVersion) parts.push(inst.mcVersion);
+  if (inst.loader) parts.push(inst.loaderVersion ? `${inst.loader} ${inst.loaderVersion}` : inst.loader);
+  return parts.join(" · ");
+}
 
 /** Акцент текущей палитры (tokens.css) — что показать в пикере, пока кастом не задан. */
 function themeAccent(): string {
@@ -61,6 +71,19 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
   // F20: сообщение экспорта/импорта настроек (результат или ошибка).
   const [settingsIoMsg, setSettingsIoMsg] = useState<string | null>(null);
   const [settingsIoBusy, setSettingsIoBusy] = useState(false);
+  // D67: импорт инстансов из чужих лаунчеров (Prism/GDLauncher/ATLauncher/ванила).
+  // sources=null — ещё не сканировали; выбор — по dir (уникален), статус — по dir.
+  const [foreignSources, setForeignSources] = useState<ForeignSource[] | null>(null);
+  const [foreignBusy, setForeignBusy] = useState(false);
+  const [foreignError, setForeignError] = useState<string | null>(null);
+  const [foreignSelected, setForeignSelected] = useState<Set<string>>(new Set());
+  const [foreignImportBusy, setForeignImportBusy] = useState(false);
+  const [foreignStatus, setForeignStatus] = useState<
+    Record<string, { state: "progress" | "done" | "error"; text?: string }>
+  >({});
+  // По завершении импорта перечитываем список инстансов — так же, как это
+  // делает импорт архивов на странице инстансов.
+  const loadInstances = useInstances((s) => s.load);
 
   const commit = useCallback(
     (patch: Partial<Settings>) => {
@@ -220,6 +243,64 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
       setSettingsIoMsg(apiErrorText(e));
     } finally {
       setSettingsIoBusy(false);
+    }
+  };
+
+  /** D67: скан установленных чужих лаунчеров. Выбор и статусы сбрасываем —
+   * список мог обновиться. */
+  const scanForeign = async () => {
+    setForeignBusy(true);
+    setForeignError(null);
+    try {
+      const sources = await api.foreignScan();
+      setForeignSources(sources);
+      setForeignSelected(new Set());
+      setForeignStatus({});
+    } catch (e) {
+      setForeignError(apiErrorText(e));
+    } finally {
+      setForeignBusy(false);
+    }
+  };
+
+  const toggleForeign = (dir: string) => {
+    setForeignSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(dir)) next.delete(dir);
+      else next.add(dir);
+      return next;
+    });
+  };
+
+  /** D67: последовательный импорт выбранных — копирование тяжёлое, по одному,
+   * никаких параллельных запусков (кнопки заблокированы на время работы).
+   * Ошибка прерывает остаток очереди; список перечитываем всегда — частичный
+   * успех должен быть виден (как у импорта архивов, D62). */
+  const importForeign = async () => {
+    if (foreignImportBusy || foreignSelected.size === 0) return;
+    const queue = (foreignSources ?? [])
+      .flatMap((src) => src.instances)
+      .filter((inst) => foreignSelected.has(inst.dir));
+    setForeignImportBusy(true);
+    setForeignError(null);
+    try {
+      for (const inst of queue) {
+        setForeignStatus((prev) => ({ ...prev, [inst.dir]: { state: "progress" } }));
+        try {
+          await api.foreignImport(inst.dir, inst.name);
+          setForeignStatus((prev) => ({ ...prev, [inst.dir]: { state: "done" } }));
+        } catch (e) {
+          setForeignStatus((prev) => ({
+            ...prev,
+            [inst.dir]: { state: "error", text: apiErrorText(e) },
+          }));
+          setForeignError(apiErrorText(e));
+          break;
+        }
+      }
+    } finally {
+      setForeignImportBusy(false);
+      await loadInstances();
     }
   };
 
@@ -760,6 +841,114 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
               </button>
             </div>
             {settingsIoMsg && <p className="mt-2 text-xs text-accent">{settingsIoMsg}</p>}
+          </div>
+
+          {/* D67: импорт инстансов из чужих лаунчеров — скан, выбор, импорт. */}
+          <div className="mt-4 border-t border-border-app pt-3">
+            <div className="mb-2 text-xs font-medium text-text-muted">
+              {t("foreign.section.title")}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => void scanForeign()}
+                disabled={foreignBusy || foreignImportBusy}
+                aria-label={t("foreign.scan.button")}
+                className="btn-ghost btn-sm flex items-center gap-2"
+              >
+                <Search size={14} aria-hidden />
+                {t("foreign.scan.button")}
+              </button>
+            </div>
+            {foreignError && (
+              <p
+                role="alert"
+                className="mt-2 rounded-lg border border-error/40 bg-error/10 p-2 text-xs text-error"
+              >
+                {foreignError}
+              </p>
+            )}
+
+            {foreignSources !== null &&
+              (foreignSources.length === 0 ? (
+                <p className="mt-2 text-xs text-text-muted">{t("foreign.scan.none")}</p>
+              ) : (
+                <div className="mt-3 flex flex-col gap-3">
+                  <div className="text-[13px] font-semibold text-text">
+                    {t("foreign.scan.title")}
+                  </div>
+                  {foreignSources.map((src) => (
+                    <div key={src.root} className="rounded-md border border-border-app bg-bg p-3">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="shrink-0 text-sm font-semibold text-text">
+                          {t(`foreign.source.${src.kind}`)}
+                        </span>
+                        <code
+                          title={src.root}
+                          className="min-w-0 truncate font-mono text-[11px] text-text-muted"
+                        >
+                          {src.root}
+                        </code>
+                      </div>
+                      <div className="mt-2 flex flex-col gap-1.5">
+                        {src.instances.map((inst) => {
+                          const status = foreignStatus[inst.dir];
+                          const meta = foreignMeta(inst);
+                          return (
+                            <div key={inst.dir} className="flex flex-col gap-0.5">
+                              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                                <input
+                                  type="checkbox"
+                                  className="accent-accent"
+                                  checked={foreignSelected.has(inst.dir)}
+                                  disabled={foreignImportBusy}
+                                  onChange={() => toggleForeign(inst.dir)}
+                                  aria-label={inst.name}
+                                />
+                                <span className="min-w-0 truncate">{inst.name}</span>
+                                {meta && <span className="chip-mono shrink-0">{meta}</span>}
+                                <span className="ml-auto shrink-0 text-xs text-text-muted">
+                                  {t("foreign.size.approx", { size: formatSize(inst.sizeBytes) })}
+                                </span>
+                              </label>
+                              {status && (
+                                <p
+                                  role={status.state === "error" ? "alert" : "status"}
+                                  className={`pl-6 text-xs ${
+                                    status.state === "error" ? "text-error" : "text-text-muted"
+                                  }`}
+                                >
+                                  {status.state === "progress"
+                                    ? t("foreign.import.progress", { name: inst.name })
+                                    : status.state === "done"
+                                      ? t("foreign.import.done", { name: inst.name })
+                                      : status.text}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                  <p className="text-xs text-text-muted">{t("foreign.scan.hint")}</p>
+                  {/* Превентивная подпись: импорт с загрузчиком без сети упадёт. */}
+                  {settings.workOffline &&
+                    foreignSources.some((src) =>
+                      src.instances.some((inst) => foreignSelected.has(inst.dir) && !!inst.loader),
+                    ) && (
+                      <p className="text-xs text-text-muted">
+                        {t("foreign.import.offline_hint")}
+                      </p>
+                    )}
+                  <button
+                    onClick={() => void importForeign()}
+                    disabled={foreignImportBusy || foreignBusy || foreignSelected.size === 0}
+                    className="btn-primary btn-sm self-start"
+                  >
+                    {t("foreign.import.button")}
+                  </button>
+                </div>
+              ))}
           </div>
         </div>
       </section>

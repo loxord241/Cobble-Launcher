@@ -136,6 +136,10 @@ pub struct ProjectMeta {
     pub description: String,
     #[serde(default, alias = "icon_url")]
     pub icon_url: Option<String>,
+    /// Тип проекта ("mod"/"resourcepack"/"shader"/…) — фронту для сценария
+    /// установки (D67: клик по избранному без фоновой догрузки hit'а).
+    #[serde(default, alias = "project_type")]
+    pub project_type: String,
 }
 
 /// Лимит Modrinth на один запрос `/projects?ids=[…]`.
@@ -561,7 +565,8 @@ mod tests {
             title: "Sodium".into(),
             description: "движок рендера".into(),
             icon_url: None,
-        };
+                    project_type: "mod".into(),
+};
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("\"projectId\":\"AANobbMI\""), "{json}");
         assert!(json.contains("\"iconUrl\":null"), "{json}");

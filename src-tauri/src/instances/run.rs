@@ -1162,6 +1162,9 @@ fn supervise_detached(
                         inst.play_seconds += started.elapsed().as_secs();
                         bump_crash_counter(inst, code, saw_running);
                     });
+                    // Playtime по дням: сессия завершена — обычный выход, краш
+                    // и убитый (instance_kill) процесс приходят через этот путь.
+                    crate::playtime::record_playtime(instance_id, started.elapsed().as_secs());
                     drop(lock);
                     return;
                 }
@@ -1189,6 +1192,9 @@ fn supervise_detached(
         inst.play_seconds += started.elapsed().as_secs();
         bump_crash_counter(inst, exit_code, saw_running);
     });
+    // Playtime по дням: второй финальный выход супервизора (потоки логов
+    // закрылись раньше, чем poll заметил выход процесса).
+    crate::playtime::record_playtime(instance_id, started.elapsed().as_secs());
     drop(lock);
 }
 
