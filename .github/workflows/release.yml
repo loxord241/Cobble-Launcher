@@ -1,0 +1,142 @@
+# Сборка релиза по тегу (CI-релизы, 2026-10-04). Пуш тега v* собирает
+# подписанный NSIS-бандл + latest.json и кладёт всё в ЧЕРНОВИК релиза;
+# публикация остаётся явным действием владельца (кнопка Publish).
+#
+# Требуемые секреты репозитория (Settings → Secrets → Actions; содержимое
+# ключей живёт вне репо у владельца в %LOCALAPPDATA%\cobble-updater-keys):
+#   TAURI_SIGNING_PRIVATE_KEY          — содержимое cobble.key (одной строкой)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — содержимое cobble.key.pass
+# Без них бандл соберётся неподписанным и шаг latest.json честно упадёт
+# (нет .sig) — это защита от релиза, который автоапдейтер не примет.
+#
+# D64: тег никогда не интерполируется в pwsh-строки напрямую (только через
+# env: TAG), и первым же шагом проверяется regex-ом — инъекция кода в CI
+# через имя тега невозможна.
+name: Release build
+on:
+  push:
+    tags: ["v*"]
+
+# gh release create с github.token требует contents: write — без этого
+# шаг упадёт с 403 уже после 10-минутной сборки.
+permissions:
+  contents: write
+
+# Релизы не перебиваем: cancel-in-progress нет (по умолчанию false) —
+# параллельный прогон того же тега подождёт, а не убьёт текущий.
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: "Проверка: формат тега (первый шаг, до остального)"
+        env:
+          TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          $pattern = '^v[0-9A-Za-z][0-9A-Za-z.\-_]*$'
+          if ($env:TAG -notmatch $pattern) {
+            Write-Error "тег не подходит под шаблон $pattern — переименуй тег в формат vX.Y.Z (буквы, цифры, точка, дефис, подчёркивание)"
+            exit 1
+          }
+
+      - name: "Проверка: тег совпадает с версиями package.json, tauri.conf.json и Cargo.toml"
+        env:
+          TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          $tag = $env:TAG
+          $v = $tag -replace '^v',''
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $section = ''
+          $cargo = ''
+          foreach ($line in Get-Content src-tauri/Cargo.toml) {
+            if ($line -match '^\s*\[(.+)\]') { $section = $Matches[1]; continue }
+            if ($section -eq 'package' -and $line -match '^\s*version\s*=\s*"([^"]+)"') { $cargo = $Matches[1]; break }
+          }
+          $mismatch = @()
+          if ($v -ne $pkg)   { $mismatch += "package.json: $pkg" }
+          if ($v -ne $conf)  { $mismatch += "src-tauri/tauri.conf.json: $conf" }
+          if ($v -ne $cargo) { $mismatch += "src-tauri/Cargo.toml: $cargo" }
+          if ($mismatch.Count -gt 0) {
+            Write-Error "тег $tag не совпадает с версиями: $($mismatch -join '; ') — бампни версию перед тегом"
+            exit 1
+          }
+
+      - name: "Проверка: секреты подписи на месте"
+        shell: pwsh
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if (-not $env:KEY) {
+            Write-Error "нет секрета TAURI_SIGNING_PRIVATE_KEY — добавь ключи апдейтера в Settings → Secrets → Actions"
+            exit 1
+          }
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: rust-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
+
+      - run: npm ci
+      - name: "Подписанный бандл (NSIS + .sig)"
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build
+
+      - name: "latest.json из подписанного установщика"
+        env:
+          TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: node scripts/make_latest_json.cjs "$env:TAG"
+
+      - name: "Черновик релиза с ассетами"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          $tag = $env:TAG
+          $v = $tag -replace '^v',''
+          # D64: кэш src-tauri/target тащит бандлы ПРОШЛЫХ версий (в nsis/
+          # копятся все когда-либо собранные setup.exe) — Select -First 1 по
+          # маске *-setup.exe сортирует ПО ИМЕНИ и клал бы в релиз старый
+          # установщик. Ищем строго сегмент _<v>_ — как в make_latest_json.cjs.
+          $setup = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "*_${v}_*-setup.exe" } |
+            Select-Object -First 1
+          if (-not $setup) {
+            Write-Error "в nsis-бандле нет установщика для версии $v (искал *_${v}_*-setup.exe) — сборка не совпала с тегом $tag"
+            exit 1
+          }
+          Write-Host "установщик: $($setup.Name)"
+          # D64: gh release create не идемпотентен — повторный прогон того же
+          # тега падал на «already exists». Черновик пересоздаём; опубликованный
+          # релиз не трогаем и падаем с понятным текстом.
+          $view = gh release view $tag --json isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if (-not ($view | ConvertFrom-Json).isDraft) {
+              Write-Error "релиз $tag уже опубликован — не трогаю; для пересборки создай новый тег"
+              exit 1
+            }
+            Write-Host "черновик $tag уже существует — удаляю и создаю заново"
+            gh release delete $tag --yes
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          gh release create $tag --draft --title "$tag" --notes "Изменения — заполнить перед публикацией (автосборка CI)." $setup.FullName "$($setup.FullName).sig" dist-latest/latest.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -1,0 +1,2761 @@
+//! Тонкие #[tauri::command] над доменами (спека §4.2, §4.3). Никакого бизнеса
+//! здесь: только вызовы доменов + AppState.
+
+use crate::errors::{LauncherError, Result};
+use crate::events::{EventBus, LauncherEvent};
+use crate::instances::content::ArchiveResult;
+use crate::instances::{self, Instance};
+use crate::java::detect::JavaInstall;
+use crate::mojang::manifest::{filter_versions, fetch_manifest, resolve_entry};
+use crate::net::download::DownloadEngine;
+use crate::net::http::HttpClient;
+use crate::paths::Paths;
+use crate::settings::Settings;
+use serde::Serialize;
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::RwLock;
+
+/// Общее состояние приложения для команд.
+pub struct AppState {
+    pub paths: Paths,
+    /// Хэндлер приложения (заполняется в setup): применение логотипа к окну
+    /// (D38) без прокидки AppHandle через каждую команду.
+    pub app: std::sync::OnceLock<tauri::AppHandle>,
+    pub bus: EventBus,
+    pub settings: RwLock<Settings>,
+    pub http: RwLock<Arc<HttpClient>>,
+    pub launching: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Активные движки загрузок по группе (`instance:<id>`): instance_kill
+    /// отменяет РЕАЛЬНЫЙ движок группы, а не свежесозданный no-op (D1).
+    pub engines: std::sync::Mutex<std::collections::HashMap<String, Arc<DownloadEngine>>>,
+}
+
+impl AppState {
+    pub fn new(paths: Paths, bus: EventBus, settings: Settings) -> Result<Self> {
+        paths.ensure_dirs()?;
+        let app = std::sync::OnceLock::new();
+        let http = match HttpClient::new(settings.proxy_url.as_deref()) {
+            Ok(c) => Arc::new(c),
+            Err(e) => {
+                tracing::warn!("Не удалось инициализировать прокси: {e}, запуск напрямую");
+                Arc::new(HttpClient::new(None)?)
+            }
+        };
+        // F16: сохранённый режим «Работать офлайн» применяется к клиенту
+        // сразу при старте (settings читаются раньше создания http).
+        http.set_offline(settings.work_offline);
+        Ok(Self {
+            app,
+            paths,
+            bus,
+            settings: RwLock::new(settings),
+            http: RwLock::new(http),
+            launching: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
+            engines: std::sync::Mutex::new(std::collections::HashMap::new()),
+        })
+    }
+
+    pub async fn http(&self) -> Arc<HttpClient> {
+        self.http.read().await.clone()
+    }
+
+    pub async fn engine(&self) -> Arc<DownloadEngine> {
+        let parallelism = {
+            self.settings.read().await.download_parallelism as usize
+        };
+        let http = self.http().await;
+        DownloadEngine::new(http, parallelism, self.bus.clone())
+    }
+
+    /// Движок для группы с регистрацией в реестре. Работа с группой
+    /// завершена → `engine_done(group)`, чтобы не держать старый HttpClient.
+    pub async fn engine_for(&self, group: &str) -> Arc<DownloadEngine> {
+        if let Some(e) = self.engines.lock().unwrap().get(group) {
+            return e.clone();
+        }
+        // F17: лимит скорости живёт на HttpClient (общем) — применим текущие
+        // настройки при создании движка (как set_offline в AppState::new).
+        let limit = self.settings.read().await.speed_limit_kbps;
+        self.http().await.set_speed_limit(limit);
+        let e = self.engine().await;
+        // Вставка атомарна (entry-паттерн под одним захватом мьютекса): пока
+        // создавали движок, конкурентный вызов мог зарегистрировать свой —
+        // тогда берём его, а наш дубль выбрасываем. Раньше check-then-insert
+        // оставлял в реестре последний вставленный, а вызыватели одной группы
+        // держали разные движки: engine_done первого не снимал загрузки второго.
+        let mut engines = self.engines.lock().unwrap();
+        engines.entry(group.to_string()).or_insert_with(|| e).clone()
+    }
+
+    /// Отменить активную загрузку группы (если движок ещё жив).
+    pub fn cancel_engine_group(&self, group: &str) {
+        if let Some(e) = self.engines.lock().unwrap().remove(group) {
+            e.cancel_group(group);
+        }
+    }
+
+    /// «Стоп» инстанса гасит и его фоновые операции — ремонт, контент,
+    /// обновление, оптимизацию: у каждой своя суффикс-группа в реестре
+    /// движков (instance_repair/content_install/content_update_all/
+    /// instance_optimize), иначе они переживали бы остановку игры.
+    pub fn cancel_instance_op_groups(&self, instance_id: &str) {
+        for suffix in [":repair", ":content", ":update", ":optimize"] {
+            self.cancel_engine_group(&format!("instance:{instance_id}{suffix}"));
+        }
+    }
+
+    /// Снять группу с регистрации (работа завершена — успех или ошибка).
+    pub fn engine_done(&self, group: &str) {
+        self.engines.lock().unwrap().remove(group);
+    }
+}
+
+#[derive(Serialize)]
+pub struct OkMsg {
+    pub ok: bool,
+}
+
+// ---------- инстансы ----------
+
+#[tauri::command]
+pub async fn instance_list(state: State<'_, AppState>) -> Result<Vec<Instance>> {
+    // Чтение всех instance.json — тяжёлый дисковый I/O: не блокируем
+    // рабочий поток Tokio (A20/D14).
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::list(&paths))
+        .await
+        .map_err(join_err)
+}
+
+#[tauri::command]
+pub async fn instance_create(
+    state: State<'_, AppState>,
+    mc_version: String,
+    name: String,
+) -> Result<Instance> {
+    // Версия должна существовать (манифест кэшируется).
+    let http = state.http().await;
+    let manifest = fetch_manifest(&http, &state.paths.manifests_cache()).await?;
+    resolve_entry(&manifest, &mc_version)?;
+    let clean_name = crate::util::names::sanitize_user_name(&name, &mc_version);
+    let inst = Instance::new(&clean_name, &mc_version);
+    instances::save(&state.paths, &inst)?;
+    Ok(inst)
+}
+
+#[tauri::command]
+pub async fn instance_rename(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<Instance> {
+    // Дисковые операции инстанса — в блокирующий пул (A27/D14).
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::rename(&paths, &id, &name))
+        .await
+        .map_err(join_err)?
+}
+
+#[tauri::command]
+pub async fn instance_duplicate(state: State<'_, AppState>, id: String) -> Result<Instance> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::duplicate(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+#[tauri::command]
+pub async fn instance_delete(state: State<'_, AppState>, id: String, wipe: bool) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::delete(&paths, &id, wipe))
+        .await
+        .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+#[tauri::command]
+pub async fn instance_open_dir(state: State<'_, AppState>, id: String) -> Result<OkMsg> {
+    // Без валидации id `..\..\Windows` открывал бы произвольный каталог/файл
+    // через opener (A23).
+    instances::valid_id(&id)?;
+    // B10: несуществующий id не должен плодить фантомные папки — сначала
+    // проверяем, что инстанс есть (`load` отдаёт NotFound).
+    instances::load(&state.paths, &id)?;
+    let dir = instances::instance_dir(&state.paths, &id);
+    std::fs::create_dir_all(crate::util::fs::long_path(&dir))?;
+    tauri_plugin_opener::open_path(dir, None::<&str>).map_err(|e| LauncherError::Internal(format!("открытие папки: {e}")))?;
+    Ok(OkMsg { ok: true })
+}
+
+#[tauri::command]
+pub async fn instance_settings_get(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Instance> {
+    instances::load(&state.paths, &id)
+}
+
+#[tauri::command]
+pub async fn instance_settings_set(
+    state: State<'_, AppState>,
+    instance: Instance,
+) -> Result<Instance> {
+    // IPC-граница: флаги JVM, аргументы, RAM и путь к Java приходят из рендера
+    // и до старта игры не проверяются нигде — валидируем здесь (A3).
+    instances::validate_instance_settings(&instance)?;
+    let paths = state.paths.clone();
+    let saved = tauri::async_runtime::spawn_blocking(move || {
+        // B6: снапшот фронтенда устаревает (супервизор успевает дописать
+        // статистику между Get и Set) — сохраняем слиянием: с диска берём
+        // актуальный инстанс и переносим из payload только пользовательские
+        // поля. Заодно несуществующий id даёт NotFound, а не фантомный инстанс.
+        instances::update(&paths, &instance.id, |disk| merge_user_settings(disk, &instance))?;
+        instances::load(&paths, &instance.id)
+    })
+    .await
+    .map_err(join_err)??;
+    Ok(saved)
+}
+
+/// Поля настроек, редактируемые пользователем в InstanceSettingsModal (D19):
+/// только они переносятся из payload в дисковый инстанс. Служебные
+/// (schema_version, id, name, mc_version, loader*, version_id, created_at,
+/// last_played, play_seconds, launch_count, icon) остаются с диска.
+fn merge_user_settings(disk: &mut Instance, payload: &Instance) {
+    disk.ram_mb = payload.ram_mb;
+    disk.java_path = payload.java_path.clone();
+    disk.jvm_flags = payload.jvm_flags.clone();
+    disk.game_args_extra = payload.game_args_extra.clone();
+    disk.notes = payload.notes.clone();
+    // F1/F11: быстрый запуск и профиль запуска — тоже пользовательские поля.
+    disk.quick_play_world = payload.quick_play_world.clone();
+    disk.quick_play_server = payload.quick_play_server.clone();
+    disk.account_id = payload.account_id.clone();
+}
+
+/// Запуск инстанса из UI: подготовка + спавн; супервизия живёт в фоне,
+/// фазы и логи идут событиями. Возвращает сразу после спавна.
+#[tauri::command]
+pub async fn instance_launch(
+    state: State<'_, AppState>,
+    id: String,
+    player: String,
+) -> Result<OkMsg> {
+    let inst_dir = instances::instance_dir(&state.paths, &id);
+    if instances::running_pid(&inst_dir).is_some() {
+        return Err(LauncherError::InvalidInput("инстанс уже запущен".into()));
+    }
+    {
+        let mut launching = state.launching.lock().await;
+        if launching.contains(&id) {
+            return Err(LauncherError::InvalidInput("инстанс уже запускается".into()));
+        }
+        launching.insert(id.clone());
+    }
+
+    let inst_id_clone = id.clone();
+    let group = format!("instance:{id}");
+    let res = async {
+        let inst = instances::load(&state.paths, &id)?;
+        let engine = state.engine_for(&group).await;
+        let settings_guard = state.settings.read().await.clone();
+        let http = state.http().await;
+        // Один срез активного аккаунта ДО launch_identity: и решение о
+        // AccountRefreshFailed, и javaagent ниже должны видеть ОДИН и тот же
+        // аккаунт — смена активного в момент подготовки смешивала бы identity
+        // одного аккаунта с javaagent другого.
+        let active_acc = crate::auth::active(&state.paths);
+        // Идентичность активного аккаунта (offline/MSA/ely) — спека §6.8.
+        let identity = match crate::auth::launch_identity(&state.paths, &http).await {
+            Ok(id) => id,
+            Err(e) => {
+                // Обновление токена не удалось (нет сети и пр.) — событие в UI
+                // + fallback. Только для token-based аккаунтов: у офлайн-
+                // профиля (или когда аккаунта нет) сессия не «истекала» —
+                // событие вводило бы в заблуждение; молча идём в офлайн-
+                // идентичность.
+                if matches!(
+                    active_acc.as_ref().map(|a| a.kind),
+                    Some(
+                        crate::auth::AccountKind::Msa
+                            | crate::auth::AccountKind::Ely
+                            | crate::auth::AccountKind::Authlib
+                    )
+                ) {
+                    state.bus.emit(crate::events::LauncherEvent::AccountRefreshFailed {
+                        account_id: active_acc
+                            .as_ref()
+                            .map(|a| a.id.clone())
+                            .unwrap_or_default(),
+                        reason: e.to_string(),
+                    });
+                }
+                // Имя из IPC не доверяем: офлайн-uuid считается от того же
+                // санитизированного ника, который увидит игра (как в
+                // account_add_offline, ENV-13).
+                crate::auth::offline::identity(&crate::util::names::sanitize_user_name(
+                    &player, "Player",
+                ))
+            }
+        };
+        // ely.by и свой authlib-сервер: authlib-injector + -javaagent.
+        let javaagent = match (
+            active_acc.as_ref(),
+            active_acc.as_ref().and_then(|a| a.authlib_server.clone()),
+        ) {
+            (Some(crate::auth::Account { kind: crate::auth::AccountKind::Ely, .. }), _) => {
+                let jar =
+                    crate::auth::ely::authlib_injector_jar(&http, &state.paths.cache_dir()).await?;
+                Some(crate::auth::ely::javaagent_arg(&jar))
+            }
+            (
+                Some(crate::auth::Account {
+                    kind: crate::auth::AccountKind::Authlib,
+                    ..
+                }),
+                Some(server),
+            ) => {
+                let jar =
+                    crate::auth::ely::authlib_injector_jar(&http, &state.paths.cache_dir()).await?;
+                Some(crate::auth::custom::build_agent_arg(&jar, &server))
+            }
+            (Some(crate::auth::Account { kind: crate::auth::AccountKind::Authlib, .. }), None) => {
+                return Err(LauncherError::InvalidInput(
+                    "у authlib-аккаунта нет адреса сервера".into(),
+                ));
+            }
+            _ => None,
+        };
+        let prepared = instances::run::prepare(
+            &state.paths,
+            &settings_guard,
+            http,
+            engine,
+            &state.bus,
+            &inst,
+            instances::run::AccountIdentity {
+                player_name: identity.player_name,
+                uuid: identity.uuid,
+                access_token: identity.access_token,
+                user_type: identity.user_type,
+                javaagent,
+            },
+        )
+        .await?;
+
+        Ok::<_, LauncherError>((inst, prepared))
+    }
+    .await;
+
+    // B4: prepare завершён (успех или ошибка) — снимаем регистрацию движка
+    // группы, как в content_install, иначе ссылка на HttpClient висит в
+    // реестре до конца сессии. После этой точки движок больше не нужен.
+    state.engine_done(&group);
+
+    // Проверка отмены и спавн под ОДНИМ захватом launching-мьютекса (B5):
+    // если instance_kill сработает в этом окне, он подождёт мьютекс, а после
+    // снятия увидит живой PID в .lock и убьёт процесс. Раньше проверка
+    // отпускала мьютекс до спавна — kill в зазоре не находил ни launching,
+    // ни PID, рапортовал Exited, и игра стартовала зомби.
+    let (inst, prepared) = {
+        let mut launching = state.launching.lock().await;
+        if !launching.contains(&inst_id_clone) {
+            tracing::info!("Запуск инстанса {inst_id_clone} был отменён до спавна процесса");
+            state.bus.emit(crate::events::LauncherEvent::LaunchState {
+                instance_id: inst_id_clone,
+                phase: crate::events::LaunchPhase::Exited,
+                exit_code: None,
+                launch_started_at: None,
+            });
+            return Ok(OkMsg { ok: true });
+        }
+        match res {
+            Ok(pair) => pair,
+            Err(e) => {
+                launching.remove(&inst_id_clone);
+                state.bus.emit(crate::events::LauncherEvent::LaunchState {
+                    instance_id: inst_id_clone,
+                    phase: crate::events::LaunchPhase::Exited,
+                    exit_code: None,
+                    launch_started_at: None,
+                });
+                return Err(e);
+            }
+        }
+    };
+
+    // Спавн игры: дочерний процесс спавнится сразу с записью PID в .lock,
+    // супервизия читает логи в фоне. Снимаем launching только ПОСЛЕ спавна —
+    // guard держится захваченным через launch_detached и удаление id (B5).
+    let instance_id = inst.id.clone();
+    let spawn_res = {
+        let mut launching = state.launching.lock().await;
+        // F26: имя инстанса для Discord Rich Presence, если тумблер включён.
+        let discord = if state.settings.read().await.discord_rpc {
+            Some(inst.name.clone())
+        } else {
+            None
+        };
+        let res = instances::run::launch_detached(
+            &state.paths,
+            &instance_id,
+            prepared,
+            &state.bus,
+            discord,
+        );
+        launching.remove(&inst_id_clone);
+        res
+    };
+    spawn_res?;
+    Ok(OkMsg { ok: true })
+}
+
+/// Guard «инстанс запущен» для операций, трогающих файлы игры (B9): игра
+/// держит их открытыми — на Windows это Sharing Violation. Вынесен из команды
+/// смены версии, чтобы тестироваться без State. `op` — что сейчас пойдёт
+/// («сменой версии»), чтобы в тексте ошибки было понятно, что остановить.
+fn ensure_not_running(paths: &crate::paths::Paths, id: &str, op: &str) -> Result<()> {
+    if instances::running_pid(&instances::instance_dir(paths, id)).is_some() {
+        return Err(LauncherError::InvalidInput(format!(
+            "инстанс запущен — останови игру перед {op}"
+        )));
+    }
+    Ok(())
+}
+
+/// Валидация смены версии (чистая функция, без сети): формат новой версии —
+/// непустая и без пробелов (IPC-граница, как в instance_create), и «это уже
+/// текущая версия» — бессмысленная операция.
+fn validate_version_change(current_mc_version: &str, new_mc_version: &str) -> Result<()> {
+    if new_mc_version.is_empty() || new_mc_version.chars().any(char::is_whitespace) {
+        return Err(LauncherError::InvalidInput(format!(
+            "некорректная версия Minecraft: {new_mc_version:?}"
+        )));
+    }
+    if current_mc_version == new_mc_version {
+        return Err(LauncherError::InvalidInput("это уже текущая версия".into()));
+    }
+    Ok(())
+}
+
+/// Чистая часть смены версии (тестируется без сети): копия инстанса с
+/// обновлёнными полями. `version_id` сбрасывается: старый version JSON
+/// описывал цепочку прежней MC (inheritsFrom) — следующий prepare/установка
+/// загрузчика пересоздаст его тем же путём, что при обычном запуске.
+/// `picked_loader_version` — новая версия загрузчика, подобранная под новую
+/// MC (только при установленном загрузчике).
+fn version_change_fields(
+    inst: &Instance,
+    new_mc_version: &str,
+    picked_loader_version: Option<&str>,
+) -> Instance {
+    let mut updated = inst.clone();
+    updated.mc_version = new_mc_version.to_string();
+    updated.version_id = None;
+    if let Some(v) = picked_loader_version {
+        updated.loader_version = Some(v.to_string());
+    }
+    updated
+}
+
+/// Смена версии Minecraft у существующего инстанса («как в Prism»).
+/// Предупреждение о возможной несовместимости контента показывает UI до
+/// вызова. Порядок гарантирует: ошибка ДО записи полей оставляет инстанс
+/// нетронутым, ошибка ПОСЛЕ (сеть) — поля уже сохранены, повторный запуск
+/// докачивает файлы.
+#[tauri::command]
+pub async fn instance_version_change(
+    state: State<'_, AppState>,
+    id: String,
+    new_mc_version: String,
+) -> Result<OkMsg> {
+    // Запущенный инстанс менять нельзя (B9), затем формат и «та же версия».
+    ensure_not_running(&state.paths, &id, "сменой версии")?;
+    let inst = instances::load(&state.paths, &id)?;
+    validate_version_change(&inst.mc_version, &new_mc_version)?;
+
+    // Новая версия должна существовать в манифесте (кэшируется) — как в
+    // instance_create: иначе поля сохранились бы, а запуск падал бы.
+    let http = state.http().await;
+    let manifest = fetch_manifest(&http, &state.paths.manifests_cache()).await?;
+    resolve_entry(&manifest, &new_mc_version)?;
+
+    // Для загрузчика — новая версия под новую MC тем же путём выбора, что при
+    // установке. Подбираем ДО записи полей: нет совместимой — инстанс не трогаем.
+    let picked_loader_version = match &inst.loader {
+        Some(loader) => Some(
+            instances::run::pick_loader_version(&http, loader, &new_mc_version)
+                .await
+                .map_err(|e| match e {
+                    LauncherError::NotFound(_) | LauncherError::VersionNotFound(_) => {
+                        LauncherError::InvalidInput(format!(
+                            "для {new_mc_version} нет версии загрузчика {loader}"
+                        ))
+                    }
+                    other => other,
+                })?,
+        ),
+        None => None,
+    };
+
+    // Поля атомарно (A28): mc_version новый, version_id сброшен — старый
+    // version JSON невалиден для новой цепочки.
+    let updated = version_change_fields(&inst, &new_mc_version, picked_loader_version.as_deref());
+    instances::save(&state.paths, &updated)?;
+
+    // Пере-подготовка игровых файлов: группа — как у запуска (instance:<id>),
+    // движок снимается с регистрации в любом исходе (см. content_install).
+    let group = format!("instance:{id}");
+    let engine = state.engine_for(&group).await;
+    let res = async {
+        // Загрузчик: version JSON для пары новая MC + загрузчик пересоздаётся
+        // тем же путём, что при обычной установке (профиль Fabric/Quilt из meta
+        // или headless-инсталлятор Forge/NeoForge); install_loader сам обновит
+        // version_id и сохранит инстанс.
+        if let (Some(loader), Some(v)) = (updated.loader.as_deref(), picked_loader_version.as_deref())
+        {
+            let settings = state.settings.read().await.clone();
+            instances::run::install_loader(
+                &state.paths,
+                &settings,
+                http.clone(),
+                &updated,
+                loader,
+                Some(v),
+            )
+            .await?;
+        }
+        // Ремонт-цепочка: перезапуск prepare-цепочки скачивания client +
+        // libraries + assets; валидные на диске хэши движок пропускает —
+        // докачивается только новое.
+        crate::instances::repair::repair_instance(&state.paths, http.clone(), engine, &id).await
+    }
+    .await;
+    state.engine_done(&group);
+    // Ошибка (в т.ч. OfflineMode без сети) уходит в UI как есть: поля инстанса
+    // уже сохранены, следующий запуск/ремонт докачает недостающее.
+    res?;
+    Ok(OkMsg { ok: true })
+}
+
+// ---------- контент (Modrinth, спека §6.6) ----------
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn modrinth_search(
+    state: State<'_, AppState>,
+    query: String,
+    mc_version: Option<String>,
+    loader: Option<String>,
+    project_type: Option<String>,
+    categories: Option<Vec<String>>,
+    index: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<crate::modrinth::api::SearchResult> {
+    // IPC-граница: категории из рендера не доверяем (принцип A1).
+    if let Some(cats) = &categories {
+        crate::modrinth::api::validate_search_categories(cats)?;
+    }
+    let http = state.http().await;
+    crate::modrinth::api::search(
+        &http,
+        &query,
+        mc_version.as_deref(),
+        loader.as_deref(),
+        project_type.as_deref(),
+        categories.as_deref(),
+        index.as_deref(),
+        limit.unwrap_or(20),
+        offset.unwrap_or(0),
+    )
+    .await
+}
+
+/// Метаданные проектов Modrinth (название/описание/иконка) батчем — одним
+/// запросом на список, чтобы таб «Моды» не ходил в сеть по каждой строке.
+#[tauri::command]
+pub async fn modrinth_projects(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<Vec<crate::modrinth::api::ProjectMeta>> {
+    // IPC-граница: список приходит из рендера — валидируем (A1/A23-принцип).
+    crate::modrinth::api::validate_project_ids(&ids)?;
+    let http = state.http().await;
+    crate::modrinth::api::projects_meta(&http, &ids).await
+}
+
+/// Страница проекта целиком (D39): тело в markdown, галерея, лицензия —
+/// окно проекта в стиле CurseForge.
+#[tauri::command]
+pub async fn modrinth_project(
+    state: State<'_, AppState>,
+    id_or_slug: String,
+) -> Result<crate::modrinth::api::ProjectDetail> {
+    let http = state.http().await;
+    crate::modrinth::api::project_detail(&http, &id_or_slug).await
+}
+
+/// Версии проекта (D39): табы «Версии» и «Журнал изменений» окна проекта.
+#[tauri::command]
+pub async fn modrinth_versions(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<crate::modrinth::api::VersionInfo>> {
+    let http = state.http().await;
+    // IPC-граница: id приходит из рендера — та же валидация, что у батча.
+    crate::modrinth::api::validate_project_ids(std::slice::from_ref(&project_id))?;
+    Ok(crate::modrinth::api::project_versions(&http, &project_id)
+        .await?
+        .into_iter()
+        .map(crate::modrinth::api::VersionInfo::from)
+        .collect())
+}
+
+#[tauri::command]
+pub async fn content_install(
+    state: State<'_, AppState>,
+    instance_id: String,
+    project_id: String,
+    version_id: Option<String>,
+) -> Result<Vec<crate::instances::ContentEntry>> {
+    let inst = instances::load(&state.paths, &instance_id)?;
+    // Суффикс операции: параллельные операции над инстансом не должны делить
+    // ключ реестра движков — engine_done первой снимал бы регистрацию второй.
+    let group = format!("instance:{instance_id}:content");
+    let engine = state.engine_for(&group).await;
+    let http = state.http().await;
+    let out = crate::modrinth::install::install_project(
+        &state.paths,
+        http,
+        engine,
+        &inst,
+        &project_id,
+        version_id.as_deref(),
+    )
+    .await;
+    state.engine_done(&group);
+    out
+}
+
+#[tauri::command]
+pub async fn content_installed(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<Vec<crate::instances::ContentEntry>> {
+    // IPC-граница: traversal-id читал бы манифест вне каталога инстанса (A23).
+    instances::valid_id(&instance_id)?;
+    Ok(crate::instances::load_content_manifest(&state.paths, &instance_id))
+}
+
+/// Вкл/выкл контента: `.disabled`-суффикс на диске + флаг в манифесте.
+#[tauri::command]
+pub async fn content_toggle(
+    state: State<'_, AppState>,
+    instance_id: String,
+    file: String,
+) -> Result<crate::instances::ContentEntry> {
+    // IPC-граница: traversal-id уводил бы переименование вне каталога
+    // инстанса — валидация до любых дисковых операций (A23).
+    instances::valid_id(&instance_id)?;
+    // B9: переименование файлов занятой игры = Sharing Violation на Windows.
+    if instances::running_pid(&instances::instance_dir(&state.paths, &instance_id)).is_some() {
+        return Err(LauncherError::InstanceRunning(instance_id.clone()));
+    }
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        instances::content::toggle(&paths, &instance_id, &file)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Удалить контент инстанса (файл + запись манифеста).
+#[tauri::command]
+pub async fn content_remove(
+    state: State<'_, AppState>,
+    instance_id: String,
+    file: String,
+) -> Result<()> {
+    // IPC-граница: traversal-id уводил бы удаление вне каталога инстанса —
+    // валидация до любых дисковых операций (A23).
+    instances::valid_id(&instance_id)?;
+    // B9: удаление файлов занятой игры = Sharing Violation на Windows.
+    if instances::running_pid(&instances::instance_dir(&state.paths, &instance_id)).is_some() {
+        return Err(LauncherError::InstanceRunning(instance_id.clone()));
+    }
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        instances::content::remove(&paths, &instance_id, &file)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Бэкап инстанса целиком в zip (каталог backups/ в данных лаунчера).
+#[tauri::command]
+pub async fn instance_backup(state: State<'_, AppState>, id: String) -> Result<ArchiveResult> {
+    let paths = state.paths.clone();
+    let inst = instances::load(&state.paths, &id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        instances::content::backup(&paths, &inst)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Установить иконку инстанса из локального файла (PNG/JPEG/WebP ≤ 300 КБ).
+#[tauri::command]
+pub async fn instance_icon_set(
+    state: State<'_, AppState>,
+    id: String,
+    path: String,
+) -> Result<Instance> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        instances::content::set_icon(&paths, &id, &path)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Убрать иконку инстанса.
+#[tauri::command]
+pub async fn instance_icon_remove(state: State<'_, AppState>, id: String) -> Result<Instance> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::content::clear_icon(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Экспорт инстанса в .mrpack (формат Modrinth) в каталог exports/.
+#[tauri::command]
+pub async fn instance_export(state: State<'_, AppState>, id: String) -> Result<ArchiveResult> {
+    // D67: тот же UX (exports/<имя>.mrpack, уведомление с путём), но полный
+    // формат: files[] с url+sha1/sha512+projectId, overrides, отчёт пропусков.
+    let inst = instances::load(&state.paths, &id)?;
+    std::fs::create_dir_all(crate::util::fs::long_path(&state.paths.exports_dir()))?;
+    let name = format!("{}.mrpack", crate::util::names::sanitize_user_name(&inst.name, "instance"));
+    let dest = state.paths.exports_dir().join(name);
+    let http = state.http().await;
+    let res = crate::instances::export::export_instance_mrpack_in(
+        &state.paths,
+        http.as_ref(),
+        &id,
+        &dest,
+        false,
+    )
+    .await?;
+    // P3-ревизии: путь через long_path; при сбое metadata — warn и 0 (не молча).
+    let bytes = std::fs::metadata(crate::util::fs::long_path(std::path::Path::new(&res.path)))
+        .map(|m| m.len())
+        .unwrap_or_else(|e| {
+            tracing::warn!("размер экспорта не прочитан ({}): {e}", res.path);
+            0
+        });
+    Ok(ArchiveResult {
+        path: res.path,
+        files: (res.files_sourced + res.files_overrides) as usize,
+        bytes,
+    })
+}
+
+#[tauri::command]
+pub async fn content_update_check(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<Vec<crate::modrinth::updates::UpdateCheck>> {
+    let inst = instances::load(&state.paths, &instance_id)?;
+    let http = state.http().await;
+    crate::modrinth::updates::check_updates(&state.paths, &http, &inst).await
+}
+
+/// Дозаполнить projectId в манифесте (legacy-модпаки) — батч по sha1.
+#[tauri::command]
+pub async fn content_backfill_projects(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<usize> {
+    let inst = instances::load(&state.paths, &instance_id)?;
+    let http = state.http().await;
+    crate::modrinth::updates::backfill_project_ids(&state.paths, &http, &inst).await
+}
+
+#[tauri::command]
+pub async fn content_update_all(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<usize> {
+    let inst = instances::load(&state.paths, &instance_id)?;
+    // Суффикс операции — см. content_install: свой ключ реестра движков.
+    let group = format!("instance:{instance_id}:update");
+    let engine = state.engine_for(&group).await;
+    let http = state.http().await;
+    // F8: перед пакетным обновлением — авто-снапшот mods/ (ротация 3).
+    // Снапшот best-effort: неудача не срывает обновление, но должна
+    // оставлять след в логе (раньше ошибка тихо проглатывалась).
+    {
+        let snap_paths = state.paths.clone();
+        let snap_id = instance_id.clone();
+        let snap_res = tauri::async_runtime::spawn_blocking(move || {
+            crate::instances::snapshots::create(&snap_paths, &snap_id)
+        })
+        .await
+        .map_err(join_err)
+        .and_then(|inner| inner);
+        if let Err(e) = snap_res {
+            tracing::warn!("авто-снапшот mods перед обновлением не удался: {e}");
+        }
+    }
+    let out = crate::modrinth::updates::update_all(&state.paths, http, engine, &inst).await;
+    state.engine_done(&group);
+    out
+}
+
+
+fn join_err(e: tauri::Error) -> LauncherError {
+    LauncherError::Io(std::io::Error::other(format!("фоновая задача: {e}")))
+}
+
+
+/// Результат установки модпака: инстанс + группа загрузок. Группа нужна
+/// фронту, чтобы подписаться на dl_progress/dl_queue_state и отменять
+/// установку через downloads_cancel_group — внутрь команды она раньше
+/// пряталась, и отменить установку снаружи было нечем.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModpackInstallResult {
+    pub instance: Instance,
+    pub group: String,
+}
+
+/// Установка .mrpack в новый инстанс (путь выбирается диалогом/drag&drop).
+#[tauri::command]
+pub async fn mrpack_install(
+    state: State<'_, AppState>,
+    path: String,
+    name: Option<String>,
+) -> Result<ModpackInstallResult> {
+    // Ключ реестра движков = группа задач установки: иначе «Стоп» не нашёл бы,
+    // что отменять (D1). У .mrpack до парсинга манифеста нет id — берём имя
+    // файла. Хвост-uuid: две одновременные установки (переоткрытое окно
+    // проекта) не должны делить tmp-файл и движок — провал чужой задачи в
+    // общем движке раньше валит здоровую установку.
+    let pack_path = std::path::Path::new(&path);
+    let group = format!(
+        "mrpack:{}:{}",
+        pack_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        &uuid::Uuid::new_v4().simple().to_string()[..8],
+    );
+    let engine = state.engine_for(&group).await;
+    let http = state.http().await;
+    let settings = state.settings.read().await.clone();
+    let out = crate::modrinth::mrpack::install_mrpack(
+        &state.paths,
+        &settings,
+        engine,
+        http,
+        &group,
+        pack_path,
+        name.as_deref(),
+    )
+    .await;
+    // Группу снимаем в любом исходе (успех/ошибка) — как в content_install.
+    state.engine_done(&group);
+    out.map(|instance| ModpackInstallResult { instance, group })
+}
+
+/// Установка модпака Modrinth по project_id: последняя версия → .mrpack →
+/// тот же установщик (Главная → «Популярные модпаки»).
+#[tauri::command]
+pub async fn modpack_install(
+    state: State<'_, AppState>,
+    project_id: String,
+    name: Option<String>,
+) -> Result<ModpackInstallResult> {
+    // Хвост-uuid — как в mrpack_install: параллельные установки одного
+    // проекта не делят движок и tmp-файл.
+    let group = format!("mrpack:{project_id}:{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let engine = state.engine_for(&group).await;
+    let http = state.http().await;
+    let settings = state.settings.read().await.clone();
+    let out = crate::modrinth::mrpack::install_modpack_project(
+        &state.paths,
+        &settings,
+        engine,
+        http,
+        &group,
+        &project_id,
+        name.as_deref(),
+    )
+    .await;
+    state.engine_done(&group);
+    out.map(|instance| ModpackInstallResult { instance, group })
+}
+
+/// Отменить активную группу загрузок по имени (прогресс модпаков/ремонта —
+/// D1): снимает движок группы с регистрации и гасит его задачи. Для уже
+/// завершённой группы — no-op.
+#[tauri::command]
+pub async fn downloads_cancel_group(state: State<'_, AppState>, group: String) -> Result<()> {
+    state.cancel_engine_group(&group);
+    Ok(())
+}
+
+// ---------- оптимизация и процессы (спека §6.9, §6.10) ----------
+
+#[tauri::command]
+pub async fn instance_optimize(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<Vec<String>> {
+    // B9: оптимизация трогает файлы (память, Java, опции) занятой игры —
+    // на Windows это Sharing Violation; проверяем до загрузок.
+    if instances::running_pid(&instances::instance_dir(&state.paths, &instance_id)).is_some() {
+        return Err(LauncherError::InstanceRunning(instance_id.clone()));
+    }
+    let inst = instances::load(&state.paths, &instance_id)?;
+    // Суффикс операции — см. content_install: свой ключ реестра движков.
+    let group = format!("instance:{instance_id}:optimize");
+    let engine = state.engine_for(&group).await;
+    let http = state.http().await;
+    let out = crate::optimize::optimize(&state.paths, http, engine, &inst).await;
+    state.engine_done(&group);
+    out
+}
+
+#[tauri::command]
+pub async fn ram_guide() -> Result<crate::optimize::RamGuide> {
+    Ok(crate::optimize::ram_guide())
+}
+
+#[tauri::command]
+pub async fn instance_kill(state: State<'_, AppState>, instance_id: String) -> Result<OkMsg> {
+    // IPC-граница: без валидации traversal-id уходил бы в чужой каталог
+    // (instance_dir/kill) — как в instance_force_unlock (A23).
+    instances::valid_id(&instance_id)?;
+    let was_launching = {
+        let mut launching = state.launching.lock().await;
+        launching.remove(&instance_id)
+    };
+    if was_launching {
+        state.cancel_engine_group(&format!("instance:{instance_id}"));
+        // «Стоп» гасит и фоновые операции инстанса (ремонт/контент/обновление/
+        // оптимизация) — иначе они переживали бы остановку.
+        state.cancel_instance_op_groups(&instance_id);
+        state.bus.emit(crate::events::LauncherEvent::LaunchState {
+            instance_id: instance_id.clone(),
+            phase: crate::events::LaunchPhase::Exited,
+            exit_code: None,
+            launch_started_at: None,
+        });
+        // Если процесс уже успел запуститься — гарантированно гасим его тоже.
+        // taskkill внутри kill ждёт завершения — блокирующий вызов не в
+        // async-потоке (A20).
+        let inst_dir = instances::instance_dir(&state.paths, &instance_id);
+        if instances::running_pid(&inst_dir).is_some() {
+            let _ = tauri::async_runtime::spawn_blocking(move || instances::kill(&inst_dir)).await;
+        }
+        return Ok(OkMsg { ok: true });
+    }
+
+    let inst_dir = instances::instance_dir(&state.paths, &instance_id);
+    if instances::running_pid(&inst_dir).is_some() {
+        // Блокирующий taskkill — не в async-потоке (A20).
+        tauri::async_runtime::spawn_blocking(move || instances::kill(&inst_dir))
+            .await
+            .map_err(join_err)??;
+    } else {
+        // Если PID уже неактивен, гарантируем очистку .lock и отправку события Exited в UI
+        let _ = std::fs::remove_file(crate::util::fs::long_path(&inst_dir.join(".lock")));
+        state.bus.emit(crate::events::LauncherEvent::LaunchState {
+            instance_id: instance_id.clone(),
+            phase: crate::events::LaunchPhase::Exited,
+            exit_code: None,
+            launch_started_at: None,
+        });
+    }
+    // Основной путь пройден — тоже гасим суффикс-группы фоновых операций.
+    state.cancel_instance_op_groups(&instance_id);
+    Ok(OkMsg { ok: true })
+}
+
+/// Снять зависшую блокировку инстанса (F27): `.lock` без живого процесса.
+/// Идемпотентно: если процесса нет — снимаем и рапортуем Exited; нет и
+/// `.lock` — просто Ok. Живую игру не трогаем (InstanceRunning).
+#[tauri::command]
+pub async fn instance_force_unlock(state: State<'_, AppState>, id: String) -> Result<OkMsg> {
+    instances::valid_id(&id)?;
+    let inst_dir = instances::instance_dir(&state.paths, &id);
+    if instances::running_pid(&inst_dir).is_some() {
+        return Err(LauncherError::InstanceRunning(id));
+    }
+    let lock = crate::util::fs::long_path(&inst_dir.join(".lock"));
+    if lock.exists() {
+        std::fs::remove_file(&lock)?;
+        state.bus.emit(crate::events::LauncherEvent::LaunchState {
+            instance_id: id,
+            phase: crate::events::LaunchPhase::Exited,
+            exit_code: None,
+            launch_started_at: None,
+        });
+    }
+    Ok(OkMsg { ok: true })
+}
+
+#[tauri::command]
+pub async fn process_status(state: State<'_, AppState>) -> Result<Vec<(String, u32)>> {
+    // Сканирование всех instance.json + живость PID — не в async-потоке (A20).
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::running_instances(&paths))
+        .await
+        .map_err(join_err)
+}
+
+// ---------- аккаунты (спека §6.8) ----------
+
+#[tauri::command]
+pub async fn account_list(state: State<'_, AppState>) -> Result<Vec<crate::auth::Account>> {
+    Ok(crate::auth::list(&state.paths))
+}
+
+#[tauri::command]
+pub async fn account_add_offline(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<crate::auth::Account> {
+    // ENV-13: uuid считается от санитизированного имени — как его увидит игра.
+    // Раньше uuid брали от сырого ввода («Steve\r\n»), а в аккаунт клалось
+    // чистое имя: офлайн-uuid не совпадал с md5("OfflinePlayer:Steve") и
+    // рассинхронизировал инвентарь в офлайн-мирах.
+    let clean = crate::util::names::sanitize_user_name(&name, "Player");
+    let uuid = crate::auth::offline::offline_uuid(&clean).to_string();
+    let acc = crate::auth::Account {
+        id: uuid::Uuid::new_v4().to_string(),
+        kind: crate::auth::AccountKind::Offline,
+        name: clean,
+        uuid,
+        refresh_ref: None,
+        authlib_server: None,
+    };
+    let added = crate::auth::add(&state.paths, acc)?;
+    let _ = crate::auth::set_active(&state.paths, &added.id);
+    Ok(added)
+}
+
+/// Вход Microsoft через системный браузер (auth-code flow, спека §6.8).
+#[tauri::command]
+pub async fn account_add_msa_browser(
+    state: State<'_, AppState>,
+) -> Result<crate::auth::Account> {
+    let client_id = state
+        .settings
+        .read()
+        .await
+        .azure_client_id
+        .clone()
+        .ok_or_else(|| {
+            crate::errors::LauncherError::InvalidInput(
+                "Укажите azureClientId в Настройках (инструкция в README)".into(),
+            )
+        })?;
+
+    // Асинхронный listener (A5): по таймауту future отменяется и сокет
+    // закрывается вместе с ней — блокирующий accept в spawn_blocking раньше
+    // оставался жить и держал порт до конца процесса.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| LauncherError::network(format!("локальный порт для OAuth: {e}")))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| LauncherError::network(format!("local_addr: {e}")))?
+        .port();
+
+    // CSRF: случайный state в authorize-URL; листнер примет redirect только
+    // с ним же (чужой код от другого процесса/вкладки — 400 и ожидание).
+    let oauth_state = uuid::Uuid::new_v4().to_string();
+    let auth_url = crate::auth::msa::authorize_url(&client_id, port, &oauth_state);
+    tauri_plugin_opener::open_url(auth_url, None::<&str>)
+        .map_err(|e| LauncherError::Internal(format!("не удалось открыть браузер: {e}")))?;
+
+    let code = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        crate::auth::msa::wait_auth_code_async(listener, &oauth_state),
+    )
+    .await
+    .map_err(|_| LauncherError::network("таймаут ожидания входа в браузере (5 мин)"))??;
+
+    let http = state.http().await;
+    let session = crate::auth::msa::finish_web_login(&http, &client_id, &code, port).await?;
+    let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
+    crate::auth::keyring_set(&ref_name, &session.refresh_token)?;
+    let acc = crate::auth::Account {
+        // D64: id = uuid профиля из сессии — стабилен между перелогинами.
+        // Раньше id был случайным при каждом входе: auth::add (retain по id)
+        // не находил старую запись, список плодил дубли, а плашка «сессия
+        // истекла» (D62) не снималась повторным входом.
+        id: session.uuid.clone(),
+        kind: crate::auth::AccountKind::Msa,
+        name: session.player_name.clone(),
+        uuid: session.uuid.clone(),
+        refresh_ref: Some(ref_name),
+        authlib_server: None,
+    };
+    crate::auth::add(&state.paths, acc.clone())?;
+    let _ = crate::auth::set_active(&state.paths, &acc.id);
+    Ok(acc)
+}
+
+/// Начало MSA device-code: UI показывает user_code и открывает браузер.
+#[tauri::command]
+pub async fn account_add_msa_start(
+    state: State<'_, AppState>,
+) -> Result<crate::auth::msa::DeviceCodeStart> {
+    let client_id = state
+        .settings
+        .read()
+        .await
+        .azure_client_id
+        .clone()
+        .ok_or_else(|| {
+            crate::errors::LauncherError::InvalidInput(
+                "Укажите azureClientId в Настройках (инструкция в README)".into(),
+            )
+        })?;
+    let http = state.http().await;
+    crate::auth::msa::device_code_start(&http, &client_id).await
+}
+
+/// Опрос: Ok(Some) — вход завершён, аккаунт добавлен (refresh → keyring).
+#[tauri::command]
+pub async fn account_add_msa_poll(
+    state: State<'_, AppState>,
+    device_code: String,
+) -> Result<Option<crate::auth::Account>> {
+    let client_id = state
+        .settings
+        .read()
+        .await
+        .azure_client_id
+        .clone()
+        .ok_or_else(|| {
+            crate::errors::LauncherError::InvalidInput("нет azureClientId в настройках".into())
+        })?;
+    let http = state.http().await;
+    let Some(session) = crate::auth::msa::device_code_poll(&http, &client_id, &device_code).await? else {
+        return Ok(None);
+    };
+    let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
+    crate::auth::keyring_set(&ref_name, &session.refresh_token)?;
+    let acc = crate::auth::Account {
+        // D64: id = uuid профиля из сессии — стабилен между перелогинами.
+        // Раньше id был случайным при каждом входе: auth::add (retain по id)
+        // не находил старую запись, список плодил дубли, а плашка «сессия
+        // истекла» (D62) не снималась повторным входом.
+        id: session.uuid.clone(),
+        kind: crate::auth::AccountKind::Msa,
+        name: session.player_name.clone(),
+        uuid: session.uuid.clone(),
+        refresh_ref: Some(ref_name),
+        authlib_server: None,
+    };
+    crate::auth::add(&state.paths, acc.clone())?;
+    let _ = crate::auth::set_active(&state.paths, &acc.id);
+    Ok(Some(acc))
+}
+
+/// Логин ely.by (пароль передаётся только по TLS в authserver; в keyring — токен).
+#[tauri::command]
+pub async fn account_add_ely(
+    state: State<'_, AppState>,
+    username: String,
+    password: String,
+) -> Result<crate::auth::Account> {
+    let http = state.http().await;
+    let session = crate::auth::ely::authenticate(&http, &username, &password).await?;
+    let ref_name = format!("ely-refresh-{}", uuid::Uuid::new_v4());
+    crate::auth::keyring_set(&ref_name, &session.refresh_token)?;
+    let acc = crate::auth::Account {
+        // D64: id = uuid профиля из сессии — стабилен между перелогинами
+        // (см. комментарий в account_add_msa_poll).
+        id: session.uuid.clone(),
+        kind: crate::auth::AccountKind::Ely,
+        name: session.player_name.clone(),
+        uuid: session.uuid.clone(),
+        refresh_ref: Some(ref_name),
+        authlib_server: None,
+    };
+    crate::auth::add(&state.paths, acc.clone())?;
+    let _ = crate::auth::set_active(&state.paths, &acc.id);
+    Ok(acc)
+}
+
+#[tauri::command]
+pub async fn account_remove(state: State<'_, AppState>, id: String) -> Result<OkMsg> {
+    crate::auth::remove(&state.paths, &id)?;
+    Ok(OkMsg { ok: true })
+}
+
+#[tauri::command]
+pub async fn account_active_set(state: State<'_, AppState>, id: String) -> Result<OkMsg> {
+    crate::auth::set_active(&state.paths, &id)?;
+    Ok(OkMsg { ok: true })
+}
+
+/// Скин профиля для показа в лаунчере (D34): ely.by / Mojang session server;
+/// None — скина нет (offline, 404) — UI рисует дефолт. Дисковый кэш 1 час.
+#[tauri::command]
+pub async fn account_skin(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<Option<crate::auth::skins::SkinInfo>> {
+    let accounts = crate::auth::list(&state.paths);
+    let account = accounts.into_iter().find(|a| a.id == account_id).ok_or_else(|| {
+        crate::errors::LauncherError::NotFound(format!("аккаунт {account_id}"))
+    })?;
+    let http = state.http().await;
+    crate::auth::skins::fetch_skin(&http, &state.paths, &account).await
+}
+
+// ---------- скины (D59) ----------
+
+/// Библиотека дефолтных скинов из клиент-jar стора: Steve/Alex × classic/slim
+/// (D54-механизм извлечения); jar в сторе нет — пустой список.
+#[tauri::command]
+pub async fn skin_library_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::auth::skins::SkinInfo>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(crate::auth::skins::list_library_skins(&paths))
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Пользовательские скины (каталог skins/ в данных лаунчера).
+#[tauri::command]
+pub async fn skin_user_list(state: State<'_, AppState>) -> Result<Vec<crate::auth::skins::SkinInfo>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(crate::auth::skins::list_user_skins(&paths)))
+        .await
+        .map_err(join_err)?
+}
+
+/// Сохранить PNG как пользовательский скин. Файл выбирается нативным
+/// диалогом на фронте (path), чтение — с ограничением домашним каталогом,
+/// как у иконок (A16). Валидация: PNG 64×64/64×32, ≤ 50 КБ.
+#[tauri::command]
+pub async fn skin_user_save(
+    state: State<'_, AppState>,
+    name: String,
+    path: String,
+) -> Result<crate::auth::skins::SkinInfo> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = std::path::Path::new(&path);
+        crate::instances::content::ensure_icon_source_allowed(p)?;
+        let data = std::fs::read(crate::util::fs::long_path(p))
+            .map_err(|_| LauncherError::NotFound(format!("файл скина: {path}")))?;
+        crate::auth::skins::save_user_skin(&paths, &name, &data)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Удалить пользовательский скин по id (id = имя файла каталога skins/).
+#[tauri::command]
+pub async fn skin_user_delete(state: State<'_, AppState>, skin_id: String) -> Result<OkMsg> {
+    crate::auth::skins::delete_user_skin(&state.paths, &skin_id)?;
+    Ok(OkMsg { ok: true })
+}
+
+/// Применить скин (по id из каталога пользователя или библиотеки) аккаунту:
+/// msa → PUT Mojang profile/skins; ely → API ely.by; offline/authlib —
+/// честный отказ (D59).
+#[tauri::command]
+pub async fn skin_apply(
+    state: State<'_, AppState>,
+    account_id: String,
+    skin_id: String,
+    model: crate::auth::skins::SkinModel,
+) -> Result<OkMsg> {
+    let skin = crate::auth::skins::find_skin_by_id(&state.paths, &skin_id)
+        .ok_or_else(|| LauncherError::NotFound(format!("скин {skin_id}")))?;
+    let http = state.http().await;
+    crate::auth::skins::apply_skin(&state.paths, &http, &account_id, &skin, model).await?;
+    Ok(OkMsg { ok: true })
+}
+
+// ---------- импорт и диагностика (спека §6.11, §6.10) ----------
+
+/// Дефолтный арт из собственных файлов игры (D63): официальная панорама
+/// титульного экрана из скачанных ассетов инстанса. None — файлов ещё нет.
+#[tauri::command]
+pub async fn panorama_art(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<String>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::panorama::panorama_data_url(&paths, &id)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+#[tauri::command]
+pub async fn instance_import(
+    state: State<'_, AppState>,
+    path: String,
+    name: Option<String>,
+) -> Result<Instance> {
+    let http = state.http().await;
+    // Загрузчик ставится ВНУТРИ import_archive под тем же откатом A29:
+    // раньше сбой install_loader после распаковки оставлял сохранённый
+    // инстанс вне транзакции (повторный импорт плодил дубль с копией контента).
+    let settings = state.settings.read().await.clone();
+    let (inst, _loader) = crate::import::import_archive(
+        &state.paths,
+        &settings,
+        http,
+        std::path::Path::new(&path),
+        name.as_deref(),
+    )
+    .await?;
+    Ok(inst)
+}
+
+/// Краш-анализ текста лога (расширяемые правила, спека §6.10).
+#[tauri::command]
+pub async fn crash_analyze(log_text: String) -> Result<Vec<crate::process::crash::Diagnosis>> {
+    Ok(crate::process::crash::analyze(&log_text))
+}
+
+// ---------- версии и загрузчики ----------
+
+/// Версия в каталоге (`manifest_versions`): camelCase — фронт читает
+/// `releaseTime` (A7), `type` задан явным rename.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionEntry {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub version_type: String,
+    pub release_time: String,
+}
+
+#[tauri::command]
+pub async fn manifest_versions(
+    state: State<'_, AppState>,
+    show_snapshots: bool,
+    show_old: bool,
+) -> Result<Vec<VersionEntry>> {
+    let http = state.http().await;
+    let manifest = fetch_manifest(&http, &state.paths.manifests_cache()).await?;
+    Ok(filter_versions(&manifest, show_snapshots, show_old)
+        .into_iter()
+        .map(|v| VersionEntry {
+            id: v.id.clone(),
+            version_type: v.version_type.clone(),
+            release_time: v.release_time.clone(),
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+pub struct LoaderVersionEntry {
+    pub version: String,
+    pub stable: bool,
+}
+
+#[tauri::command]
+pub async fn loader_versions(
+    state: State<'_, AppState>,
+    loader: String,
+) -> Result<Vec<LoaderVersionEntry>> {
+    let http = state.http().await;
+    match loader.as_str() {
+        "fabric" => Ok(crate::loaders::fabric::loader_versions(&http)
+            .await?
+            .into_iter()
+            .map(|l| LoaderVersionEntry { version: l.version, stable: l.stable })
+            .collect()),
+        "quilt" => Ok(crate::loaders::quilt::loader_versions(&http)
+            .await?
+            .into_iter()
+            .map(|l| LoaderVersionEntry { version: l.version, stable: l.stable })
+            .collect()),
+        "neoforge" => {
+            // Список длинный и плоский — отдаём последние 30 стабильных.
+            let all = crate::loaders::neoforge::versions(&http).await?;
+            Ok(all
+                .into_iter()
+                .filter(|v| !v.ends_with("-beta"))
+                .rev()
+                .take(30)
+                .map(|v| LoaderVersionEntry { version: v, stable: true })
+                .collect())
+        }
+        "forge" => {
+            // promotions_slim.json содержит только «продвинутые» версии
+            // (recommended/latest) — все стабильные по определению. Это
+            // словарь по версиям MC (ключи `1.20.1-recommended`) со многими
+            // повторами значений: собираем уникальные и сортируем по сегментам
+            // версии, отдаём последние 30 (как у neoforge).
+            let promos = crate::loaders::forge::promotions(&http).await?;
+            let mut versions: Vec<String> = promos.into_values().collect();
+            versions.sort();
+            versions.dedup();
+            versions.sort_by_key(|v| {
+                v.split('.')
+                    .map(|p| p.parse::<u64>().unwrap_or(0))
+                    .collect::<Vec<u64>>()
+            });
+            Ok(versions
+                .into_iter()
+                .rev()
+                .take(30)
+                .map(|version| LoaderVersionEntry { version, stable: true })
+                .collect())
+        }
+        other => Err(LauncherError::InvalidInput(format!(
+            "неизвестный загрузчик {other}"
+        ))),
+    }
+}
+
+#[tauri::command]
+pub async fn loader_install(
+    state: State<'_, AppState>,
+    id: String,
+    loader: String,
+    loader_version: Option<String>,
+) -> Result<Instance> {
+    // B9: установка загрузчика пишет version JSON в каталог игры — у занятой
+    // игры это Sharing Violation, как у смены версии.
+    ensure_not_running(&state.paths, &id, "установкой загрузчика")?;
+    let inst = instances::load(&state.paths, &id)?;
+    let settings_guard = state.settings.read().await.clone();
+    let http = state.http().await;
+    instances::run::install_loader(
+        &state.paths,
+        &settings_guard,
+        http,
+        &inst,
+        &loader,
+        loader_version.as_deref(),
+    )
+    .await
+}
+
+// ---------- java ----------
+
+#[tauri::command]
+pub async fn java_list(state: State<'_, AppState>) -> Result<Vec<JavaInstall>> {
+    let extra = state.settings.read().await.extra_java_paths.clone();
+    Ok(crate::java::detect::scan_all(&state.paths.runtime_dir(), &extra).await)
+}
+
+#[tauri::command]
+pub async fn java_install(
+    state: State<'_, AppState>,
+    major: u32,
+) -> Result<JavaInstall> {
+    let http = state.http().await;
+    let exe = crate::java::adoptium::install_jre(&http, &state.paths.runtime_dir(), major, |_, _| {})
+        .await?;
+    crate::java::detect::inspect(&exe, "adoptium").await
+}
+
+/// Рекомендуемая мажорная Java для версии MC (F14): тонкая обёртка над
+/// таблицей `fallback_major` (instances/run.rs, спека §6.4):
+/// ≤1.16 → 8, 1.17–1.20 → 17, 1.20+ (и пост-1.x) → 21.
+#[tauri::command]
+pub async fn java_recommended(mc_version: String) -> Result<u8> {
+    // Таблица возвращает только 8/17/21 — u8 всегда достаточен.
+    Ok(crate::instances::run::fallback_major(&mc_version) as u8)
+}
+
+// ---------- настройки ----------
+
+#[tauri::command]
+pub async fn settings_get(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    // Бэклог D61: ключ CurseForge в рендер не отдаётся — фронт его не
+    // читает, а в памяти WebView секрету делать нечего. Вместо значения —
+    // bool hasCurseforgeKey. Формат остальных полей не меняется.
+    let mut s = state.settings.read().await.clone();
+    let has_key = s
+        .curseforge_api_key
+        .as_deref()
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false);
+    s.curseforge_api_key = None;
+    let mut v = serde_json::to_value(&s)?;
+    v["hasCurseforgeKey"] = has_key.into();
+    Ok(v)
+}
+
+#[tauri::command]
+pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> Result<OkMsg> {
+    let mut merged = settings;
+    // ENV-8: пустая строка/одни пробелы — легитимное «без прокси» (UI шлёт
+    // undefined, но пустую строку мог сохранить старый билд settings.json);
+    // нормализуем до None, чтобы не превращать «без прокси» в ошибку.
+    let normalized = merged.proxy_url.take().filter(|s| !s.trim().is_empty());
+    merged.proxy_url = normalized;
+    let proxy = merged.proxy_url.clone();
+    let old_proxy = state.settings.read().await.proxy_url.clone();
+    // ENV-8: битый proxy_url не должен попасть в файл — валидируем его
+    // конструированием клиента заранее. Но живой клиент НЕ трогаем до
+    // успешной записи настроек: иначе при сбое записи файл и живой клиент
+    // расходились бы (клиент уже с новым прокси, файл — со старым).
+    let new_http = if proxy != old_proxy {
+        Some(HttpClient::new(proxy.as_deref()).map_err(|e| {
+            LauncherError::InvalidInput(format!("некорректный proxy_url: {e}"))
+        })?)
+    } else {
+        None
+    };
+    // accounts_active_id принадлежит auth-потоку (account_active_set и пр.),
+    // а не странице настроек: её снимок мог устареть, и слепое сохранение
+    // откатывало бы смену активного аккаунта — берём значение с диска.
+    if let Ok(current) = Settings::load(&state.paths.settings_file()) {
+        merged.accounts_active_id = current.accounts_active_id;
+        // settings_get ключ не отдаёт: None от фронта = «не менялось»
+        // (иначе каждый settings_set стирал бы ключ), Some("") = сброс,
+        // Some(k) = явная установка.
+        let incoming = merged.curseforge_api_key.take();
+        merged.curseforge_api_key = match incoming {
+            None => current.curseforge_api_key,
+            Some(k) if k.trim().is_empty() => None,
+            Some(k) => Some(k),
+        };
+    }
+    merged.save(&state.paths.settings_file())?;
+    // Запись успешна — теперь можно подменить живой клиент.
+    if let Some(new_http) = new_http {
+        *state.http.write().await = Arc::new(new_http);
+        tracing::info!("HTTP-клиент обновлен с новым proxy_url");
+    }
+    // F16/F17: офлайн-режим и лимит скорости применяются к актуальному
+    // HTTP-клиенту (в т.ч. к созданному при смене прокси — swap уже был).
+    let work_offline = merged.work_offline;
+    let speed_limit = merged.speed_limit_kbps;
+    *state.settings.write().await = merged;
+    let http = state.http().await;
+    http.set_offline(work_offline);
+    http.set_speed_limit(speed_limit);
+    Ok(OkMsg { ok: true })
+}
+
+// ---------- миры, скриншоты, конфиги (аудит паритета D37) ----------
+
+/// Список миров инстанса (F24).
+#[tauri::command]
+pub async fn instance_worlds(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<crate::instances::worlds::WorldInfo>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::worlds::list_worlds(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Бэкап мира в zip (F24).
+#[tauri::command]
+pub async fn world_backup(
+    state: State<'_, AppState>,
+    id: String,
+    world: String,
+) -> Result<crate::instances::worlds::ArchiveResult> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::worlds::backup_world(&paths, &id, &world)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Удаление мира/Незера/Энда (F24).
+#[tauri::command]
+pub async fn world_delete_data(
+    state: State<'_, AppState>,
+    id: String,
+    world: String,
+    scope: crate::instances::worlds::WorldScope,
+) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::worlds::delete_world_data(&paths, &id, &world, scope)
+    })
+    .await
+    .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+/// Проверка целостности и починка игровых файлов (F2). Суффикс операции
+/// в группе — не делит ключ реестра движков с запуском и контентными
+/// операциями (см. content_install).
+#[tauri::command]
+pub async fn instance_repair(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<crate::instances::repair::RepairReport> {
+    // B9: ремонт перезаписывает client-jar/libraries — занятая игра = Sharing
+    // Violation на Windows.
+    ensure_not_running(&state.paths, &id, "ремонтом")?;
+    instances::load(&state.paths, &id)?;
+    let group = format!("instance:{id}:repair");
+    let engine = state.engine_for(&group).await;
+    let http = state.http().await;
+    let paths = state.paths.clone();
+    let out =
+        crate::instances::repair::repair_instance(&paths, http, engine, &id).await;
+    state.engine_done(&group);
+    out
+}
+
+/// Запуск `java -version` для проверки пути (F15).
+#[tauri::command]
+pub async fn java_test_path(java_exe: String) -> Result<crate::java::detect::JavaTestInfo> {
+    tauri::async_runtime::spawn_blocking(move || crate::java::detect::test_java(&java_exe))
+        .await
+        .map_err(join_err)?
+}
+
+/// Ответ mclo.gs-шеринга (зеркало client.ts logShareMclogs).
+#[derive(Debug, serde::Serialize)]
+pub struct ShareResult {
+    pub url: String,
+}
+
+/// Отправить последний лог инстанса на mclo.gs (F22): redact → upload.
+#[tauri::command]
+pub async fn log_share_mclogs(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ShareResult> {
+    instances::valid_id(&id)?;
+    let paths = state.paths.clone();
+    let text = tauri::async_runtime::spawn_blocking(move || {
+        let dir = crate::instances::instance_dir(&paths, &id)
+            .join("minecraft")
+            .join("logs");
+        // Хвост 512 КБ — mclo.gs сам режет большие, нам хватит с запасом.
+        // ENV-9: читаем через seek-хвост, а не `std::fs::read` целиком —
+        // гигантский latest.log (500 МБ+) при panic=abort ронял лаунчер OOM-ом.
+        let data = crate::mclogs::read_tail(
+            &crate::util::fs::long_path(&dir.join("latest.log")),
+            512 * 1024,
+        )?;
+        Ok::<_, LauncherError>(String::from_utf8_lossy(&data).into_owned())
+    })
+    .await
+    .map_err(join_err)??;
+    let redacted = crate::util::redact::redact(&text);
+    let http = state.http().await;
+    let url = crate::mclogs::upload(&http, &redacted).await?;
+    Ok(ShareResult { url })
+}
+
+/// Список архивных логов инстанса (F23).
+#[tauri::command]
+pub async fn instance_logs_list(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<crate::mclogs::LogFileInfo>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::mclogs::list_archived(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Прочитать архивный лог (F23), хвост до 512 КБ.
+#[tauri::command]
+pub async fn instance_log_read(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<String> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::mclogs::read_archived(&paths, &id, &name, 512 * 1024)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Снапшоты модов инстанса (F8).
+#[tauri::command]
+pub async fn content_snapshots(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<crate::instances::snapshots::SnapshotInfo>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::snapshots::list(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Откатить моды к снапшоту (F8).
+#[tauri::command]
+pub async fn content_rollback(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<Vec<crate::instances::ContentEntry>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::snapshots::restore(&paths, &id, &name)?;
+        Ok(crate::instances::load_content_manifest(&paths, &id))
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Скопировать контент в другой инстанс (F10).
+#[tauri::command]
+pub async fn content_copy(
+    state: State<'_, AppState>,
+    from_id: String,
+    to_id: String,
+    file: String,
+) -> Result<crate::instances::ContentEntry> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::content::copy_entry(&paths, &from_id, &to_id, &file)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Размеры областей каталога данных (F18).
+#[tauri::command]
+pub async fn storage_stats(state: State<'_, AppState>) -> Result<crate::storage::Stats> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::storage::stats(&paths))
+        .await
+        .map_err(join_err)?
+}
+
+/// Очистить кэш и корзину ядра (F18).
+#[tauri::command]
+pub async fn storage_clean(state: State<'_, AppState>) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    let freed = tauri::async_runtime::spawn_blocking(move || crate::storage::clean(&paths))
+        .await
+        .map_err(join_err)??;
+    Ok(OkMsg { ok: freed > 0 })
+}
+
+/// Экспорт настроек в файл без секретов (F20).
+#[tauri::command]
+pub async fn settings_export(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<OkMsg> {
+    let settings = state.settings.read().await.clone();
+    let json = crate::settings::export_json(&settings);
+    // SEC-5: ограничить примитив записи — абсолютный путь и только .json
+    // (иначе IPC позволял бы перезаписать произвольный файл настройками).
+    let target = std::path::PathBuf::from(&path);
+    if !target.is_absolute()
+        || target
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("json"))
+            != Some(true)
+    {
+        return Err(LauncherError::InvalidInput(
+            "экспорт настроек — в абсолютный файл .json".into(),
+        ));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(dir) = std::path::Path::new(&path).parent() {
+            std::fs::create_dir_all(crate::util::fs::long_path(dir))?;
+        }
+        std::fs::write(crate::util::fs::long_path(std::path::Path::new(&path)), json)?;
+        Ok::<_, LauncherError>(())
+    })
+    .await
+    .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+/// Импорт настроек из файла (F20): валидация, секреты не переносятся.
+#[tauri::command]
+pub async fn settings_import(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Settings> {
+    let data = tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read_to_string(crate::util::fs::long_path(std::path::Path::new(&path)))
+            .map_err(LauncherError::from)
+    })
+    .await
+    .map_err(join_err)??;
+    let mut settings = crate::settings::import_json(&data)?;
+    // Тот же путь, что settings_set: proxy_url — валидация без свапа
+    // (невалидный → ошибка в UI, настройки НЕ сохраняются), затем файл +
+    // свап живого клиента/стейта + офлайн-флаг/лимит скорости.
+    let normalized = settings.proxy_url.take().filter(|s| !s.trim().is_empty());
+    settings.proxy_url = normalized;
+    let proxy = settings.proxy_url.clone();
+    let old_proxy = state.settings.read().await.proxy_url.clone();
+    // Тот же инвариант, что в settings_set: proxy_url валидируется заранее
+    // (ENV-8 — битый не попадает в файл), живой клиент перестраивается
+    // только ПОСЛЕ успешной записи, чтобы при сбое записи файл и клиент
+    // не разошлись.
+    let new_http = if proxy != old_proxy {
+        Some(HttpClient::new(proxy.as_deref()).map_err(|e| {
+            LauncherError::InvalidInput(format!("некорректный proxy_url: {e}"))
+        })?)
+    } else {
+        None
+    };
+    settings.save(&state.paths.settings_file())?;
+    if let Some(new_http) = new_http {
+        *state.http.write().await = Arc::new(new_http);
+        tracing::info!("HTTP-клиент обновлен с новым proxy_url (импорт настроек)");
+    }
+    let work_offline = settings.work_offline;
+    let speed_limit = settings.speed_limit_kbps;
+    *state.settings.write().await = settings.clone();
+    let http = state.http().await;
+    http.set_offline(work_offline);
+    http.set_speed_limit(speed_limit);
+    Ok(settings)
+}
+
+/// Скриншоты инстанса (F3).
+#[tauri::command]
+pub async fn instance_screens(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<crate::instances::screens::ShotInfo>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::screens::list(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Удалить скриншот (F3).
+#[tauri::command]
+pub async fn screenshot_delete(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::screens::delete(&paths, &id, &name))
+        .await
+        .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+/// Открыть папку скриншотов (F3).
+#[tauri::command]
+pub async fn instance_screens_open(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::screens::open_folder(&paths, &id))
+        .await
+        .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+/// Метаданные модов: зависимости и конфликты (F6/F9).
+#[tauri::command]
+pub async fn content_metadata(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<crate::instances::modmeta::ModMetadata>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::modmeta::analyze_all(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Обложки ресурспаков/шейдеров из zip (F25).
+#[tauri::command]
+pub async fn pack_art(
+    state: State<'_, AppState>,
+    id: String,
+    kinds: Vec<crate::instances::ContentKind>,
+) -> Result<Vec<crate::instances::packart::PackArt>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::packart::analyze(&paths, &id, &kinds)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Ярлык запуска на рабочем столе (F4).
+#[tauri::command]
+pub async fn instance_shortcut(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ShortcutResult> {
+    let paths = state.paths.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::shortcut::create_desktop(&paths, &id)
+    })
+    .await
+    .map_err(join_err)??;
+    Ok(ShortcutResult { path })
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ShortcutResult {
+    pub path: String,
+}
+
+/// CPU/RAM запущенной игры (F28); None — игра не запущена.
+#[tauri::command]
+pub async fn game_resources(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<crate::process::monitor::GameResourceSample>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::process::sample_for_instance(&paths, &id))
+        .await
+        .map_err(join_err)
+}
+
+/// Ранний отказ запуска: инстанс уже в процессе запуска. Только проверка —
+/// вставку в launching и снятие делает сам instance_launch, поэтому ошибка
+/// apply_safe_mode/save в instance_launch_safe не оставляет id в launching
+/// (раньше он вставлял сам, и при ошибке инстанс навсегда висел «запускается»).
+fn ensure_not_launching(launching: &std::collections::HashSet<String>, id: &str) -> Result<()> {
+    if launching.contains(id) {
+        return Err(LauncherError::InvalidInput("запуск уже идёт".into()));
+    }
+    Ok(())
+}
+
+/// Запуск в безопасном режиме (F30): сброс JVM-флагов + отключение шейдеров.
+#[tauri::command]
+pub async fn instance_launch_safe(
+    state: State<'_, AppState>,
+    id: String,
+    player: String,
+) -> Result<OkMsg> {
+    let mut inst = instances::load(&state.paths, &id)?;
+    // Только проверка для раннего отказа (см. ensure_not_launching): вставку
+    // в launching делает сам instance_launch.
+    {
+        let launching = state.launching.lock().await;
+        ensure_not_launching(&launching, &id)?;
+    }
+    let paths = state.paths.clone();
+    let measures = tauri::async_runtime::spawn_blocking(move || {
+        let measures = crate::instances::run::apply_safe_mode(&paths, &mut inst);
+        crate::instances::save(&paths, &inst)?;
+        Ok::<_, LauncherError>(measures)
+    })
+    .await
+    .map_err(join_err)??;
+    tracing::info!("safe mode: {measures:?}");
+    instance_launch(state, id, player).await
+}
+
+/// Конфиги модов: список (F29).
+#[tauri::command]
+pub async fn instance_configs(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<crate::instances::configs::ConfigFile>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::instances::configs::list(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Полное содержимое конфига для редактора (ConfigFile — карточка списка).
+#[derive(Serialize)]
+pub struct ConfigContent {
+    pub rel: String,
+    pub text: String,
+}
+
+/// Прочитать конфиг (F29; cap 1 МБ).
+#[tauri::command]
+pub async fn config_read(
+    state: State<'_, AppState>,
+    id: String,
+    rel: String,
+) -> Result<ConfigContent> {
+    let paths = state.paths.clone();
+    let (rel_out, text) = tauri::async_runtime::spawn_blocking(move || {
+        let text = crate::instances::configs::read(&paths, &id, &rel)?;
+        Ok::<_, LauncherError>((rel, text))
+    })
+    .await
+    .map_err(join_err)??;
+    // Текст обязателен: раньше возвращали ConfigFile{bytes} и редактор
+    // получал undefined, а «Сохранить» затирал файл пустотой.
+    Ok(ConfigContent { rel: rel_out, text })
+}
+
+/// Сохранить конфиг (F29; игра запущена → instance_running).
+#[tauri::command]
+pub async fn config_write(
+    state: State<'_, AppState>,
+    id: String,
+    rel: String,
+    text: String,
+) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::configs::write(&paths, &id, &rel, &text)
+    })
+    .await
+    .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+/// Метаданные своего authlib-сервера (F13): проверка URL до входа.
+#[tauri::command]
+pub async fn authlib_server_info(
+    state: State<'_, AppState>,
+    server_url: String,
+) -> Result<crate::auth::custom::ServerInfo> {
+    let http = state.http().await;
+    crate::auth::custom::server_info(&http, &server_url).await
+}
+
+/// Вход на свой authlib-сервер (F13): токен в keyring, сервер нормализован.
+#[tauri::command]
+pub async fn account_add_authlib(
+    state: State<'_, AppState>,
+    server_url: String,
+    username: String,
+    password: String,
+) -> Result<crate::auth::Account> {
+    let http = state.http().await;
+    let server = crate::auth::custom::normalize_server_url(&server_url)?;
+    let session = crate::auth::custom::login(&http, &server, &username, &password).await?;
+    let acc = crate::auth::Account {
+        // D64: id = uuid профиля с authlib-сервера — стабилен между
+        // перелогинами (см. комментарий в account_add_msa_poll).
+        id: session.uuid.clone(),
+        kind: crate::auth::AccountKind::Authlib,
+        name: if session.player_name.is_empty() { username } else { session.player_name },
+        uuid: session.uuid,
+        refresh_ref: None,
+        authlib_server: Some(server),
+    };
+    // Токен в keyring по образцу account_add_ely.
+    let ref_name = format!("authlib-refresh-{}", acc.id);
+    crate::auth::keyring_set(&ref_name, &session.access_token)?;
+    let acc = crate::auth::Account { refresh_ref: Some(ref_name), ..acc };
+    let added = crate::auth::add(&state.paths, acc)?;
+    let _ = crate::auth::set_active(&state.paths, &added.id);
+    Ok(added)
+}
+
+/// Выбранный пользователем PNG логотипа → каталог данных (D38).
+#[tauri::command]
+pub async fn logo_set_custom(state: State<'_, AppState>, path: String) -> Result<OkMsg> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::branding::set_custom(&paths, &path))
+        .await
+        .map_err(join_err)??;
+    Ok(OkMsg { ok: true })
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogoResult {
+    pub ok: bool,
+    /// PNG логотипа как data-URL — для бренд-чипа интерфейса.
+    pub data_url: String,
+}
+
+/// Применить логотип к иконке окна и вернуть его data-URL (бренд-чип).
+#[tauri::command]
+pub async fn apply_logo(state: State<'_, AppState>, logo: String) -> Result<LogoResult> {
+    let app = state
+        .app
+        .get()
+        .cloned()
+        .ok_or_else(|| LauncherError::Internal("приложение ещё не готово".into()))?;
+    let logo_for_apply = logo.clone();
+    let paths = state.paths.clone();
+    let data_url = tauri::async_runtime::spawn_blocking(move || {
+        crate::branding::apply_window_icon(&app, &logo_for_apply, &paths);
+        let bytes = crate::branding::resolve_png(&logo_for_apply, &paths);
+        use base64::Engine as _;
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    })
+    .await
+    .map_err(join_err)?;
+    Ok(LogoResult { ok: true, data_url })
+}
+
+// ---------- события: мост bus → окно ----------
+
+/// Запустить пересылку событий ядра в окно (единый канал `core`).
+pub fn spawn_event_bridge(app: AppHandle, bus: EventBus) {
+    tauri::async_runtime::spawn(async move {
+        let mut rx = bus.subscribe();
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if let Err(e) = emit_event(&app, &event) {
+                        tracing::debug!("emit события: {e}");
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("мост событий отстал на {n}");
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+fn emit_event(app: &AppHandle, event: &LauncherEvent) -> tauri::Result<()> {
+    let name = match event {
+        LauncherEvent::DlProgress(_) => "dl_progress",
+        LauncherEvent::DlQueueState(_) => "dl_queue_state",
+        LauncherEvent::DlGroupDone { .. } => "dl_group_done",
+        LauncherEvent::LaunchState { .. } => "launch_state",
+        LauncherEvent::GameLogLine { .. } => "game_log_line",
+        LauncherEvent::AccountRefreshFailed { .. } => "account_refresh_failed",
+    };
+    app.emit(name, event)
+}
+
+/// Каталог данных лаунчера (для онбординга).
+#[tauri::command]
+pub async fn data_dir(state: State<'_, AppState>) -> Result<String> {
+    Ok(state.paths.root().to_string_lossy().into_owned())
+}
+
+/// Диагностика: хвост файла лога лаунчера.
+#[tauri::command]
+pub async fn logs_tail(state: State<'_, AppState>, lines: u32) -> Result<String> {
+    let log = state.paths.logs_dir().join("launcher.log");
+    // Чтение файла — дисковый I/O: не в async-потоке (A20/D14), как у соседей.
+    // ENV-9: launcher.log может разрастись — читаем хвост до 2 МБ, а не весь файл.
+    let data = tauri::async_runtime::spawn_blocking(move || {
+        if !log.exists() {
+            return Ok(Vec::new());
+        }
+        crate::mclogs::read_tail(&crate::util::fs::long_path(&log), 2 * 1024 * 1024)
+    })
+    .await
+    .map_err(join_err)??;
+    let text = String::from_utf8_lossy(&data);
+    let all: Vec<&str> = text.lines().collect();
+    let skip = all.len().saturating_sub(lines as usize);
+    Ok(all[skip..].join("\n"))
+}
+
+#[tauri::command]
+pub async fn dir_open(state: State<'_, AppState>) -> Result<OkMsg> {
+    tauri_plugin_opener::open_path(state.paths.root().clone(), None::<&str>)
+        .map_err(|e| LauncherError::Internal(format!("открытие папки: {e}")))?;
+    Ok(OkMsg { ok: true })
+}
+
+// ---------- проверка обновлений лаунчера ----------
+
+/// Последний релиз репозитория владельца. Репозиторий станет публичным; пока
+/// закрыт — 404 это нормальный исход проверки, а не сбой лаунчера.
+const RELEASES_API: &str = "https://api.github.com/repos/loxord241/Cobble-Launcher/releases/latest";
+/// Запасная цель кнопки «открыть»: если GitHub не отдал `html_url` релиза.
+const RELEASES_PAGE: &str = "https://github.com/loxord241/Cobble-Launcher/releases";
+/// Проверка обновлений интерактивна (ждёт человек) — не дольше 10 с.
+const UPDATE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Ответ `releases/latest` — берём только тег и ссылку на страницу релиза.
+#[derive(serde::Deserialize)]
+struct GhRelease {
+    #[serde(default)]
+    tag_name: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+}
+
+/// Итог проверки обновлений для карточки в настройках. Авто-обновления нет
+/// (нет ключей подписи): ядро только сравнивает версии и даёт ссылку.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    /// Текущая версия лаунчера (`CARGO_PKG_VERSION`).
+    pub current: String,
+    /// Тег последнего релиза (`v0.2.0`); `None` — версию узнать не удалось.
+    pub latest: Option<String>,
+    /// Страница релиза на github.com.
+    pub url: Option<String>,
+    pub update_available: bool,
+    /// Проверка состоялась (в том числе «не удалось» — это не ошибка команды).
+    pub checked: bool,
+    /// Код причины из `errors.json`, если версию узнать не удалось: UI переводит
+    /// его своим языком (русский текст в ядре не подошёл бы en/uk).
+    pub note: Option<String>,
+}
+
+/// Одна попытка достать последний релиз. Ошибка — код причины для UI:
+/// `not_found` (404: репозиторий закрыт или релизов ещё нет), `http` (другой
+/// статус), `json` (ответ не разобрался), `network` (транспорт).
+async fn fetch_latest_release(
+    http: &HttpClient,
+) -> std::result::Result<(String, String), &'static str> {
+    let resp = http
+        .raw()
+        .get(RELEASES_API)
+        .send()
+        .await
+        .map_err(|_| "network")?;
+    if !resp.status().is_success() {
+        return Err(if resp.status().as_u16() == 404 {
+            "not_found"
+        } else {
+            "http"
+        });
+    }
+    let release: GhRelease = resp.json().await.map_err(|_| "json")?;
+    let tag = release
+        .tag_name
+        .filter(|t| !t.trim().is_empty())
+        .ok_or("json")?;
+    // В opener ссылку из ответа пускаем только как github.com-https.
+    let url = release
+        .html_url
+        .filter(|u| u.starts_with("https://github.com/"))
+        .unwrap_or_else(|| RELEASES_PAGE.to_string());
+    Ok((tag, url))
+}
+
+/// semver-lite: `v0.2.0` → `[0, 2, 0]`. Хвост после цифр в части (`0.2.0-rc1`)
+/// отбрасывается, мусор → `None` — обновление не обещаем и не паникуем.
+fn parse_version(version: &str) -> Option<Vec<u64>> {
+    let trimmed = version.trim().trim_start_matches(['v', 'V']);
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .split('.')
+        .map(|part| {
+            let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse::<u64>().ok()
+        })
+        .collect()
+}
+
+/// `latest` строго новее `current`? Непонятный формат → `false`: честнее
+/// промолчать, чем предложить обновление на мусорный тег.
+fn is_newer(latest: &str, current: &str) -> bool {
+    let (Some(latest), Some(current)) = (parse_version(latest), parse_version(current)) else {
+        return false;
+    };
+    for i in 0..latest.len().max(current.len()) {
+        let a = latest.get(i).copied().unwrap_or(0);
+        let b = current.get(i).copied().unwrap_or(0);
+        if a != b {
+            return a > b;
+        }
+    }
+    false
+}
+
+/// Проверить обновления лаунчера (GitHub releases/latest). Недоступность сети,
+/// закрытый репозиторий или неразобранный ответ — не ошибка команды: UI получает
+/// `checked: true` и `note` с кодом причины.
+#[tauri::command]
+pub async fn update_check(state: State<'_, AppState>) -> Result<UpdateInfo> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let http = state.http().await;
+    // Офлайн-гейт — как у соседних сетевых команд (auth/mclogs): проверка
+    // обновлений в режиме «Работать офлайн» лишена смысла.
+    if http.offline() {
+        return Err(LauncherError::OfflineMode(
+            "проверка обновлений лаунчера".into(),
+        ));
+    }
+    let (latest, url, note) =
+        match tokio::time::timeout(UPDATE_CHECK_TIMEOUT, fetch_latest_release(&http)).await {
+            Ok(Ok((tag, url))) => (Some(tag), Some(url), None),
+            Ok(Err(code)) => (None, None, Some(code.to_string())),
+            Err(_) => (None, None, Some("timeout".to_string())),
+        };
+    let update_available = latest
+        .as_deref()
+        .is_some_and(|latest| is_newer(latest, &current));
+    Ok(UpdateInfo {
+        current,
+        latest,
+        url,
+        update_available,
+        checked: true,
+        note,
+    })
+}
+
+// ---------- D67: избранное каталога, наигранные часы, экспорт .mrpack, чужие лаунчеры ----------
+
+/// Избранные проекты каталога (локальный список id Modrinth, порядок добавления).
+#[tauri::command]
+pub fn favorites_list(state: State<'_, AppState>) -> Vec<String> {
+    crate::favorites::list_in(state.paths.root())
+}
+
+/// Добавить/убрать проект из избранного. Возвращает новое состояние (true = в избранном).
+#[tauri::command]
+pub fn favorites_toggle(state: State<'_, AppState>, project_id: String) -> Result<bool> {
+    crate::favorites::toggle_in(state.paths.root(), &project_id)
+}
+
+/// Наигранные часы по дням (последние `days` дней, включая нулевые).
+#[tauri::command]
+pub fn playtime_stats(
+    state: State<'_, AppState>,
+    instance_id: String,
+    days: u32,
+) -> Vec<crate::playtime::PlaytimeDay> {
+    crate::playtime::stats_in_dir(
+        state.paths.root(),
+        &instance_id,
+        days,
+        &crate::playtime::local_today(),
+    )
+}
+
+#[tauri::command]
+pub async fn foreign_scan() -> Vec<crate::import::foreign::ForeignSource> {
+    // P2-ревизии: dir_size по всем чужим инстансам — секунды диска, не на главном потоке.
+    tauri::async_runtime::spawn_blocking(crate::import::foreign::scan_foreign_launchers)
+        .await
+        .unwrap_or_default()
+}
+
+/// Импорт инстанса чужого лаунчера (независимая копия в наш каталог);
+/// возвращает id созданного инстанса.
+#[tauri::command]
+pub async fn foreign_import(
+    state: State<'_, AppState>,
+    dir: String,
+    target_name: String,
+) -> Result<String> {
+    let http = state.http().await;
+    // P1-ревизии: read-guard настроек не должен жить через минуты копирования.
+    let settings = state.settings.read().await.clone();
+    crate::import::foreign::import_foreign_instance(
+        &state.paths,
+        &settings,
+        http,
+        std::path::Path::new(&dir),
+        &target_name,
+    )
+    .await
+}
+
+// ---------- D68: выделенные серверы («Сервер из инстанса») ----------
+
+/// Создать сервер из инстанса (серверное ПО + сервер-моды + мир + конфиги).
+#[tauri::command]
+pub async fn server_create(
+    state: State<'_, AppState>,
+    instance_id: String,
+    name: String,
+    world: Option<String>,
+    port: u16,
+    ram_mb: u32,
+    online_mode: bool,
+) -> Result<crate::servers::ServerCreateResult> {
+    let http = state.http().await;
+    crate::servers::server_create(
+        &state.paths,
+        &http,
+        &instance_id,
+        &name,
+        world.as_deref(),
+        port,
+        ram_mb,
+        online_mode,
+    )
+    .await
+}
+
+/// Список серверов (всех или одного инстанса).
+#[tauri::command]
+pub fn server_list(
+    state: State<'_, AppState>,
+    instance_id: Option<String>,
+) -> Vec<crate::servers::ServerInfo> {
+    crate::servers::server_list(&state.paths, instance_id.as_deref())
+}
+
+/// Статус одного сервера (running/pid/eula — на лету).
+#[tauri::command]
+pub fn server_status(state: State<'_, AppState>, id: String) -> Result<crate::servers::ServerInfo> {
+    crate::servers::server_status(&state.paths, &id)
+}
+
+/// Удалить сервер (каталог + запись реестра; только остановленный).
+#[tauri::command]
+pub async fn server_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::servers::server_delete(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Записать принятие EULA (только явное действие пользователя).
+#[tauri::command]
+pub fn server_accept_eula(state: State<'_, AppState>, id: String) -> Result<()> {
+    crate::servers::server_accept_eula(&state.paths, &id)
+}
+
+/// Запустить сервер; возвращает pid.
+#[tauri::command]
+pub async fn server_start(state: State<'_, AppState>, id: String) -> Result<u32> {
+    // P1-ревизии: спавн гоняет пробы java -version — только не на главном потоке.
+    let paths = state.paths.clone();
+    let bus = state.bus.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let info = crate::servers::server_status(&paths, &id)?;
+        let spec = crate::servers::run::ServerRunSpec {
+            id: info.id.clone(),
+            dir: crate::servers::servers_root(&paths).join(&info.id),
+            ram_mb: info.ram_mb,
+            loader: info.loader.clone(),
+            loader_version: info.loader_version.clone(),
+            mc_version: info.mc_version.clone(),
+            java_major: info.java_major,
+        };
+        crate::servers::run::server_start(&paths, &bus, spec, info.port)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Корректная остановка («stop» в stdin, до 60с; затем жёсткая). true = вышли сами.
+#[tauri::command]
+pub async fn server_stop(state: State<'_, AppState>, id: String) -> Result<bool> {
+    // P1-ревизии: до 60с ожидания graceful-выхода — только не на главном потоке.
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::servers::run::server_stop(&paths, &id))
+        .await
+        .map_err(join_err)?
+}
+
+/// Переустановить серверное ПО (снос артефактов установщика + новая установка;
+/// мир и настройки сервера не трогаются). Минуты — async + spawn_blocking.
+#[tauri::command]
+pub async fn server_reinstall(state: State<'_, AppState>, id: String) -> Result<()> {
+    let info = crate::servers::server_status(&state.paths, &id)?;
+    if crate::servers::run::is_running(&state.paths, &id) {
+        return Err(LauncherError::InvalidInput(format!(
+            "сервер {} запущен — сначала остановите его",
+            id
+        )));
+    }
+    let http = state.http().await;
+    let dir = crate::servers::servers_root(&state.paths).join(&info.id);
+    crate::servers::install::reinstall_server_software(
+        &state.paths,
+        &http,
+        &dir,
+        &info.mc_version,
+        info.loader.as_deref(),
+        info.loader_version.as_deref(),
+        &|status: String| tracing::info!("reinstall {id}: {status}"),
+    )
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A7: фронт (`src/api/types.ts`) читает `releaseTime` и `type` —
+    /// snake_case `release_time` ломал каталог версий в UI.
+    #[test]
+    fn version_entry_serializes_camel_case() {
+        let v = VersionEntry {
+            id: "1.20.1".into(),
+            version_type: "release".into(),
+            release_time: "2023-06-12T12:00:00+00:00".into(),
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        assert!(
+            json.contains("\"releaseTime\""),
+            "фронт ждёт releaseTime: {json}"
+        );
+        assert!(
+            json.contains("\"type\":\"release\""),
+            "type сохраняется явным rename: {json}"
+        );
+        assert!(
+            !json.contains("release_time") && !json.contains("version_type"),
+            "snake_case ушёл из контракта: {json}"
+        );
+    }
+
+    /// Сравнение версий: `v0.2.0` новее `0.1.0`, равные — не обновление.
+    #[test]
+    fn version_compare_semver_lite() {
+        assert!(is_newer("v0.2.0", "0.1.0"), "ведущая v не мешает сравнению");
+        assert!(is_newer("0.1.1", "0.1.0"));
+        assert!(is_newer("1.0.0", "0.9.9"));
+        assert!(!is_newer("0.1.0", "0.1.0"), "та же версия — не обновление");
+        assert!(!is_newer("v0.1.0", "0.1.0"), "ведущая v не делает версию новой");
+        assert!(!is_newer("0.1", "0.1.0"), "0.1 и 0.1.0 — одна версия");
+        assert!(!is_newer("0.2.0", "1.0.0"), "старый тег — не обновление");
+    }
+
+    /// Мусор в теге: ни паники, ни ложного «есть обновление».
+    #[test]
+    fn version_parser_survives_garbage() {
+        assert_eq!(parse_version("v0.2.0"), Some(vec![0, 2, 0]));
+        assert_eq!(parse_version(" V1.20.1 "), Some(vec![1, 20, 1]), "пробелы и V");
+        assert_eq!(
+            parse_version("0.2.0-rc1"),
+            Some(vec![0, 2, 0]),
+            "хвост после цифр игнорируется"
+        );
+        for junk in ["", "   ", "v", "мусор", "1.2.x", "1..3", "1.99999999999999999999"] {
+            assert!(parse_version(junk).is_none(), "мусор → None: {junk:?}");
+            assert!(!is_newer(junk, "0.1.0"), "мусор не новее: {junk:?}");
+            assert!(!is_newer("0.1.0", junk), "мусор не старее: {junk:?}");
+        }
+    }
+
+    /// Фронт (`src/api/types.ts`) читает `updateAvailable`/`checked` — контракт
+    /// camelCase (D25); `note` без причины уезжает как `null`.
+    #[test]
+    fn update_info_serializes_camel_case() {
+        let info = UpdateInfo {
+            current: "0.1.0".into(),
+            latest: Some("v0.2.0".into()),
+            url: Some(RELEASES_PAGE.into()),
+            update_available: true,
+            checked: true,
+            note: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"updateAvailable\":true"), "{json}");
+        assert!(json.contains("\"current\":\"0.1.0\""), "{json}");
+        assert!(
+            !json.contains("update_available") && !json.contains("tag_name"),
+            "snake_case ушёл из контракта: {json}"
+        );
+        assert!(json.contains("\"note\":null"), "None приезжает как null: {json}");
+    }
+
+    /// B6: слияние настроек на сервере — из payload переносятся ТОЛЬКО
+    /// пользовательские поля; статистика супервизора (play_seconds,
+    /// launch_count, last_played), дописанная на диск после Get, не затирается
+    /// устаревшим снапшотом фронтенда.
+    #[test]
+    fn settings_set_merges_user_fields_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let mut disk = Instance::new("x", "1.20.1");
+        disk.play_seconds = 100;
+        disk.launch_count = 3;
+        disk.last_played = Some(12345);
+        instances::save(&paths, &disk).unwrap();
+
+        // Устаревший снапшот фронта: пользовательская RAM новая, статистика —
+        // старая (superвизор уже дописал свои 100 секунд).
+        let mut payload = disk.clone();
+        payload.play_seconds = 50;
+        payload.launch_count = 1;
+        payload.last_played = None;
+        payload.ram_mb = 4096;
+        payload.notes = "заметка".into();
+
+        // Тот же путь, что в команде: update под SAVE_LOCK + merge_user_settings.
+        instances::update(&paths, &payload.id, |cur| merge_user_settings(cur, &payload)).unwrap();
+        let saved = instances::load(&paths, &payload.id).unwrap();
+        assert_eq!(saved.play_seconds, 100, "статистика с диска не затёрта");
+        assert_eq!(saved.launch_count, 3, "launch_count с диска");
+        assert_eq!(saved.last_played, Some(12345), "last_played с диска");
+        assert_eq!(saved.ram_mb, 4096, "пользовательское поле перенесено");
+        assert_eq!(saved.notes, "заметка", "notes перенесены");
+    }
+
+    /// ENV-13: офлайн-uuid считается от санитизированного имени — тот же путь,
+    /// что в account_add_offline. Ник «Steve\r\n» должен дать тот же uuid,
+    /// что чистый «Steve» (иначе инвентарь офлайн-миров рассинхронизируется).
+    #[test]
+    fn offline_account_uuid_uses_sanitized_name() {
+        let clean = crate::util::names::sanitize_user_name("Steve\r\n", "Player");
+        assert_eq!(clean, "Steve", "управляющие символы вырезаны");
+        assert_eq!(
+            crate::auth::offline::offline_uuid(&clean),
+            crate::auth::offline::offline_uuid("Steve"),
+            "uuid от чистого имени совпадает с vanilla-правилом"
+        );
+        assert_ne!(
+            crate::auth::offline::offline_uuid("Steve\r\n"),
+            crate::auth::offline::offline_uuid("Steve"),
+            "сырой ввод давал бы другой uuid — это и был баг"
+        );
+    }
+
+    /// Смена версии: пустая версия, версия с пробелом и «та же версия» —
+    /// InvalidInput до любых сетевых обращений и записи полей.
+    #[test]
+    fn version_change_rejects_bad_and_same_version() {
+        for (current, new) in [
+            ("1.20.1", ""),
+            ("1.20.1", "1 21"),
+            ("1.20.1", "1.21.1\n"),
+            ("1.20.1", "\t"),
+            ("1.20.1", "1.20.1"),
+        ] {
+            let err = validate_version_change(current, new).unwrap_err();
+            assert_eq!(
+                err.code(),
+                "invalid_input",
+                "пара ({current:?}, {new:?}) отклонена"
+            );
+        }
+        assert!(validate_version_change("1.20.1", "1.21.1").is_ok());
+        assert!(validate_version_change("1.20.1", "24w14a").is_ok());
+    }
+
+    /// Guard смены версии: живой PID в `.lock` блокирует операцию (B9),
+    /// без лока — проход. Паттерн instances::tests::delete_duplicate_rename_reject_running.
+    #[test]
+    fn version_change_running_guard_blocks_live_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let inst = Instance::new("vc-guard", "1.20.1");
+        instances::save(&paths, &inst).unwrap();
+        let inst_dir = instances::instance_dir(&paths, &inst.id);
+
+        // Имитируем живую игру: .lock с PID текущего тестового процесса.
+        std::fs::write(
+            crate::util::fs::long_path(&inst_dir.join(".lock")),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        let err = ensure_not_running(&paths, &inst.id, "сменой версии").unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+
+        // Лок снят — операция разрешена.
+        let _ = std::fs::remove_file(inst_dir.join(".lock"));
+        assert!(ensure_not_running(&paths, &inst.id, "сменой версии").is_ok());
+    }
+
+    /// P0-фикс: traversal-id контентных команд (content_installed/toggle/
+    /// remove) отбраковывается валидатором id ПЕРВОЙ строкой, до дисковых
+    /// операций: «../x» и «a/b» не должны ничего создать/прочитать вне
+    /// каталога инстанса (A23).
+    #[test]
+    fn content_commands_reject_traversal_ids_before_disk_ops() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+
+        for bad in ["../x", "a/b"] {
+            // Та же первая строка, что в content_installed/content_toggle/
+            // content_remove: InvalidInput до загрузки манифеста и диска.
+            let err = instances::valid_id(bad).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "id {bad:?} отбракован");
+        }
+
+        // До доменных операций дело не дошло: внутри instances/ пусто.
+        assert!(
+            std::fs::read_dir(paths.instances_dir())
+                .unwrap()
+                .next()
+                .is_none(),
+            "traversal-id не должен трогать диск"
+        );
+    }
+
+    /// F30-фикс: launch_safe при занятом launching — InvalidInput, и проверка
+    /// ничего не вставляет в launching (вставку/снятие делает только
+    /// instance_launch: ошибка apply_safe_mode/save больше не оставляет
+    /// инстанс навсегда «запускается»).
+    #[test]
+    fn launch_safe_busy_launching_rejects_without_leaving_id() {
+        let mut launching = std::collections::HashSet::new();
+        launching.insert("busy".to_string());
+
+        // Занятый id: ранний отказ.
+        let err = ensure_not_launching(&launching, "busy").unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+
+        // Свободный id: проверка проходит и ничего не вставляет.
+        assert!(ensure_not_launching(&launching, "free").is_ok());
+        assert!(
+            !launching.contains("free"),
+            "вставку в launching делает только instance_launch"
+        );
+    }
+
+    /// Смена версии обновляет поля инстанса: mc_version новый, version_id
+    /// сброшен (старый version JSON невалиден), пользовательские поля и
+    /// статистика не тронуты; при загрузчике — loader_version на подобранную.
+    #[test]
+    fn version_change_updates_fields_and_resets_version_id() {
+        // Ванильный инстанс (loader=None): version_id сбрасывается, остальное
+        // остаётся.
+        let mut inst = Instance::new("vanilla", "1.20.1");
+        inst.version_id = Some("1.20.1-stale".into());
+        inst.ram_mb = 4096;
+        inst.play_seconds = 77;
+        let updated = version_change_fields(&inst, "1.21.1", None);
+        assert_eq!(updated.mc_version, "1.21.1");
+        assert_eq!(updated.version_id, None, "version_id сброшен");
+        assert_eq!(updated.loader_version, None, "без загрузчика — как было");
+        assert_eq!(updated.ram_mb, 4096, "пользовательское поле не тронуто");
+        assert_eq!(updated.play_seconds, 77, "статистика не тронута");
+        assert_eq!(updated.id, inst.id, "id инстанса сохраняется");
+        // Оригинал не изменён (чистая функция).
+        assert_eq!(inst.mc_version, "1.20.1");
+        assert_eq!(inst.version_id.as_deref(), Some("1.20.1-stale"));
+
+        // Инстанс с загрузчиком: loader_version переносится на подобранную.
+        let mut loaded = Instance::new("fabric", "1.20.1");
+        loaded.loader = Some("fabric".into());
+        loaded.loader_version = Some("0.16.9".into());
+        loaded.version_id = Some("fabric-loader-0.16.9-1.20.1".into());
+        let updated = version_change_fields(&loaded, "1.21.1", Some("0.16.14"));
+        assert_eq!(updated.loader.as_deref(), Some("fabric"), "тип загрузчика сохранён");
+        assert_eq!(updated.loader_version.as_deref(), Some("0.16.14"));
+        assert_eq!(updated.version_id, None, "старый JSON загрузчика больше не валиден");
+        assert_eq!(updated.mc_version, "1.21.1");
+    }
+
+    /// Реальная сеть — #[ignore], гонять на приёмке (спека §9). Пока репозиторий
+    /// закрыт, 404 (`not_found`) — тоже корректный исход проверки.
+    #[tokio::test]
+    #[ignore]
+    async fn real_github_release_fetch() {
+        let http = HttpClient::new(None).unwrap();
+        match fetch_latest_release(&http).await {
+            Ok((tag, url)) => {
+                assert!(parse_version(&tag).is_some(), "тег релиза: {tag}");
+                assert!(url.starts_with("https://github.com/"), "ссылка: {url}");
+            }
+            Err(code) => assert!(
+                matches!(code, "not_found" | "http" | "network"),
+                "неожиданная причина: {code}"
+            ),
+        }
+    }
+}
