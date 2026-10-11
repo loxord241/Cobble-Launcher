@@ -1,4 +1,8 @@
-# mc-launcher-v2
+# Cobble Launcher
+
+Техническое имя проекта (npm/cargo/репо-каталог): `mc-launcher-v2` — оно
+встречается в сборочных конфигах и путях, публичное имя продукта везде
+«Cobble Launcher».
 
 Полнофункциональный лаунчер Minecraft: vanilla + Fabric + Quilt + NeoForge +
 Forge, Modrinth (моды, модпаки .mrpack, обновления), Microsoft-аккаунты,
