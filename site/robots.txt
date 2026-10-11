@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://loxord241.github.io/Cobble-Launcher/sitemap.xml

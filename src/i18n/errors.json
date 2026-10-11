@@ -1,0 +1,136 @@
+{
+  "network": {
+    "ru": "Проблема с сетью. Проверьте подключение или прокси в настройках.",
+    "en": "Network problem. Check your connection or proxy in settings.",
+    "uk": "Проблема з мережею. Перевірте з'єднання або проксі в налаштуваннях.",
+    "pl": "Problem z siecią. Sprawdź połączenie lub proxy w ustawieniach."
+  },
+  "hash_mismatch": {
+    "ru": "Файл повреждён при скачивании и не прошёл проверку хэша.",
+    "en": "File corrupted during download and failed the hash check.",
+    "uk": "Файл пошкоджено під час завантаження — не збігся хеш.",
+    "pl": "Plik uległ uszkodzeniu podczas pobierania i nie przeszedł weryfikacji hash."
+  },
+  "not_found": {
+    "ru": "Не найдено.",
+    "en": "Not found.",
+    "uk": "Не знайдено.",
+    "pl": "Nie znaleziono."
+  },
+  "invalid_input": {
+    "ru": "Проверьте введённые данные.",
+    "en": "Check the entered data.",
+    "uk": "Перевірте введені дані.",
+    "pl": "Sprawdź wprowadzone dane."
+  },
+  "zip_slip": {
+    "ru": "Архив содержит опасные пути и заблокирован.",
+    "en": "The archive contains dangerous paths and has been blocked.",
+    "uk": "Архів містить небезпечні шляхи та заблокований.",
+    "pl": "Archiwum zawiera niebezpieczne ścieżki i zostało zablokowane."
+  },
+  "java_not_found": {
+    "ru": "Нужная Java не найдена. Установите её в настройках.",
+    "en": "Required Java not found. Install it in settings.",
+    "uk": "Потрібну Java не знайдено. Встановіть її у налаштуваннях.",
+    "pl": "Nie znaleziono wymaganej Javy. Zainstaluj ją w ustawieniach."
+  },
+  "version_not_found": {
+    "ru": "Такой версии нет в манифесте.",
+    "en": "This version is not in the manifest.",
+    "uk": "Такої версії немає в маніфесті.",
+    "pl": "Nie znaleziono wersji Minecraft."
+  },
+  "timeout": {
+    "ru": "Операция не уложилась в таймаут.",
+    "en": "The operation timed out.",
+    "uk": "Перевищено час очікування операції.",
+    "pl": "Czas oczekiwania upłynął."
+  },
+  "io": {
+    "ru": "Ошибка файловой системы.",
+    "en": "File system error.",
+    "uk": "Помилка файлової системи.",
+    "pl": "Błąd dysku lub pliku."
+  },
+  "json": {
+    "ru": "Не удалось разобрать данные.",
+    "en": "Failed to parse data.",
+    "uk": "Не вдалося розібрати дані.",
+    "pl": "Otrzymano uszkodzone dane (nieprawidłowy JSON)."
+  },
+  "http": {
+    "ru": "Сервер ответил ошибкой.",
+    "en": "The server responded with an error.",
+    "uk": "Сервер відповів помилкою.",
+    "pl": "Serwer zwrócił błąd."
+  },
+  "zip": {
+    "ru": "Архив повреждён или не читается.",
+    "en": "The archive is corrupted or unreadable.",
+    "uk": "Архів пошкоджено або не читається.",
+    "pl": "Archiwum jest uszkodzone lub nieczytelne."
+  },
+  "cancelled": {
+    "ru": "Операция отменена.",
+    "en": "Operation cancelled.",
+    "uk": "Операцію скасовано.",
+    "pl": "Operacja anulowana."
+  },
+  "internal": {
+    "ru": "Внутренняя ошибка лаунчера. Подробности — в логе.",
+    "en": "Internal launcher error. See the log for details.",
+    "uk": "Внутрішня помилка лаунчера. Подробиці — у логу.",
+    "pl": "Błąd wewnętrzny launchera. Szczegóły — w logu."
+  },
+  "instance_running": {
+    "ru": "Игра этого инстанса запущена — сначала остановите её.",
+    "en": "This instance’s game is running — stop it first.",
+    "uk": "Гра цього інстансу запущена — спочатку зупиніть її.",
+    "pl": "Instancja jest już uruchomiona."
+  },
+  "offline_mode": {
+    "ru": "Включён режим «Работать офлайн» — скачивание из сети отключено.",
+    "en": "“Work offline” mode is on — network downloads are disabled.",
+    "uk": "Увімкнено режим «Працювати офлайн» — завантаження з мережі вимкнено.",
+    "pl": "Włączony tryb offline: sieć wyłączona."
+  },
+  "network_detail": {
+    "ru": "Проблема с сетью",
+    "en": "Network problem",
+    "uk": "Проблема з мережею",
+    "pl": "Problem z siecią"
+  },
+  "hints": {
+    "hash_retry": {
+      "ru": "Файл скачан повторно и хэш снова не совпал — проверьте соединение или зеркало.",
+      "en": "The file was redownloaded and the hash failed again — check your connection or mirror.",
+      "uk": "Файл завантажено повторно і хеш знову не збігся — перевірте з'єднання або дзеркало.",
+      "pl": "Plik pobrano ponownie, ale hash znowu się nie zgadza — sprawdź połączenie lub serwer lustrzany."
+    },
+    "java_settings": {
+      "ru": "Установите Java автоматически в настройках или укажите путь вручную.",
+      "en": "Install Java automatically in settings or specify the path manually.",
+      "uk": "Встановіть Java автоматично в налаштуваннях або вкажіть шлях вручну.",
+      "pl": "Zainstaluj Javę automatycznie w ustawieniach lub podaj ścieżkę ręcznie."
+    },
+    "instance_running": {
+      "ru": "Остановите игру этого инстанса — Windows не даёт менять занятые файлы.",
+      "en": "Stop this instance's game — Windows won't let you modify files that are in use.",
+      "uk": "Зупиніть гру цього інстансу — Windows не дає змінювати зайняті файли.",
+      "pl": "Zatrzymaj grę tej instancji — Windows nie pozwala modyfikować używanych plików."
+    },
+    "offline_toggle": {
+      "ru": "Выключите тумблер «Работать офлайн» в титлбаре, чтобы качать из сети.",
+      "en": "Turn off the “Work offline” toggle in the title bar to download from the network.",
+      "uk": "Вимкніть перемикач «Працювати офлайн» у титлбарі, щоб завантажувати з мережі.",
+      "pl": "Wyłącz przełącznik „Pracuj offline” na pasku tytułu, aby pobierać z sieci."
+    },
+    "cert_time": {
+      "ru": "Не удалось проверить сервер. Если на компьютере сбита дата и время — исправьте их и повторите.",
+      "en": "Server could not be verified. If your computer's date and time are wrong — fix them and retry.",
+      "uk": "Не вдалося перевірити сервер. Якщо на комп'ютері збито дату й час — виправте їх і повторіть.",
+      "pl": "Nie udało się zweryfikować serwera. Jeśli data i godzina komputera są błędne — popraw je i spróbuj ponownie."
+    }
+  }
+}
