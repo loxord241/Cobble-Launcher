@@ -11,6 +11,7 @@ import { pickJsonPath, pickPngPath, pickSavePath } from "../components/pickFile"
 import ThemeCards from "../components/ThemeCards";
 import type { ForeignInstance, ForeignSource, JavaInstall, RamGuide, Settings, StorageStats } from "../../api/types";
 import UpdatesSection from "../components/UpdatesSection";
+import BackupsSection from "../components/BackupsSection";
 
 /** D20: пауза перед записью в ядро — поля не пишутся на каждый keystroke. */
 const SAVE_DEBOUNCE_MS = 400;
@@ -780,6 +781,9 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
       </section>
 
       <UpdatesSection />
+
+      {/* D69 (F4): политика хранения и реестр бэкапов */}
+      <BackupsSection />
 
       {/* Дисковое пространство (F18) и экспорт/импорт настроек (F20) */}
       <section className="anim-fade-up" style={{ animationDelay: "200ms" }}>

@@ -125,7 +125,7 @@ pub fn extract_zip_stripping<R: Read + Seek>(
     reader: R,
     dest: &Path,
     strip: &str,
-    _keep: impl Fn(&str) -> bool,
+    keep: impl Fn(&str) -> bool,
     mut on_file: impl FnMut(&Path),
 ) -> Result<Vec<PathBuf>> {
     let mut archive = zip::ZipArchive::new(reader)
@@ -168,6 +168,15 @@ pub fn extract_zip_stripping<R: Read + Seek>(
             .map(Path::to_path_buf)
             .unwrap_or(rel_full);
         if rel.as_os_str().is_empty() {
+            continue;
+        }
+        // D69-ревизия (P0): keep-фильтр обязан применяться к относительному
+        // пути — раньше параметр был мёртвым, и pack-update мог распаковать
+        // overrides/saves/ поверх миров пользователя. Разделители — строго
+        // '/': на Windows to_string_lossy() даёт '\', и префиксные фильтры
+        // ("saves/") молча не матчатся (поймал собственный тест волны).
+        let rel_norm = rel.to_string_lossy().replace('\\', "/");
+        if !keep(&rel_norm) {
             continue;
         }
         let target = crate::util::fs::long_path(&dest.join(&rel));
@@ -424,5 +433,36 @@ mod tests {
             "симлинк не должен появляться на диске"
         );
         assert_eq!(std::fs::read(dir.path().join("real.txt")).unwrap(), b"OK");
+    }
+
+    /// D69-ревизия (P0): keep-фильтр обязан работать — записи, которые он
+    /// отклонил (overrides/saves/ при обновлении модпака), не распаковываются.
+    #[test]
+    fn stripping_keep_filter_skips_rejected_entries() {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let opts: zip::write::SimpleFileOptions = Default::default();
+            w.start_file("overrides/config.toml", opts).unwrap();
+            w.write_all(b"cfg").unwrap();
+            w.start_file("overrides/saves/world/level.dat", opts).unwrap();
+            w.write_all(b"SAVE").unwrap();
+            w.finish().unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let files = extract_zip_stripping(
+            std::io::Cursor::new(buf.into_inner()),
+            dir.path(),
+            "overrides/",
+            |rel| !rel.starts_with("saves/"),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(files.len(), 1, "saves/ должен быть отфильтрован: {files:?}");
+        assert_eq!(std::fs::read(dir.path().join("config.toml")).unwrap(), b"cfg");
+        assert!(
+            !dir.path().join("saves").exists(),
+            "ни saves/, ни level.dat на диске быть не должно"
+        );
     }
 }

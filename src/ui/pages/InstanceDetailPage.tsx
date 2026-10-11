@@ -55,6 +55,7 @@ import ConfigsTab from "../components/instance/ConfigsTab";
 import ServerTab from "../components/server/ServerTab";
 import CopyContentDialog from "../components/instance/CopyContentDialog";
 import { askConfirm } from "../confirm";
+import { useModUpdatesStore } from "../../state/modUpdates";
 import PackArt from "../components/instance/PackArt";
 /** Логический путь файла контента → имя на диске (без .disabled). */
 export function fileBase(file: string): string {
@@ -64,8 +65,10 @@ export function fileBase(file: string): string {
 import type {
   ContentEntry,
   GameResourceSample,
+  Instance,
   LogFileInfo,
   ModMetadata,
+  PackUpdateInfo,
   PackArtInfo,
   ProjectMeta,
   SnapshotInfo,
@@ -73,6 +76,8 @@ import type {
 } from "../../api/types";
 
 type Tab = "overview" | "worlds" | "screens" | "configs" | "mods" | "servers" | "logs";
+
+
 
 const TABS: Tab[] = ["overview", "worlds", "screens", "configs", "mods", "servers", "logs"];
 
@@ -156,7 +161,11 @@ export default function InstanceDetailPage({
   const kebabRef = useRef<HTMLButtonElement>(null);
   const firstItemRef = useRef<HTMLButtonElement>(null);
 
-  const inst = useMemo(() => list.find((i) => i.id === instanceId), [list, instanceId]);
+  // Инстанс из стора; modpack? уже в общем типе Instance (D69).
+  const inst = useMemo(
+    () => list.find((i) => i.id === instanceId) as Instance | undefined,
+    [list, instanceId],
+  );
   const alive = inst !== undefined;
 
   // Инстанс удалили (в т.ч. из другого окна), пока страница открыта — уходим к списку.
@@ -166,6 +175,60 @@ export default function InstanceDetailPage({
 
   // Новая иконка могла быть валидной — флаг протухания шапки сбрасываем.
   useEffect(() => setHeroIconBroken(false), [inst?.icon]);
+
+  // F1 «обновление модпака»: тихая проверка при открытии страницы — ровно
+  // один запрос на появление ссылки пака; ошибка (нет сети и т.п.) молча
+  // скрывает баннер. После обновления load() даёт новый modpack — проверка
+  // подтверждает исчезновение обновления.
+  const [packUpdate, setPackUpdate] = useState<PackUpdateInfo | null>(null);
+  const [packBusy, setPackBusy] = useState(false);
+  const packRef = inst?.modpack ?? null;
+  // deps — примитивы (projectId/versionId): объект modpack пересоздаётся
+  // при каждом load() и перезапускал бы проверку без причины.
+  const packProjectId = packRef?.projectId ?? "";
+  const packVersionId = packRef?.versionId ?? "";
+  useEffect(() => {
+    if (!packProjectId) return;
+    let alive = true;
+    api.packUpdateCheck(instanceId)
+      .then((u) => {
+        if (alive) setPackUpdate(u);
+      })
+      .catch(() => {
+        // Проверка не удалась — баннер просто не показываем (тихий режим).
+        if (alive) setPackUpdate(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [instanceId, packProjectId, packVersionId]);
+
+  /** Применить обновление модпака: подтверждение (ядро сначала делает бэкап
+   * инстанса целиком), затем pack_update_apply — скачивания идут через
+   * dl-группы и видны в рельсе «Загрузки». */
+  const applyPackUpdate = async () => {
+    if (!packUpdate) return;
+    const version = packUpdate.versionNumber;
+    if (
+      !(await askConfirm(t("instance.packUpdate.confirmBody", { version }), {
+        confirmLabel: t("instance.packUpdate.apply"),
+      }))
+    ) {
+      return;
+    }
+    setPackBusy(true);
+    setError(null);
+    try {
+      await api.packUpdateApply(instanceId);
+      setPackUpdate(null);
+      setNotice(t("instance.packUpdate.done", { version }));
+      await load();
+    } catch (e) {
+      setError(apiErrorText(e));
+    } finally {
+      setPackBusy(false);
+    }
+  };
 
   // D64-хвост: панорама из собственных файлов игры — та же цепочка, что в
   // карточке списка (арт галереи → иконка → панорама → пиксель-пейзаж).
@@ -364,6 +427,8 @@ export default function InstanceDetailPage({
       const n = await api.contentUpdateAll(instanceId);
       setNotice(t("mods.updatedCount", { n }));
       setUpdates(null);
+      // D69-ревизия: бейдж на карточке не должен врать до конца сессии.
+      void useModUpdatesStore.getState().checkOne(instanceId);
       await loadInstalled();
     } catch (e) {
       setError(apiErrorText(e));
@@ -765,6 +830,39 @@ export default function InstanceDetailPage({
       >
         {tab === "overview" && (
           <>
+            {/* F1: баннер обновления модпака — только у инстансов, поставленных
+                из пака, и только когда ядро нашло свежую версию. Скачивания
+                видны в рельсе «Загрузки» (dl-группа packupdate). */}
+            {packUpdate && packRef && (
+              <section className="rounded-lg border border-accent/40 bg-accent/10 p-4" role="status">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Sparkles size={16} aria-hidden className="shrink-0 text-accent" />
+                  <span className="text-sm font-semibold">
+                    {t("instance.packUpdate.banner", { version: packUpdate.versionNumber })}
+                  </span>
+                  <span className="chip-mono">
+                    {t("instance.packUpdate.to", {
+                      from: packRef.versionNumber,
+                      to: packUpdate.versionNumber,
+                    })}
+                  </span>
+                  <button
+                    onClick={() => void applyPackUpdate()}
+                    disabled={packBusy}
+                    className="btn-primary btn-sm ml-auto"
+                  >
+                    <RefreshCw size={14} aria-hidden />
+                    {t("instance.packUpdate.apply")}
+                  </button>
+                </div>
+                {packUpdate.changelog && (
+                  <p className="mt-2 whitespace-pre-wrap text-[13px] text-text-muted">
+                    {packUpdate.changelog}
+                  </p>
+                )}
+              </section>
+            )}
+
             <section className="rounded-lg border border-border-app bg-card p-4">
               <h3 className="text-sm font-semibold">{t("instance.overview.stats")}</h3>
               <div className="mt-2 flex flex-wrap gap-2 text-[13px]">

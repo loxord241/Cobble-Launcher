@@ -1,7 +1,7 @@
 // Главная — каталог Modrinth в стиле GDLauncher (D65): hero «Популярное
 // сейчас» (лидер по скачиваниям среди уже загруженных строк), сетка плиток
 // с артом во всю плитку, переключатель типа (модпаки/моды), поиск, сортировка,
-// фильтр загрузчика, бесконечный скролл. Клик по плитке/кнопке «Установить»
+// фильтры загрузчика и версии MC, бесконечный скролл. Клик по плитке/кнопке «Установить»
 // открывает окно проекта — установка происходит внутри окна. Инстансы живут
 // на странице «Инстансы». Ряд «Избранное» (D67): горизонтальная лента плиток
 // проектов, отмеченных сердцем, над выдачей — рисуется, только когда список
@@ -404,6 +404,11 @@ export default function HomePage({ query }: { query: string }) {
   const [tab, setTab] = useState<CatalogType>("modpack")
   const [sort, setSort] = useState<SortIndex>("downloads")
   const [loader, setLoader] = useState("")
+  // Фильтр версии MC каталога: "" = «Любая» — живёт независимо от таба, как loader.
+  const [mcVersion, setMcVersion] = useState("")
+  // Release-версии для дропдауна: манифест отдаёт их от новых к старым — берём
+  // последние 15. Пусто, если манифест не прочитался, — останется только «Любая».
+  const [releaseVersions, setReleaseVersions] = useState<string[]>([])
   const [category, setCategory] = useState("")
   const [localQuery, setLocalQuery] = useState("")
   const [hits, setHits] = useState<SearchHit[]>([])
@@ -437,11 +442,11 @@ export default function HomePage({ query }: { query: string }) {
     setBusy(true)
     setError(null)
     try {
-      // mcVersion не передаём: на Главной нет целевого инстанса. Пустой
-      // запрос + index=downloads — «популярное» (ядро: modrinth/api.rs).
+      // Пустой запрос + index=downloads — «популярное» (ядро: modrinth/api.rs);
+      // mcVersion — выбранный фильтр версии ("" → undefined = любая).
       const r = await api.modrinthSearch(
         localQuery,
-        undefined,
+        mcVersion || undefined,
         loader || undefined,
         tab,
         sort,
@@ -463,12 +468,30 @@ export default function HomePage({ query }: { query: string }) {
     }
   }
 
-  // Автопоиск при монтировании + повторный поиск с нуля (offset 0) при смене
-  // типа/сортировки/загрузчика/категории.
+  // Автопоиск с нуля (offset 0 — пагинация сбрасывается) при монтировании и
+  // смене типа/сортировки/загрузчика/версии/категории.
   useEffect(() => {
     void doSearch()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, sort, loader, category])
+  }, [tab, sort, loader, mcVersion, category])
+
+  // Список версий для фильтра: только release из манифеста (последние 15).
+  // Ошибка чтения манифеста каталог не ломает — дропдаун останется с «Любой».
+  useEffect(() => {
+    let alive = true
+    api
+      .manifestVersions(false, false)
+      .then((vs) => {
+        if (!alive) return
+        setReleaseVersions(
+          vs.filter((v) => v.type === "release").slice(0, 15).map((v) => v.id),
+        )
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
 
   // «Мне повезёт»: случайный проект активного типа (модпак/мод) без учёта
   // текста запроса и фильтров. Два запроса: total_hits → случайная страница
@@ -492,15 +515,16 @@ export default function HomePage({ query }: { query: string }) {
   // Дозагрузка следующей страницы (offset = сколько уже загрузили, дедуп по project_id).
   const loadMore = useCallback(async () => {
     if (loadingMore || busy || !searched || hits.length >= total) return
-    // D62: поколение запроса — как в doSearch: смена tab/sort/loader/category
-    // в полёте дозагрузки не должна аппендить страницы старой выдачи к новой.
+    // D62: поколение запроса — как в doSearch: смена tab/sort/loader/mcVersion/
+    // category в полёте дозагрузки не должна аппендить страницы старой выдачи
+    // к новой.
     const mySeq = ++searchSeqRef.current
     setLoadingMore(true)
     setError(null)
     try {
       const r = await api.modrinthSearch(
         localQuery,
-        undefined,
+        mcVersion || undefined,
         loader || undefined,
         tab,
         sort,
@@ -521,7 +545,7 @@ export default function HomePage({ query }: { query: string }) {
       setLoadingMore(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadingMore, busy, searched, hits, total, localQuery, tab, sort, loader, category])
+  }, [loadingMore, busy, searched, hits, total, localQuery, tab, sort, loader, mcVersion, category])
 
   // Бесконечный скролл: sentinel догружает страницы, кнопка — для клавиатуры.
   useEffect(() => {
@@ -798,6 +822,27 @@ export default function HomePage({ query }: { query: string }) {
           {LOADERS.map((l) => (
             <option key={l} value={l}>
               {prettySlug(l)}
+            </option>
+          ))}
+        </select>
+        {/* Фильтр версии MC — рядом с загрузчиком, тот же набор стилей селектов
+            и то же поведение (сброс пагинации автопоиском, сброс категории). */}
+        <select
+          value={mcVersion}
+          onChange={(e) => {
+            // Категорию сбрасываем вместе с версией: union категорий зависит
+            // и от неё — выбранное могло там отсутствовать (как у загрузчика).
+            setMcVersion(e.target.value)
+            setCategory("")
+          }}
+          disabled={busy}
+          aria-label={t("catalog.versionLabel")}
+          className="h-10 min-w-36 rounded-lg border border-border-strong bg-card px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <option value="">{t("catalog.versionAny")}</option>
+          {releaseVersions.map((v) => (
+            <option key={v} value={v}>
+              {v}
             </option>
           ))}
         </select>

@@ -12,7 +12,7 @@
 [![Licencja](https://img.shields.io/github/license/loxord241/Cobble-Launcher?style=flat-square)](LICENSE)
 [![Platforma](https://img.shields.io/badge/Windows-10%2F11_x64-blue?style=flat-square&logo=windows)](https://github.com/loxord241/Cobble-Launcher/releases/latest)
 [![Języki](https://img.shields.io/badge/języki-ru·en·uk·pl-green?style=flat-square)](#języki)
-[![Testy](https://img.shields.io/badge/testy-457%2B10-success?style=flat-square)](#budowanie-z-kodu-źródłowego)
+[![Testy](https://img.shields.io/badge/testy-589%2B10-success?style=flat-square)](#budowanie-z-kodu-źródłowego)
 
 **[Pobierz najnowszą wersję](https://github.com/loxord241/Cobble-Launcher/releases/latest)** ·
 [Zgłoś problem](https://github.com/loxord241/Cobble-Launcher/issues) ·
@@ -122,7 +122,7 @@ Kontrole jakości:
 
 ```bash
 npm run build                # TypeScript strict + Vite
-cd src-tauri && cargo test   # 457 testy rdzenia + 10 integracyjnych
+cd src-tauri && cargo test   # 589 testy rdzenia + 10 integracyjnych
 ```
 
 ## Stos technologiczny i struktura

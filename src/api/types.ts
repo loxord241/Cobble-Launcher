@@ -69,6 +69,30 @@ export interface Instance {
   accountId?: string;
   /** Подряд упавших запусков (F30). */
   crashCount: number;
+  /** Откуда поставлен модпак (D69): база проверки обновлений пака. */
+  modpack?: ModpackRef;
+}
+
+/** Ссылка на модпак Modrinth, из которого создан инстанс (D69). */
+export interface ModpackRef {
+  projectId: string;
+  versionId: string;
+  versionNumber: string;
+}
+
+/** Найденное обновление модпака инстанса (D69). */
+export interface PackUpdateInfo {
+  versionId: string;
+  versionNumber: string;
+  changelog?: string;
+}
+
+/** Запись в реестре бэкапов (D69, менеджер в Настройках). */
+export interface BackupEntry {
+  file: string;
+  instance: string;
+  createdAt: number;
+  sizeBytes: number;
 }
 
 export interface Resolution {
@@ -103,6 +127,8 @@ export interface Settings {
   uiAccent: string;
   /** Режим «Работать офлайн» (F16): сеть ядра отключается, запуск из кэша. */
   workOffline: boolean;
+  /** Ротация бэкапов (D69): сколько последних держать; 0 = не удалять. */
+  backupKeep: number;
   /** Ограничение скорости загрузки, КБ/с (F17); 0 — без ограничения. */
   speedLimitKbps: number;
   /** Discord Rich Presence (F26). */

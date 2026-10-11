@@ -893,3 +893,13 @@
   дренаж хвоста лога + detach читателей, гвард delete-vs-start, playtime
   Paths, экспорт (однопроходный хэш, traversal, world_ambiguous), фронт
   (кэши, заглушка осиротевших, plural, formatSize, баннер). cargo 575+10.
+
+## 2026-10-11 — D69: волна полировки (5 фич)
+
+- 5 агентов (pack-update, drag-drop, фильтр версий, бэкапы, авто-чек) +
+  интеграция: 5 новых команд (111), Settings.backupKeep, i18n +22×4,
+  Instance.modpack. cargo 589+10, clippy 0, tsc 0.
+- Ревизия 4 агентами: P0×2 + P1×3 + P2×6 + P3×7 — все кроме осознанного
+  бэклога закрыты в тот же день оркестратором (детали D69 в DECISIONS).
+- Приёмки: батарея 12+14 живыми (два replay-флейка Modrinth-латентности),
+  parity2/parity4/e2e повторно после вставки BackupsSection.

@@ -15,6 +15,8 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 import type {
   Account,
   ArchiveResult,
+  BackupEntry,
+  PackUpdateInfo,
   ForeignSource,
   PlaytimeDay,
   ServerInfo,
@@ -149,6 +151,17 @@ export const api = {
   contentUpdateCheck: (instanceId: string) =>
     invoke<UpdateCheck[]>("content_update_check", { instanceId }),
   contentUpdateAll: (instanceId: string) => invoke<number>("content_update_all", { instanceId }),
+  // D69: обновление модпака инстанса целиком (проверка + применение).
+  packUpdateCheck: (instanceId: string) =>
+    invoke<PackUpdateInfo | null>("pack_update_check", { instanceId }),
+  packUpdateApply: (instanceId: string) =>
+    invoke<Instance>("pack_update_apply", { instanceId }),
+  // D69: локальный файл (drag & drop) в каталог контента инстанса.
+  contentInstallLocal: (instanceId: string, path: string) =>
+    invoke<ContentEntry>("content_install_local", { instanceId, path }),
+  // D69: менеджер бэкапов (список/удаление) в Настройках.
+  backupsList: () => invoke<BackupEntry[]>("backups_list"),
+  backupDelete: (fileName: string) => invoke<void>("backup_delete", { fileName }),
   contentBackfillProjects: (instanceId: string) =>
     invoke<number>("content_backfill_projects", { instanceId }),
   // Установка модпака: группа загрузок приходит в ответе — по ней фильтруются
@@ -181,7 +194,8 @@ export const api = {
 
   dataDir: () => invoke<string>("data_dir"),
   logsTail: (lines: number) => invoke<string>("logs_tail", { lines }),
-  dirOpen: () => invoke<{ ok: boolean }>("dir_open"),
+  dirOpen: (sub?: "backups" | "instances" | "exports") =>
+    invoke<{ ok: boolean }>("dir_open", sub ? { sub } : undefined),
 
   // Проверка обновлений лаунчера (GitHub releases; авто-установки нет)
   updateCheck: () => invoke<UpdateInfo>("update_check"),

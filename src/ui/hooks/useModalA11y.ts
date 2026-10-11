@@ -14,7 +14,12 @@ const CLOSE_MS = 140;
 export function useModalA11y(
   onClose: () => void,
   opts?: { /** CSS-селектор элемента, получающего фокус первым (например поле ввода). */
-    initialFocus?: string },
+    initialFocus?: string;
+    /** D69-ревизия: закрытие временно запрещено (идёт установка) —
+     * requestClose НЕ запускает анимацию и не расходует одноразовое
+     * закрытие: раньше guard в onClose при busy оставлял модалку
+     * смонтированной с anim-closing (opacity:0) — «кирпич» до рестарта. */
+    canClose?: () => boolean },
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
@@ -25,12 +30,16 @@ export function useModalA11y(
   // (Escape-слушатель ставится один раз на всё время жизни модалки).
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const canCloseRef = useRef(opts?.canClose);
+  canCloseRef.current = opts?.canClose;
 
   /** Закрыть модалку с exit-анимацией (.anim-closing на контейнере), затем
    * вызвать onClose. Повторный вызов до завершения игнорируется. Таймаут —
    * фолбэк вместо animationend: при reduced-motion событие не придёт. */
   const requestClose = useCallback(() => {
     if (closingRef.current) return;
+    // Проверка ДО анимации: занятую модалку не схлопываем впустую.
+    if (canCloseRef.current && !canCloseRef.current()) return;
     closingRef.current = true;
     containerRef.current?.classList.add("anim-closing");
     const reduce =

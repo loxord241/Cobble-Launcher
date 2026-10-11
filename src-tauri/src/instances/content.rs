@@ -118,6 +118,90 @@ pub fn remove(paths: &Paths, id: &str, file: &str) -> Result<()> {
     save_content_manifest(paths, id, &manifest)
 }
 
+/// Установить локальный файл (drag & drop): .jar — мод, .zip — шейдер
+/// (если внутри есть каталог shaders/) или ресурспак. Источник — путь,
+/// который юзер сам бросил на окно; файл копируется в каталог контента
+/// и регистрируется в манифесте как Local (обновления честно не ищем —
+/// не с Modrinth).
+pub fn install_local(paths: &Paths, id: &str, path: &str) -> Result<ContentEntry> {
+    use crate::instances::ContentKind;
+    use crate::instances::ContentSource;
+
+    let src = std::path::Path::new(path);
+    let name = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::trim)
+        .filter(|n| !n.is_empty() && !n.contains(['\\', '/', ':']))
+        .ok_or_else(|| LauncherError::InvalidInput(format!("недопустимое имя файла: {path}")))?;
+    let lower = name.to_lowercase();
+    let kind = if lower.ends_with(".jar") {
+        ContentKind::Mod
+    } else if lower.ends_with(".zip") {
+        // Подглядываем в архив: шейдер-паки пакуют каталог shaders/ в корень.
+        let f = std::fs::File::open(crate::util::fs::long_path(src))
+            .map_err(|_| LauncherError::NotFound(format!("файл не найден: {path}")))?;
+        let mut zip = zip::ZipArchive::new(f)
+            .map_err(|_| LauncherError::InvalidInput(format!("не zip-архив: {name}")))?;
+        let has_shaders = (0..zip.len()).any(|i| {
+            zip.by_index(i)
+                .map(|e| e.name().starts_with("shaders/"))
+                .unwrap_or(false)
+        });
+        if has_shaders {
+            ContentKind::Shader
+        } else {
+            ContentKind::ResourcePack
+        }
+    } else {
+        return Err(LauncherError::InvalidInput(format!(
+            "поддерживаются только .jar и .zip: {name}"
+        )));
+    };
+    let dir = match kind {
+        ContentKind::Mod => "mods",
+        ContentKind::ResourcePack => "resourcepacks",
+        ContentKind::Shader => "shaderpacks",
+        ContentKind::Datapack => "datapacks", // сюда не попадаем (см. выше)
+    };
+    let file = format!("{dir}/{name}");
+    // Коллизия в обоих состояниях имени — честный отказ, тихо молчать нельзя.
+    let base = minecraft_dir(&instance_dir(paths, id));
+    for enabled in [true, false] {
+        if crate::util::fs::long_path(&base.join(disk_path(&file, enabled))).exists() {
+            return Err(LauncherError::InvalidInput(format!(
+                "файл уже установлен: {name}"
+            )));
+        }
+    }
+    let dst = base.join(disk_path(&file, true));
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(crate::util::fs::long_path(parent))?;
+    }
+    std::fs::copy(
+        crate::util::fs::long_path(src),
+        crate::util::fs::long_path(&dst),
+    )
+    .map_err(|e| LauncherError::InvalidInput(format!("копирование {name}: {e}")))?;
+    let sha1 = crate::util::fs::sha1_file(&dst).ok();
+    let mut manifest = load_content_manifest(paths, id);
+    // Заменяющая переустановка того же имени запрещена выше по коллизии,
+    // так что здесь только добавление.
+    let entry = ContentEntry {
+        kind,
+        file: file.clone(),
+        source: ContentSource::Local,
+        project_id: None,
+        version_id: None,
+        sha1,
+        url: None,
+        enabled: true,
+    };
+    manifest.push(entry.clone());
+    save_content_manifest(paths, id, &manifest)?;
+    Ok(entry)
+}
+
 /// Копировать контент между инстансами (F10): файл в активном состоянии +
 /// запись в манифест приёмника (projectId/versionId/sha1/url/kind сохраняются,
 /// enabled = true). Оба инстанса должны быть остановлены (B9: файлы занятой

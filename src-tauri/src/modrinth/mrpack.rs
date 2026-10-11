@@ -102,7 +102,9 @@ impl MrpackIndex {
 }
 
 /// Открыть .mrpack (zip) и распарсить modrinth.index.json.
-fn open_mrpack(path: &Path) -> Result<MrpackIndex> {
+/// pub(crate): переиспользуется packupdate.rs (обновление пака) — тот же
+/// разбор с капами и валидацией, а не второй парсер.
+pub(crate) fn open_mrpack(path: &Path) -> Result<MrpackIndex> {
     let file = std::fs::File::open(crate::util::fs::long_path(path))?;
     let mut zip = zip::ZipArchive::new(file)
         .map_err(|e| LauncherError::Zip(format!("не удалось открыть .mrpack: {e}")))?;
@@ -592,7 +594,8 @@ async fn satisfy_missing_mods_checker(
 /// content-manifest: официальная спека не требует этих полей в files[], не
 /// все паки их пишут. Паковый version_id (index.version_id) сюда НЕ годится:
 /// это версия пака, и сверка с ней считала бы весь свежий пак «устаревшим».
-fn ids_from_cdn_url(url: &str) -> (Option<String>, Option<String>) {
+/// pub(crate): та же доборка нужна packupdate.rs при перезаписи манифеста.
+pub(crate) fn ids_from_cdn_url(url: &str) -> (Option<String>, Option<String>) {
     const MARKER: &str = "cdn.modrinth.com/data/";
     let Some(rest) = url.split(MARKER).nth(1) else {
         return (None, None);
@@ -630,6 +633,19 @@ pub async fn install_mrpack(
     })?;
     let mut inst = Instance::new(name_override.unwrap_or(&index.name), mc);
     inst.mc_version = mc.clone();
+    // F1: ссылка на пак в instance.json — база проверки обновления пака.
+    // При импорте .mrpack project_id в манифесте нет (пустая строка: проверка
+    // обновлений для такого инстанса честно вернёт «обновлений нет»), а
+    // version_number в .mrpack тоже нет — берём versionId, пустой → «импорт».
+    inst.modpack = Some(crate::instances::ModpackRef {
+        project_id: String::new(),
+        version_id: index.version_id.clone(),
+        version_number: if index.version_id.is_empty() {
+            "импорт".into()
+        } else {
+            index.version_id.clone()
+        },
+    });
 
     // 2. Загрузчик разбираем ДО скачивания: неизвестный загрузчик не должен
     //    стоить пользователю сотен мегабайт трафика (спека §15). fabric/quilt —
@@ -836,6 +852,8 @@ pub async fn install_modpack_project(
     project_id: &str,
     name_override: Option<&str>,
 ) -> Result<Instance> {
+    // IPC-строку в URL не отпускаем без проверки (как install.rs/updates.rs).
+    crate::modrinth::api::validate_id_or_slug(project_id)?;
     let versions = crate::modrinth::api::project_versions(&client, project_id).await?;
     let version = versions.first().ok_or_else(|| {
         LauncherError::InvalidInput(format!("у модпака {project_id} нет версий"))
@@ -934,7 +952,19 @@ pub async fn install_modpack_project(
     )
     .await;
     let _ = std::fs::remove_file(&tmp_path);
-    let inst = installed?;
+    let mut inst = installed?;
+
+    // F1: при установке из каталога известны точные project_id/version_id/
+    // version_number версии Modrinth — перезаписываем «импортную» ссылку из
+    // манифеста. Через instances::update (A28), чтобы не перетереть поля,
+    // записанные параллельно (статистика/настройки).
+    let pack_ref = crate::instances::ModpackRef {
+        project_id: project_id.to_string(),
+        version_id: version.id.clone(),
+        version_number: version.version_number.clone(),
+    };
+    crate::instances::update(paths, &inst.id, |i| i.modpack = Some(pack_ref.clone()))?;
+    inst.modpack = Some(pack_ref);
 
     // Иконка и арт проекта — некритичный шаг: любой сбой (нет icon_url, HTTP,
     // размер/формат) оставляет инстанс со стандартной заглушкой и НЕ роняет

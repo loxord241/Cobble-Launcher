@@ -1,6 +1,7 @@
 //! Инстансы (спека §6.12, §7): изоляция, instance.json атомарно,
 //! удаление в корзину ОС, `.lock` на время работы.
 
+pub mod backups;
 pub mod content;
 pub mod repair;
 pub mod configs;
@@ -14,6 +15,7 @@ pub mod worlds;
 pub mod run;
 pub mod store;
 pub mod export;
+pub mod packupdate;
 
 use crate::errors::{LauncherError, Result};
 use crate::util::fs::{atomic_write, long_path};
@@ -77,6 +79,23 @@ pub struct Instance {
     /// Подряд упавших запусков (F30): !=0 инкремент, успех/0 — сброс.
     #[serde(default)]
     pub crash_count: u32,
+    /// Модпак, которым инстанс установлен (F1 «обновление модпака»): ссылка
+    /// проект+версия Modrinth. None — обычный инстанс, обновление пака ему
+    /// не показывается.
+    #[serde(default, rename = "modpack", skip_serializing_if = "Option::is_none")]
+    pub modpack: Option<ModpackRef>,
+}
+
+/// Ссылка на модпак, которым инстанс установлен (F1): пара проект+версия
+/// Modrinth для проверки свежих версий и человекочитаемый номер для UI.
+/// У импорта .mrpack project_id пустой (в манифесте его нет) — проверка
+/// обновлений для такого инстанса честно возвращает «обновлений нет».
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModpackRef {
+    pub project_id: String,
+    pub version_id: String,
+    pub version_number: String,
 }
 
 impl Default for Instance {
@@ -112,6 +131,7 @@ impl Instance {
             quick_play_server: None,
             account_id: None,
             crash_count: 0,
+            modpack: None,
         }
     }
 }

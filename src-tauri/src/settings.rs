@@ -104,6 +104,9 @@ pub struct Settings {
     pub work_offline: bool,
     /// Ограничение скорости загрузки, КБ/с (F17); 0 — без ограничения.
     pub speed_limit_kbps: u32,
+    /// Ротация бэкапов (D69): сколько последних бэкапов инстанса держать;
+    /// 0 — не удалять никогда. Применяется после каждого успешного бэкапа.
+    pub backup_keep: u32,
     /// Discord Rich Presence (F26): статус «играет в <инстанс>».
     pub discord_rpc: bool,
     /// Логотип (D38): "" | grass | copper | chest | honey | flat | custom.
@@ -135,6 +138,7 @@ impl Default for Settings {
             ui_accent: String::new(),
             work_offline: false,
             speed_limit_kbps: 0,
+            backup_keep: 3,
             discord_rpc: false,
             logo: String::new(),
         }

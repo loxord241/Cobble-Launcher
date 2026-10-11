@@ -7,10 +7,11 @@
 // страницу инстанса; случайный запуск игры кликом в центр исключён.
 // aria-label кнопок прежние («Играть — …», «Остановить — …») — приёмки живут.
 import { memo, useEffect, useState } from "react";
-import { Play, Square } from "lucide-react";
+import { ArrowUpCircle, Play, Square } from "lucide-react";
 import { currentLanguage, t } from "../../i18n";
 import type { Instance } from "../../api/types";
 import type { LaunchStatus } from "../../state/instances";
+import { useModUpdatesStore } from "../../state/modUpdates";
 import { defaultArtwork } from "../defaultArt";
 import { instancePanorama } from "../panorama";
 import InstanceKebabMenu, { type KebabCallbacks } from "./InstanceKebabMenu";
@@ -29,6 +30,10 @@ function InstanceCard({
 }) {
   const phase = status?.phase;
   const busy = phase !== undefined && phase !== "exited";
+
+  // F5: тихая проверка обновлений модов — счётчик из стора (0/нет записи —
+  // бейджа нет). Узкий селектор: перерисовка только при смене числа.
+  const modUpdates = useModUpdatesStore((s) => s.byInstance[inst.id] ?? 0);
 
   // Статус запуска инлайн в подписи, aria-live для скринридеров.
   const statusText = !phase
@@ -128,8 +133,21 @@ function InstanceCard({
       {/* Затемнение под Play на hover/focus (как .playbtn макета). */}
       <div className="pointer-events-none absolute inset-0 bg-[rgb(7_10_15_/_0.26)] opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100" />
 
-      {/* Бейдж версии поверх арта, слева-сверху (как .vtag макета). */}
-      <span className="chip-mono absolute left-2.5 top-2.5 bg-bg/85">{inst.mcVersion}</span>
+      {/* Бейдж версии поверх арта, слева-сверху (как .vtag макета); рядом —
+          счётчик обновлений модов (F5), когда проверка их нашла. Бейдж не
+          кликабельный — клик уходит плитке (открытие страницы инстанса). */}
+      <div className="absolute left-2.5 top-2.5 flex items-center gap-1.5">
+        <span className="chip-mono bg-bg/85">{inst.mcVersion}</span>
+        {modUpdates > 0 && (
+          <span
+            className="chip-mono flex items-center gap-1 bg-bg/85 text-accent"
+            title={t("instanceCard.updates", { n: modUpdates })}
+          >
+            <ArrowUpCircle size={12} aria-hidden />
+            {modUpdates}
+          </span>
+        )}
+      </div>
 
       {/* Постоянная нижняя плашка-вуаль (НЕ hover): имя видно всегда —
           требование владельца; здесь же статус запуска, прогресс и Play/Стоп

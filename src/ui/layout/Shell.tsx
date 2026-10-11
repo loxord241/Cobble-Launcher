@@ -4,7 +4,6 @@
 // данные из сторов/IPC.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useShallow } from "zustand/react/shallow";
@@ -41,6 +40,8 @@ import {
 } from "../../state/accounts";
 import { useSkins } from "../../state/skins";
 import { useUpdateStore } from "../../state/updates";
+import { useModUpdatesStore } from "../../state/modUpdates";
+import { useDropUI } from "../../state/drop";
 import { resolveLaunchTarget } from "../../state/launch";
 import { SkinHead } from "../components/SkinViews";
 import HomePage from "../pages/HomePage";
@@ -52,6 +53,10 @@ import AccountsModal from "../components/AccountsModal";
 import CrashReportModal from "../components/CrashReportModal";
 import CommandPalette from "../components/CommandPalette";
 import { ConfirmHost } from "../confirm";
+// F2: drag & drop файлов на окно — маршрутизация .mrpack/.jar/.zip и весь
+// overlay/модалка живут в DropInstall (единая точка, чтобы не было двойной
+// установки: прежний mrpack-слушатель Shell удалён).
+import DropInstall from "../components/DropInstall";
 
 type Page = "home" | "instances" | "skins" | "settings";
 
@@ -129,7 +134,6 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   const updateInstallError = useUpdateStore((s) => s.installError);
   const updateInstall = useUpdateStore((s) => s.install);
   const noticeTimer = useRef<number | null>(null);
-  const dropBusy = useRef(false);
   // A8: узкий селектор — сброс лог-буфера каждые 200 мс не должен
   // перерисовывать всё дерево Shell (как в страницах, D8).
   const { load, subscribeEvents, list, crashReport, clearCrashReport, launch } = useInstances(
@@ -180,63 +184,6 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     [],
   );
 
-  // D5b: .mrpack, брошенный на окно, ставится тем же ядерным вызовом, что и из
-  // каталога. Файловые drop'ы нативно принимает Tauri (dragDropEnabled=true),
-  // поэтому пути берём из onDragDropEvent — HTML5-события их не содержат.
-  // D64: файлов в drop'е может быть несколько — обрабатываем ВСЕ последовательно
-  // (очередь одного drop'а); drop во время незавершённой установки больше не
-  // молчит — показываем баннер shell.drop.busy.
-  const installDroppedMrpack = useCallback(
-    async (paths: string[]) => {
-      if (dropBusy.current) {
-        showNotice("error", t("shell.drop.busy"));
-        return;
-      }
-      dropBusy.current = true;
-      try {
-        for (const path of paths) {
-          try {
-            // Контракт D64: ядро возвращает { instance, group }.
-            const { instance: inst } = await api.mrpackInstall(path);
-            showNotice(
-              "ok",
-              t("shell.drop.installed", { name: inst.name, version: inst.mcVersion }),
-            );
-            void load(); // новый инстанс — обновляем счётчик в навигации и страницы
-          } catch (e) {
-            showNotice("error", t("shell.drop.error", { message: apiErrorText(e) }));
-          }
-        }
-      } finally {
-        dropBusy.current = false;
-      }
-    },
-    [load, showNotice],
-  );
-
-  useEffect(() => {
-    let unlisten: UnlistenFn | null = null;
-    let disposed = false;
-    void getCurrentWebview()
-      .onDragDropEvent((event) => {
-        if (event.payload.type !== "drop") return;
-        // Не наш drop (нет .mrpack) — не перехватываем: файл просто игнорируется.
-        // D64: собираем ВСЕ .mrpack одного drop'а, а не только первый.
-        const paths = event.payload.paths.filter((p) => p.toLowerCase().endsWith(".mrpack"));
-        if (paths.length === 0) return;
-        void installDroppedMrpack(paths);
-      })
-      .then((un) => {
-        if (disposed) un();
-        else unlisten = un;
-      })
-      .catch(() => undefined);
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [installDroppedMrpack]);
-
   useEffect(() => {
     void loadSettings().then(() => void load());
     void subscribeEvents();
@@ -259,11 +206,21 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     return () => unsubscribeEvents();
   }, [load, loadSettings, subscribeEvents, loadAccounts, silentUpdateCheck]);
 
+  // F5: после успешной загрузки списка инстансов — тихая проверка обновлений
+  // модов одной строкой через getState(): стор сам гасит повторные вызовы
+  // (running-флаг + троттлинг 30 минут), ремоунт Shell повторов не даёт.
+  useEffect(() => {
+    if (instancesLoaded)
+      void useModUpdatesStore.getState().checkAll(useInstances.getState().list);
+  }, [instancesLoaded]);
+
   // D64: «открыта модалка» — известные модальные флаги каркаса (модалка
   // аккаунтов + crash-репорт). Палитру поверх открытой модалки не открываем:
   // две ловушки Tab сражались за фокус (ping-pong). Сама палитра закрывается
   // по Esc как раньше.
-  const anyModalOpen = accountsModalOpen || crashReport !== null;
+  // D69: UI drag&drop (модалка выбора инстанса/прогресс) — тоже «модалка».
+  const dropBusy = useDropUI((s) => s.busy);
+  const anyModalOpen = accountsModalOpen || crashReport !== null || dropBusy;
 
   // Ctrl+K — фокус в поиск (спека фазы B); Esc чистит внутри инпута.
   // F19: палитра команд живёт на Ctrl+P, а не на Ctrl+K — приёмка
@@ -452,8 +409,8 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
   return (
     <div
       className="flex h-screen flex-col overflow-hidden bg-bg text-text"
-      // Гасим дефолт webview на файловый drop (иначе он открыл бы файл); сама
-      // установка .mrpack идёт через onDragDropEvent выше.
+      // Гасим дефолт webview на файловый drop (иначе он открыл бы файл);
+      // установка брошенных файлов — в <DropInstall /> ниже (onDragDropEvent).
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => e.preventDefault()}
     >
@@ -892,7 +849,7 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
             </button>
           )}
 
-          {/* Результат drop-установки .mrpack: тот же инлайн-баннер, что в страницах. */}
+          {/* Инлайн-баннер ошибок каркаса (офлайн, смена языка, ник). */}
           {notice && (
             <div
               role={notice.kind === "error" ? "alert" : "status"}
@@ -1005,6 +962,11 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
 
       {/* Глобальный confirm (askConfirm) — всегда смонтирован, поверх z-50 модалок. */}
       <ConfirmHost />
+
+      {/* F2: drag & drop установки (.mrpack / .jar / .zip). Сам компонент
+          подписывается на нативный onDragDropEvent и ничего не рендерит,
+          пока файлы не тащат. */}
+      <DropInstall />
 
       {/* F19: палитра команд. Открытие инстанса — через список, чтобы
           навигация закрыла прежнюю страницу; затем ставим целевой инстанс. */}

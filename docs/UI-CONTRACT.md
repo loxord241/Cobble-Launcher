@@ -21,7 +21,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 ## Команды (invoke)
 
-Все 106 команд `invoke_handler` (пересчитано по реестру, D68 + ревизия), обработчики — `src-tauri/src/commands/mod.rs` (кроме
+Все 111 команд `invoke_handler` (пересчитано по реестру, D69), обработчики — `src-tauri/src/commands/mod.rs` (кроме
 `shortcut_take_pending` — он в `lib.rs:61`).
 
 ### Инстансы и процессы
@@ -76,6 +76,11 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `server_start` | `{id}` | `u32` pid (java с stdin-pipe; событие `server_event` {serverId, kind: log/started/exited/crashed, line?, code?}) | not_found, invalid_input, io |
 | `server_stop` | `{id}` | `bool` (true = «stop» в stdin, вышли сами ≤60с; false = жёсткий kill; не запущен → Ok(false)) | not_found |
 | `server_reinstall` | `{id}` | `void` (P3-ревизии: снос артефактов установщика + новая установка; мир/настройки не трогаются; только остановленный сервер) | not_found, invalid_input, io, offline_mode, network, http, hash_mismatch, timeout |
+| `pack_update_check` | `{instanceId}` | `PackUpdateInfo \| null` — D69: есть ли новая версия модпака (Instance.modpack = `{projectId,versionId,versionNumber}`, пишется при установке пака) | not_found, invalid_input, offline_mode, network, http, timeout |
+| `pack_update_apply` | `{instanceId}` | `Instance` — D69: обновление на месте: авто-бэкап (+ротация backupKeep), дифф-установка файлов, overrides поверх (saves/ не трогается), при смене MC — переустановка загрузчика; повторный вызов пока идёт — invalid_input | not_found, invalid_input, io, offline_mode, network, http, hash_mismatch, timeout, cancelled, instance_running |
+| `backups_list` | `{}` | `BackupEntry[]` — `{file, instance, createdAt, sizeBytes}` (D69) | io |
+| `backup_delete` | `{fileName}` | `void` — только простое имя .zip внутри backups/ (D69) | not_found, invalid_input, io |
+| `content_install_local` | `{instanceId, path}` | `ContentEntry` — D69, drag&drop: .jar → mods/, .zip → shaderpacks/ (внутри есть shaders/) или resourcepacks/; манифест — Local | not_found, invalid_input, io |
 | `manifest_versions` | `{showSnapshots, showOld}` | `VersionEntry[]` | network, json, io |
 | `loader_versions` | `{loader}` | `LoaderVersionEntry[]` (`fabric`/`quilt` — все, `neoforge` — 30 последних стабильных) | network, invalid_input, json |
 | `loader_install` | `{id, loader, loaderVersion?}` | `Instance` (после установки `versionId` = профиль загрузчика) | invalid_input, version_not_found, java_not_found, network, hash_mismatch, zip, io, internal |

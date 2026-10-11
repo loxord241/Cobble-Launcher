@@ -100,7 +100,7 @@ impl AppState {
     /// движков (instance_repair/content_install/content_update_all/
     /// instance_optimize), иначе они переживали бы остановку игры.
     pub fn cancel_instance_op_groups(&self, instance_id: &str) {
-        for suffix in [":repair", ":content", ":update", ":optimize"] {
+        for suffix in [":repair", ":content", ":update", ":optimize", ":packupdate"] {
             self.cancel_engine_group(&format!("instance:{instance_id}{suffix}"));
         }
     }
@@ -108,6 +108,11 @@ impl AppState {
     /// Снять группу с регистрации (работа завершена — успех или ошибка).
     pub fn engine_done(&self, group: &str) {
         self.engines.lock().unwrap().remove(group);
+    }
+
+    /// Живой движок группы уже есть? (конкурентная операция идёт — D69)
+    pub fn has_engine(&self, group: &str) -> bool {
+        self.engines.lock().unwrap().contains_key(group)
     }
 }
 
@@ -649,6 +654,23 @@ pub async fn content_installed(
     Ok(crate::instances::load_content_manifest(&state.paths, &instance_id))
 }
 
+/// Установить локальный файл в инстанс (D69, drag & drop): .jar — мод,
+/// .zip — шейдер (по каталогу shaders/ внутри) или ресурспак.
+#[tauri::command]
+pub async fn content_install_local(
+    state: State<'_, AppState>,
+    instance_id: String,
+    path: String,
+) -> Result<crate::instances::ContentEntry> {
+    instances::valid_id(&instance_id)?;
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        instances::content::install_local(&paths, &instance_id, &path)
+    })
+    .await
+    .map_err(join_err)?
+}
+
 /// Вкл/выкл контента: `.disabled`-суффикс на диске + флаг в манифесте.
 #[tauri::command]
 pub async fn content_toggle(
@@ -694,12 +716,41 @@ pub async fn content_remove(
 }
 
 /// Бэкап инстанса целиком в zip (каталог backups/ в данных лаунчера).
+/// D69: после успеха — ротация старых бэкапов этого инстанса
+/// (settings.backupKeep, 0 = копить не удаляя).
 #[tauri::command]
 pub async fn instance_backup(state: State<'_, AppState>, id: String) -> Result<ArchiveResult> {
     let paths = state.paths.clone();
     let inst = instances::load(&state.paths, &id)?;
+    let keep = state.settings.read().await.backup_keep;
+    let name = inst.name.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<ArchiveResult> {
+        let res = instances::content::backup(&paths, &inst)?;
+        // Ротация best-effort: неудача чистки не роняет успешный бэкап.
+        instances::backups::rotate(&paths, &name, keep);
+        Ok(res)
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// Список бэкапов всех инстансов (D69: менеджер в Настройках).
+#[tauri::command]
+pub async fn backups_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::instances::backups::BackupEntry>> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(crate::instances::backups::list(&paths)))
+        .await
+        .map_err(join_err)?
+}
+
+/// Удалить один бэкап по имени файла (D69); traversal отсекает движок.
+#[tauri::command]
+pub async fn backup_delete(state: State<'_, AppState>, file_name: String) -> Result<()> {
+    let paths = state.paths.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        instances::content::backup(&paths, &inst)
+        crate::instances::backups::delete(&paths, &file_name)
     })
     .await
     .map_err(join_err)?
@@ -769,6 +820,45 @@ pub async fn content_update_check(
     let inst = instances::load(&state.paths, &instance_id)?;
     let http = state.http().await;
     crate::modrinth::updates::check_updates(&state.paths, &http, &inst).await
+}
+
+/// Проверка новой версии модпака инстанса (D69): None = актуален или
+/// инстанс не из модпака (поля modpack нет).
+#[tauri::command]
+pub async fn pack_update_check(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<Option<crate::instances::packupdate::PackUpdateInfo>> {
+    let inst = instances::load(&state.paths, &instance_id)?;
+    let http = state.http().await;
+    crate::instances::packupdate::check(&state.paths, &http, &inst).await
+}
+
+/// Обновление модпака на месте (D69): авто-бэкап → дифф-установка новой
+/// версии; прогресс — события dl-группы движка (рельса «Загрузки»).
+#[tauri::command]
+pub async fn pack_update_apply(state: State<'_, AppState>, instance_id: String) -> Result<Instance> {
+    instances::valid_id(&instance_id)?;
+    let group = format!("instance:{instance_id}:packupdate");
+    // D69-ревизия: двойной клик «Обновить» не должен плодить второй
+    // параллельный apply на том же движке (двойные бэкапы и интерливинг
+    // записи манифеста).
+    if state.has_engine(&group) {
+        return Err(LauncherError::InvalidInput(
+            "обновление модпака уже идёт — дождитесь завершения".into(),
+        ));
+    }
+    let engine = state.engine_for(&group).await;
+    let http = state.http().await;
+    let settings = state.settings.read().await.clone();
+    let keep = settings.backup_keep;
+    let paths = state.paths.clone();
+    let out = crate::instances::packupdate::apply(
+        &paths, &settings, engine, http, &instance_id, keep, &|_| {},
+    )
+    .await;
+    state.engine_done(&group);
+    out
 }
 
 /// Дозаполнить projectId в манифесте (legacy-модпаки) — батч по sha1.
@@ -2166,8 +2256,21 @@ pub async fn logs_tail(state: State<'_, AppState>, lines: u32) -> Result<String>
 }
 
 #[tauri::command]
-pub async fn dir_open(state: State<'_, AppState>) -> Result<OkMsg> {
-    tauri_plugin_opener::open_path(state.paths.root().clone(), None::<&str>)
+pub async fn dir_open(state: State<'_, AppState>, sub: Option<String>) -> Result<OkMsg> {
+    // D69: подкаталог — только из белого списка (кнопка «Открыть папку» у
+    // бэкапов); произвольные пути из IPC не открываем.
+    let dir = match sub.as_deref() {
+        None | Some("") => state.paths.root().clone(),
+        Some("backups") => state.paths.backups_dir(),
+        Some("instances") => state.paths.root().join("instances"),
+        Some("exports") => state.paths.root().join("exports"),
+        Some(other) => {
+            return Err(LauncherError::InvalidInput(format!(
+                "неизвестный подкаталог: {other}"
+            )))
+        }
+    };
+    tauri_plugin_opener::open_path(dir, None::<&str>)
         .map_err(|e| LauncherError::Internal(format!("открытие папки: {e}")))?;
     Ok(OkMsg { ok: true })
 }
