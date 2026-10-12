@@ -84,6 +84,12 @@ pub struct Instance {
     /// не показывается.
     #[serde(default, rename = "modpack", skip_serializing_if = "Option::is_none")]
     pub modpack: Option<ModpackRef>,
+    /// Группа библиотеки (D70): произвольная метка для секций на странице
+    /// инстансов. None — без группы (страница рендерится плоско, как раньше).
+    /// Запись идёт только через set_group: трим, пустая → None, длиннее 64
+    /// символов — отклонение (не обрезка).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// Ссылка на модпак, которым инстанс установлен (F1): пара проект+версия
@@ -132,6 +138,7 @@ impl Instance {
             account_id: None,
             crash_count: 0,
             modpack: None,
+            group: None,
         }
     }
 }
@@ -458,6 +465,58 @@ pub fn rename(paths: &crate::paths::Paths, id: &str, new_name: &str) -> Result<I
     Ok(inst)
 }
 
+/// Предел длины названия группы (D70): заголовок секции библиотеки — длиннее
+/// не нужно; ограничение не даёт превратить метку в заметку.
+pub const MAX_GROUP_LEN: usize = 64;
+
+/// Нормализация названия группы с IPC-границы (D70): трим; пустая/из одних
+/// пробелов → None (убрать из группы); длиннее MAX_GROUP_LEN — отклонение
+/// (InvalidInput), а не обрезка: пользователь должен видеть, что его ввод
+/// не принят целиком.
+pub fn normalize_group(group: Option<String>) -> Result<Option<String>> {
+    let Some(raw) = group else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    // Считаем в символах (chars), не в байтах: кириллица двухбайтная, лимит — про видимый текст.
+    if trimmed.chars().count() > MAX_GROUP_LEN {
+        return Err(LauncherError::InvalidInput(format!(
+            "название группы длиннее {MAX_GROUP_LEN} символов"
+        )));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// D70: задать/убрать группу инстанса (библиотека) — по образцу `rename`:
+/// load → правка → save, наружу обновлённый Instance. Работающий инстанс
+/// НЕ блокируем: группа — метка UI, каталог и файлы игры она не трогает
+/// (в отличие от rename, переименовывающего каталог).
+pub fn set_group(
+    paths: &crate::paths::Paths,
+    id: &str,
+    group: Option<String>,
+) -> Result<Instance> {
+    let mut inst = load(paths, id)?;
+    inst.group = normalize_group(group)?;
+    save(paths, &inst)?;
+    Ok(inst)
+}
+
+/// Контрактное имя для IPC-команды `instance_group_set` (D70): тонкая
+/// async-обёртка над синхронным set_group (тело — диск). Команда может
+/// вызвать её напрямую (`.await`), по образцу instance_rename в commands —
+/// через spawn_blocking с sync `set_group`.
+pub async fn instance_set_group(
+    paths: &crate::paths::Paths,
+    id: &str,
+    group: Option<String>,
+) -> Result<Instance> {
+    set_group(paths, id, group)
+}
+
 /// Куда нельзя жёстко линковать при дублировании: уникальные данные инстанса.
 pub const UNIQUE_SUBDIRS: &[&str] = &[
     "saves",
@@ -530,6 +589,8 @@ pub fn duplicate(paths: &crate::paths::Paths, id: &str) -> Result<Instance> {
     inst.jvm_flags = src.jvm_flags.clone();
     inst.game_args_extra = src.game_args_extra.clone();
     inst.notes = src.notes.clone();
+    // D70: группа (group) НЕ наследуется — поля копируются явным перечислением,
+    // а Instance::new ставит None; копию пользователь раскладывает по полкам сам.
     let dst_dir = instance_dir(paths, &inst.id);
     std::fs::create_dir_all(long_path(&dst_dir))?;
     let mut cleanup = DuplicateCleanup::new(dst_dir.clone());
@@ -1657,5 +1718,95 @@ mod tests {
         // Мёртвый PID в новом формате → None (лок снимет acquire как протухший).
         std::fs::write(&lock_path, LockFile { pid: u32::MAX, start_time: 42 }.to_line()).unwrap();
         assert_eq!(running_pid(&dir), None);
+    }
+
+    /// D70: группа — serde roundtrip через сохранение/загрузку instance.json;
+    /// None не сериализуется (skip_serializing_if), старые файлы без поля
+    /// читаются (serde default) как «без группы».
+    #[test]
+    fn group_serde_roundtrip_and_legacy() {
+        let (_d, paths) = test_paths();
+        let mut inst = Instance::new("Grp", "1.20.1");
+        inst.group = Some("Крафт и выживание".into());
+        save(&paths, &inst).unwrap();
+        let json = std::fs::read_to_string(long_path(&instance_file(&instance_dir(&paths, &inst.id))))
+            .unwrap();
+        // save пишет pretty-JSON — проверяем значение разбором, а не подстрокой.
+        let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            raw.get("group").and_then(|v| v.as_str()),
+            Some("Крафт и выживание"),
+            "group в camelCase-виде (имя поля совпадает): {json}"
+        );
+        let loaded = load(&paths, &inst.id).unwrap();
+        assert_eq!(loaded.group.as_deref(), Some("Крафт и выживание"));
+
+        // None — поле отсутствует в JSON, читается обратно как None.
+        let mut plain = Instance::new("NoGrp", "1.20.1");
+        plain.group = None;
+        let plain_json = serde_json::to_string(&plain).unwrap();
+        assert!(!plain_json.contains("\"group\""), "None-группа не сериализуется");
+        let reloaded: Instance = serde_json::from_str(&plain_json).unwrap();
+        assert_eq!(reloaded.group, None);
+
+        // Старый файл без поля — без группы.
+        let legacy: Instance =
+            serde_json::from_str(r#"{"id":"old","name":"Old","mc_version":"1.19.2"}"#).unwrap();
+        assert_eq!(legacy.group, None, "старый файл: группа не задана");
+    }
+
+    /// D70: set_group по контракту — трим, пустая/пробельная → None (убрать),
+    /// длиннее 64 символов → отклонение (не обрезка), несуществующий id → NotFound.
+    #[test]
+    fn set_group_validates_and_normalizes() {
+        let (_d, paths) = test_paths();
+        let inst = Instance::new("g", "1.20.1");
+        save(&paths, &inst).unwrap();
+
+        // Обычная установка с тримом.
+        let upd = set_group(&paths, &inst.id, Some("  Сборки  ".into())).unwrap();
+        assert_eq!(upd.group.as_deref(), Some("Сборки"), "трим по краям");
+        assert_eq!(load(&paths, &inst.id).unwrap().group.as_deref(), Some("Сборки"));
+
+        // Ровно 64 символа — допустимо, 65 — отклонение.
+        let ok64: String = "г".repeat(MAX_GROUP_LEN);
+        assert_eq!(
+            set_group(&paths, &inst.id, Some(ok64.clone())).unwrap().group.as_deref(),
+            Some(ok64.as_str()),
+            "граница длины допустима"
+        );
+        let too_long: String = "х".repeat(MAX_GROUP_LEN + 1);
+        let err = set_group(&paths, &inst.id, Some(too_long)).unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "длиннее 64 — отклонение, не обрезка");
+        assert_eq!(
+            load(&paths, &inst.id).unwrap().group.as_deref(),
+            Some(ok64.as_str()),
+            "отклонённая запись не изменила файл"
+        );
+
+        // Пустая и пробельная строки убирают группу; None — тоже.
+        assert_eq!(set_group(&paths, &inst.id, Some(String::new())).unwrap().group, None);
+        let upd = set_group(&paths, &inst.id, Some(ok64)).unwrap();
+        assert!(upd.group.is_some());
+        assert_eq!(set_group(&paths, &inst.id, Some("   ".into())).unwrap().group, None);
+        assert_eq!(set_group(&paths, &inst.id, None).unwrap().group, None);
+
+        // Чужой id — NotFound (load), а не создание фантома.
+        let err = set_group(&paths, "no-such-id", Some("x".into())).unwrap_err();
+        assert_eq!(err.code(), "not_found");
+    }
+
+    /// D70: дубликат НЕ наследует группу исходника — поля копируются явным
+    /// перечислением, Instance::new ставит None.
+    #[test]
+    fn duplicate_does_not_inherit_group() {
+        let (_d, paths) = test_paths();
+        let mut inst = Instance::new("src", "1.20.1");
+        inst.group = Some("Не наследуется".into());
+        save(&paths, &inst).unwrap();
+        let copy = duplicate(&paths, &inst.id).unwrap();
+        assert_eq!(copy.group, None, "копия создаётся без группы");
+        // Инициализация создания (Instance::new) — тоже без группы.
+        assert_eq!(Instance::new("fresh", "1.20.1").group, None);
     }
 }

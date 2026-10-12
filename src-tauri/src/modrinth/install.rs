@@ -290,10 +290,18 @@ async fn download_and_record(
         url: Some(file.url.clone()),
         enabled: true,
     };
+    // D70: запись манифеста — под per-instance локом
+    // (packupdate::content_manifest_lock) и из СВЕЖЕЙ перечитки: пока шла
+    // скачка, параллельные контентные операции могли изменить манифест, и
+    // запись по устаревшему снимку теряла бы их обновления. Внутри guard'а
+    // await'ов нет — future остаётся Send.
+    let lock = crate::instances::packupdate::content_manifest_lock(&inst.id);
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
     let mut manifest = crate::instances::load_content_manifest(paths, &inst.id);
     manifest.retain(|e| e.project_id.as_deref() != Some(project_id));
     manifest.push(entry.clone());
     crate::instances::save_content_manifest(paths, &inst.id, &manifest)?;
+    drop(_guard);
     installed.push(entry);
     Ok(())
 }

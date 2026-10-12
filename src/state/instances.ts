@@ -69,6 +69,8 @@ interface InstancesState {
   launchSafe: (id: string, player: string) => Promise<void>;
   create: (mcVersion: string, name: string) => Promise<Instance>;
   rename: (id: string, name: string) => Promise<Instance>;
+  /** D70: задать/убрать группу библиотеки (null — убрать); список перечитывается. */
+  setGroup: (id: string, group: string | null) => Promise<Instance>;
   saveSettings: (instance: Instance) => Promise<Instance>;
   remove: (id: string, wipe: boolean) => Promise<void>;
   duplicate: (id: string) => Promise<void>;
@@ -563,6 +565,13 @@ export const useInstances = create<InstancesState>((set, get) => ({
   },
   rename: async (id, name) => {
     const inst = await api.instanceRename(id, name);
+    await get().load();
+    return inst;
+  },
+  // D70: как rename — ядро обновляет instance.json, стор перечитывает список,
+  // чтобы группировка секций на странице инстансов пересобралась сразу.
+  setGroup: async (id, group) => {
+    const inst = await api.instanceGroupSet(id, group);
     await get().load();
     return inst;
   },

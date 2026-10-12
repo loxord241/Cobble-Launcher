@@ -61,6 +61,13 @@
   "instances.rename.title": "Zmień nazwę instancji",
   "instances.rename.label": "Nowa nazwa",
   "instances.rename.emptyError": "Nazwa instancji nie może być pusta",
+  "instances.group.moveTo": "Przenieś do grupy…",
+  "instances.group.none": "Bez grupy",
+  "instances.group.apply": "Gotowe",
+  "instances.group.remove": "Usuń z grupy",
+  "instances.group.placeholder": "Nazwa grupy",
+  "instances.group.saved": "Grupa zaktualizowana",
+  "instances.group.tooLong": "Maksymalnie 64 znaki",
   "instances.changeVersion.menu": "Zmień wersję Minecraft",
   "changeVersion.title": "Zmiana wersji Minecraft",
   "changeVersion.current": "Aktualna wersja: {version}",
@@ -606,5 +613,7 @@
   "settings.backups.delete": "Usunąć tę kopię?",
   "settings.backups.open": "Otwórz folder",
   "settings.backups.unlimited": "Bez limitu",
-  "instanceCard.updates": "Dostępne aktualizacje modów: {n}"
+  "instanceCard.updates": "Dostępne aktualizacje modów: {n}",
+  "whatsNew.title": "Co nowego w {version}",
+  "whatsNew.continue": "Kontynuuj"
 }

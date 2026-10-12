@@ -76,6 +76,9 @@ fn redirect_allowed(next: &reqwest::Url) -> bool {
 #[derive(Clone)]
 pub struct HttpClient {
     inner: reqwest::Client,
+    /// D70: тот же клиент, но БЕЗ автоследования редиректам — для
+    /// get_with_allowlist (per-call allowlist на каждом хопе).
+    nofollow: reqwest::Client,
     /// F16 «работать офлайн»: Arc — флаг общий для всех клонов клиента.
     offline: Arc<AtomicBool>,
     /// F17 лимит скорости загрузки, КБ/с (0 — без ограничения).
@@ -105,10 +108,31 @@ impl HttpClient {
     }
 
     fn build(proxy_url: Option<&str>, connect: Duration, total: Option<Duration>) -> Result<Self> {
-        let mut builder = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .connect_timeout(connect)
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+        // D70: два клиента на одной конфигурации, различие — redirect-политика.
+        // Глобальная (custom) следует за Location под универсальным барьером
+        // redirect_allowed; nofollow не следует вовсе — для запросов с per-call
+        // allowlist (get_with_allowlist), где каждый хоп дополнительно проходит
+        // allowlist КОНКРЕТНОГО вызова, что в глобальную политику не пробросить.
+        fn client_with(
+            redirect: reqwest::redirect::Policy,
+            proxy_url: Option<&str>,
+            connect: Duration,
+            total: Option<Duration>,
+        ) -> Result<reqwest::Client> {
+            let mut builder = reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .connect_timeout(connect)
+                .redirect(redirect);
+            if let Some(t) = total {
+                builder = builder.timeout(t);
+            }
+            if let Some(p) = proxy_url {
+                builder = builder.proxy(reqwest::Proxy::all(p)?);
+            }
+            Ok(builder.build()?)
+        }
+        let inner = client_with(
+            reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 10 {
                     return attempt.error("слишком много редиректов");
                 }
@@ -121,15 +145,20 @@ impl HttpClient {
                     return attempt.error(format!("редирект на {next} заблокирован политикой"));
                 }
                 attempt.follow()
-            }));
-        if let Some(t) = total {
-            builder = builder.timeout(t);
-        }
-        if let Some(p) = proxy_url {
-            builder = builder.proxy(reqwest::Proxy::all(p)?);
-        }
+            }),
+            proxy_url,
+            connect,
+            total,
+        )?;
+        let nofollow = client_with(
+            reqwest::redirect::Policy::none(),
+            proxy_url,
+            connect,
+            total,
+        )?;
         Ok(Self {
-            inner: builder.build()?,
+            inner,
+            nofollow,
             offline: Arc::new(AtomicBool::new(false)),
             // По умолчанию лимита нет: ограничение включается только из настроек.
             speed_limit: Arc::new(AtomicU32::new(0)),
@@ -277,6 +306,99 @@ impl HttpClient {
             }
         }
     }
+
+    /// D70: GET с per-call allowlist на КАЖДОМ хопе редиректа. Глобальная
+    /// redirect-политика клиента проверяет только универсальный SSRF-барьер
+    /// (redirect_allowed): allowlist КОНКРЕТНОГО вызова (список доверенных
+    /// хостов, который callsite вычисляет ДО запроса — например
+    /// mrpack::ensure_allowed_mrpack_url) в глобальную Policy::custom не
+    /// пробросить, и редирект уводил бы запрос с разрешённого хоста на любой
+    /// другой публичный. Поэтому такие запросы идут через клиент без
+    /// автоследования, а цикл ведётся вручную: не больше 10 хопов (как в
+    /// глобальной политике), каждый следующий URL проходит И redirect_allowed,
+    /// И allowlist вызова; понижение https→http запрещено. Тело ответа читает
+    /// вызывающий (body_timed/body_timed_big) — как у send_timed.
+    pub async fn get_with_allowlist(
+        &self,
+        url: &str,
+        allow: impl Fn(&reqwest::Url) -> bool + Send + Sync,
+    ) -> Result<reqwest::Response> {
+        // F16: офлайн — честный отказ до сети.
+        if self.offline() {
+            return Err(LauncherError::OfflineMode(url.into()));
+        }
+        let mut next: reqwest::Url = url
+            .parse()
+            .map_err(|e| LauncherError::InvalidInput(format!("некорректный URL {url:?}: {e}")))?;
+        // Первый URL — под теми же проверками, что и каждый хоп: callsite-валидатор
+        // мог и ошибиться, и забыть схему.
+        if !allowed_hop(&next, &allow) {
+            return Err(LauncherError::InvalidInput(format!(
+                "URL {next} не прошёл allowlist вызова / барьер редиректов"
+            )));
+        }
+        let mut hops = 0usize;
+        loop {
+            let sent =
+                tokio::time::timeout(RAW_SEND_TIMEOUT, self.nofollow.get(next.clone()).send())
+                    .await;
+            let resp = match sent {
+                Ok(r) => r.map_err(LauncherError::from)?,
+                Err(_) => {
+                    return Err(LauncherError::network(format!(
+                        "нет ответа за {RAW_SEND_TIMEOUT:?}: {next}"
+                    )));
+                }
+            };
+            let status = resp.status();
+            if !matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
+                return Ok(resp);
+            }
+            hops += 1;
+            if hops > 10 {
+                return Err(LauncherError::network(
+                    "слишком много редиректов в allowlist-запросе",
+                ));
+            }
+            let loc = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| {
+                    LauncherError::network(format!("редирект {status} без Location: {next}"))
+                })?;
+            let joined = next
+                .join(loc)
+                .map_err(|e| LauncherError::network(format!("битый Location {loc:?}: {e}")))?;
+            // 301/302/303 меняют метод на GET — мы всегда GET, менять нечего;
+            // 307/308 повторяют метод как есть.
+            if !allowed_hop(&joined, &allow) {
+                return Err(LauncherError::network(format!(
+                    "редирект на {joined} заблокирован: allowlist вызова, схема или SSRF-барьер"
+                )));
+            }
+            next = joined;
+        }
+    }
+}
+
+/// D70: один хоп allowlist-запроса — универсальный SSRF-барьер + allowlist
+/// вызова. В тестах loopback разрешён ДО барьера: локальные axum-моки
+/// (127.0.0.1) иначе непроходимы, а внешний сети в тестах нет — тот же
+/// приём, что у ensure_allowed_mrpack_url. В релизной сборке ветки нет:
+/// прод-барьер не ослаблен.
+fn allowed_hop(
+    url: &reqwest::Url,
+    allow: &(dyn Fn(&reqwest::Url) -> bool + Send + Sync),
+) -> bool {
+    #[cfg(test)]
+    if matches!(
+        url.host_str(),
+        Some("127.0.0.1" | "localhost" | "[::1]" | "::1")
+    ) {
+        return allow(url);
+    }
+    redirect_allowed(url) && allow(url)
 }
 
 fn is_retryable(status: u16) -> bool {
@@ -403,9 +525,105 @@ mod tests {
         );
     }
 
+    /// D70: per-call allowlist на каждом хопе. Запрос с allowlist:
+    /// редирект на РАЗРЕШЁННЫЙ хост проходится (финальный URL — разрешённый),
+    /// на неразрешённый — ошибка ДО контакта с ним (счётчик чужого сервера
+    /// = 0); первый URL вне allowlist отклоняется сразу. Все хосты —
+    /// локальные axum-моки (сети нет); allowlist в тесте — по порту, т.к.
+    /// хост у моков один.
     #[tokio::test]
-    async fn get_json_404_is_error_not_retry() {
-        // Локальный сервер не нужен: https://httpstat.us недоступен в тестах,
+    async fn allowlist_request_follows_only_allowed_hops() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // Сервер-источник (a), разрешённый финал (b), «чужой» финал (c).
+        let la = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let lb = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let lc = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (pa, pb, pc) = (
+            la.local_addr().unwrap().port(),
+            lb.local_addr().unwrap().port(),
+            lc.local_addr().unwrap().port(),
+        );
+        let foreign_hits: Arc<AtomicUsize> = Default::default();
+        let fh = foreign_hits.clone();
+        let app_a = axum::Router::new()
+            .route(
+                "/hop-ok",
+                axum::routing::get(move || async move {
+                    axum::response::Redirect::temporary(&format!("http://127.0.0.1:{pb}/final"))
+                }),
+            )
+            .route(
+                "/hop-foreign",
+                axum::routing::get(move || async move {
+                    axum::response::Redirect::temporary(&format!("http://127.0.0.1:{pc}/final"))
+                }),
+            );
+        let app_b = axum::Router::new().route(
+            "/final",
+            axum::routing::get(|| async { "ok" }),
+        );
+        let app_c = axum::Router::new().route(
+            "/final",
+            axum::routing::get(move || {
+                fh.fetch_add(1, Ordering::SeqCst);
+                async { "must-not-be-reached" }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(la, app_a).await.unwrap() });
+        tokio::spawn(async move { axum::serve(lb, app_b).await.unwrap() });
+        tokio::spawn(async move { axum::serve(lc, app_c).await.unwrap() });
+
+        // Allowlist вызова: только источники a и финал b (по порту; хост один
+        // у всех моков, в проде предикат — host_str + схема, как в mrpack).
+        let pred = move |u: &reqwest::Url| {
+            u.scheme() == "http"
+                && u.host_str() == Some("127.0.0.1")
+                && matches!(u.port(), Some(p) if p == pa || p == pb)
+        };
+
+        let c = HttpClient::new(None).unwrap();
+
+        // Разрешённая цепочка a → b: следует, финал — разрешённый хост.
+        let resp = c
+            .get_with_allowlist(&format!("http://127.0.0.1:{pa}/hop-ok"), pred)
+            .await
+            .expect("редирект на разрешённый хост обязан следовать");
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            resp.url().port(),
+            Some(pb),
+            "финальный URL — разрешённый хоп: {}",
+            resp.url()
+        );
+        assert_eq!(c.body_timed(resp).await.unwrap(), b"ok");
+
+        // Редирект на НЕразрешённый хост: ошибка до контакта с чужим сервером.
+        let err = c
+            .get_with_allowlist(&format!("http://127.0.0.1:{pa}/hop-foreign"), pred)
+            .await
+            .expect_err("редирект вне allowlist обязан падать");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("allowlist"),
+            "ожидали отказ allowlist на хопе, получили: {msg}"
+        );
+        assert_eq!(
+            foreign_hits.load(Ordering::SeqCst),
+            0,
+            "запрос на неразрешённый хост не уходил"
+        );
+
+        // Первый URL вне allowlist — отказ ещё до сети.
+        let err = c
+            .get_with_allowlist(&format!("http://127.0.0.1:{pc}/final"), pred)
+            .await
+            .expect_err("первый URL вне allowlist обязан падать");
+        assert_eq!(err.code(), "invalid_input", "{err}");
+        assert_eq!(foreign_hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn get_json_404_is_error_not_retry() {        // Локальный сервер не нужен: https://httpstat.us недоступен в тестах,
         // проверяем только построение клиента.
         let c = HttpClient::new(None).unwrap();
         let r: Result<serde_json::Value> = c

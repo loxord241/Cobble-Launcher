@@ -1,0 +1,25 @@
+{
+  "0.2.12": {
+    "date": "2026-10-12",
+    "ru": [
+      "Папки для инстансов в библиотеке — группируйте игровые сборки.",
+      "Окно «Что нового» — краткий обзор изменений после каждого обновления лаунчера.",
+      "Полировка: защита от гонок при обновлении модпаков, даунгрейд пака при откате удалённой версии, поддержка UNC-путей для локальных файлов, проверка редиректов на каждом сетевом переходе."
+    ],
+    "en": [
+      "Folders for instances in the library — group your game builds.",
+      "A \"What's new\" window with a short changelog after each launcher update.",
+      "Polish: race protection for modpack updates, pack downgrade for older remote versions, UNC paths for local files, and redirect checks on every network hop."
+    ],
+    "uk": [
+      "Теки для інстансів у бібліотеці — групуйте свої ігрові збірки.",
+      "Вікно «Що нового» — короткий огляд змін після кожного оновлення лаунчера.",
+      "Шліфування: захист від гонок під час оновлення модпаків, даунгрейд паку для старшої віддаленої версії, підтримка UNC-шляхів для локальних файлів і перевірка редиректів на кожному переході."
+    ],
+    "pl": [
+      "Foldery dla instancji w bibliotece — grupuj swoje paczki gry.",
+      "Okno „Co nowego” — krótki przegląd zmian po każdej aktualizacji launchera.",
+      "Szlif: zabezpieczenie przed wyścigami przy aktualizacji modpacków, downgrade paczki dla starszej wersji zdalnej, obsługa ścieżek UNC dla plików lokalnych i sprawdzanie przekierowań przy każdym przejściu sieciowym."
+    ]
+  }
+}

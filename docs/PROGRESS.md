@@ -903,3 +903,11 @@
   бэклога закрыты в тот же день оркестратором (детали D69 в DECISIONS).
 - Приёмки: батарея 12+14 живыми (два replay-флейка Modrinth-латентности),
   parity2/parity4/e2e повторно после вставки BackupsSection.
+
+## 2026-10-12 — D70: P3-хвост + «Что нового» + группы инстансов
+
+- 3 агента (P3-хвост ядра, WhatsNew, группы) + интеграция: get_with_allowlist
+  (net/http.rs) + проводка в fetch_image_capped/install_modpack_project,
+  instance_group_set (112), Instance.group, WhatsNewModal + changelog.json,
+  i18n +9×4 (617). cargo 598+10, clippy 0, tsc 0.
+- Далее — МЕГА-АУДИТ владельца: 3 волны × 5 read-only.

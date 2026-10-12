@@ -277,6 +277,23 @@ pub fn ensure_allowed_mrpack_url(url: &str) -> Result<()> {
     )))
 }
 
+/// D70: предикат хопа для `HttpClient::get_with_allowlist` — та же семантика,
+/// что у `ensure_allowed_mrpack_url` (https + allowlist; в тестах петельбек),
+/// чтобы проверка ДО запроса и проверка КАЖДОГО хопа редиректа не разъезжались.
+/// Держать синхронно с ensure_allowed_mrpack_url — дрейф ловит тест
+/// `hop_predicates_agree_with_ensure`.
+pub(crate) fn allowed_mrpack_hop(u: &reqwest::Url) -> bool {
+    let host = u.host_str().unwrap_or_default();
+    #[cfg(test)]
+    if matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
+        return true;
+    }
+    u.scheme() == "https"
+        && ALLOWED_MRPACK_HOSTS
+            .iter()
+            .any(|h| host.eq_ignore_ascii_case(h))
+}
+
 /// Хосты, с которых разрешено тянуть картинки проекта (иконка `icon_url` и
 /// галерейный арт `raw_url` — оба живут на CDN Modrinth). Ответ API даже в
 /// проде — JSON с чужого сервера: URL картинки не должен уводить GET на
@@ -312,6 +329,21 @@ pub(crate) fn ensure_allowed_cdn_url(url: &str) -> Result<()> {
     )))
 }
 
+/// D70: предикат хопа для картинок — зеркало `ensure_allowed_cdn_url`
+/// (https + ALLOWED_CDN_HOSTS; в тестах петельбек), для get_with_allowlist.
+/// Дрейф ловит тест `hop_predicates_agree_with_ensure`.
+pub(crate) fn allowed_cdn_hop(u: &reqwest::Url) -> bool {
+    let host = u.host_str().unwrap_or_default();
+    #[cfg(test)]
+    if matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
+        return true;
+    }
+    u.scheme() == "https"
+        && ALLOWED_CDN_HOSTS
+            .iter()
+            .any(|h| host.eq_ignore_ascii_case(h))
+}
+
 /// Скачать картинку (иконка/арт проекта) с жёстким капом размера.
 /// Ok(None) — файл тяжелее лимита: галерейные кадры бывают на несколько МБ,
 /// это не ошибка, вызывающий просто пропускает картинку (спека §15).
@@ -323,10 +355,10 @@ async fn fetch_image_capped(
     max_bytes: usize,
 ) -> Result<Option<Vec<u8>>> {
     ensure_allowed_cdn_url(url)?;
-    // D62: send «сырого» запроса под предохранителем send_timed (30 с) —
-    // сервер, принявший соединение и молчащий, не подвешивает установку.
+    // D70: GET с allowlist на каждом хопе — редирект CDN не может увести
+    // запрос за пределы ALLOWED_CDN_HOSTS (таймаут попытки — внутри хелпера).
     let resp = client
-        .send_timed(client.raw().get(url))
+        .get_with_allowlist(url, allowed_cdn_hop)
         .await?
         .error_for_status()?;
     // Быстрый путь: Content-Length известен заранее — поток не открываем.
@@ -874,10 +906,10 @@ pub async fn install_modpack_project(
     if client.offline() {
         return Err(LauncherError::OfflineMode(file.url.clone()));
     }
-    // D62: send «сырого» запроса под предохранителем send_timed (30 с) —
-    // сервер, принявший соединение и молчащий, не подвешивает установку.
+    // D70: URL файла приходит из JSON версии (внешние данные) — GET с
+    // allowlist на первом URL и каждом хопе (https + ALLOWED_MRPACK_HOSTS).
     let resp = client
-        .send_timed(client.raw().get(&file.url))
+        .get_with_allowlist(&file.url, allowed_mrpack_hop)
         .await?
         .error_for_status()?;
 
@@ -1373,6 +1405,32 @@ mod tests {
             "https://raw.githubusercontent.com/a/b/main/x.jar",
         ] {
             ensure_allowed_mrpack_url(url).unwrap_or_else(|e| panic!("{url}: {e}"));
+        }
+    }
+
+    /// D70: предикаты хопов get_with_allowlist не разъезжаются с ensure-* —
+    /// один вердикт на каждый URL.
+    #[test]
+    fn hop_predicates_agree_with_ensure() {
+        for url in [
+            "https://api.modrinth.com/x",
+            "https://cdn.modrinth.com/a.png",
+            "https://github.com/a/b/x.jar",
+            "http://cdn.modrinth.com/a.png",  // не https
+            "https://evil.example.com/a.png", // не allowlist
+            "ftp://cdn.modrinth.com/a.png",   // не https
+        ] {
+            let parsed = reqwest::Url::parse(url).unwrap();
+            assert_eq!(
+                allowed_mrpack_hop(&parsed),
+                ensure_allowed_mrpack_url(url).is_ok(),
+                "mrpack-предикат разошёлся с ensure на {url}"
+            );
+            assert_eq!(
+                allowed_cdn_hop(&parsed),
+                ensure_allowed_cdn_url(url).is_ok(),
+                "cdn-предикат разошёлся с ensure на {url}"
+            );
         }
     }
 

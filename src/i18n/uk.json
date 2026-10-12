@@ -61,6 +61,13 @@
   "instances.rename.title": "Перейменувати інстанс",
   "instances.rename.label": "Нова назва",
   "instances.rename.emptyError": "Назва інстансу не може бути порожньою",
+  "instances.group.moveTo": "Перемістити до групи…",
+  "instances.group.none": "Без групи",
+  "instances.group.apply": "Готово",
+  "instances.group.remove": "Прибрати з групи",
+  "instances.group.placeholder": "Назва групи",
+  "instances.group.saved": "Групу оновлено",
+  "instances.group.tooLong": "Не довше 64 символів",
   "instances.changeVersion.menu": "Змінити версію Minecraft",
   "changeVersion.title": "Зміна версії Minecraft",
   "changeVersion.current": "Поточна версія: {version}",
@@ -606,5 +613,7 @@
   "settings.backups.delete": "Видалити бекап?",
   "settings.backups.open": "Відкрити папку",
   "settings.backups.unlimited": "Без ліміту",
-  "instanceCard.updates": "Доступні оновлення модів: {n}"
+  "instanceCard.updates": "Доступні оновлення модів: {n}",
+  "whatsNew.title": "Що нового у {version}",
+  "whatsNew.continue": "Продовжити"
 }

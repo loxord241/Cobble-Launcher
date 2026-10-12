@@ -61,6 +61,13 @@
   "instances.rename.title": "Переименовать инстанс",
   "instances.rename.label": "Новое имя",
   "instances.rename.emptyError": "Имя инстанса не может быть пустым",
+  "instances.group.moveTo": "Переместить в группу…",
+  "instances.group.none": "Без группы",
+  "instances.group.apply": "Готово",
+  "instances.group.remove": "Убрать из группы",
+  "instances.group.placeholder": "Название группы",
+  "instances.group.saved": "Группа обновлена",
+  "instances.group.tooLong": "Не длиннее 64 символов",
   "instances.changeVersion.menu": "Сменить версию Minecraft",
   "changeVersion.title": "Смена версии Minecraft",
   "changeVersion.current": "Текущая версия: {version}",
@@ -606,5 +613,7 @@
   "settings.backups.delete": "Удалить бэкап?",
   "settings.backups.open": "Открыть папку",
   "settings.backups.unlimited": "Без лимита",
-  "instanceCard.updates": "Доступны обновления модов: {n}"
+  "instanceCard.updates": "Доступны обновления модов: {n}",
+  "whatsNew.title": "Что нового в {version}",
+  "whatsNew.continue": "Продолжить"
 }

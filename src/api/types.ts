@@ -71,6 +71,8 @@ export interface Instance {
   crashCount: number;
   /** Откуда поставлен модпак (D69): база проверки обновлений пака. */
   modpack?: ModpackRef;
+  /** Группа библиотеки (D70); нет — без группы. */
+  group?: string;
 }
 
 /** Ссылка на модпак Modrinth, из которого создан инстанс (D69). */

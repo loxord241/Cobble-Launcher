@@ -216,6 +216,7 @@ pub fn run() -> tauri::Result<()> {
             commands::instance_list,
             commands::instance_create,
             commands::instance_rename,
+            commands::instance_group_set,
             commands::instance_duplicate,
             commands::instance_delete,
             commands::instance_open_dir,

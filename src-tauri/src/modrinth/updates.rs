@@ -259,7 +259,9 @@ pub async fn update_all(
     inst: &Instance,
 ) -> Result<usize> {
     let checks = check_updates(paths, &client, inst).await?;
-    let mut manifest = crate::instances::load_content_manifest(paths, &inst.id);
+    // D70: снимок только для планирования; запись манифеста идёт из свежей
+    // перечитки под локом (см. критическую секцию ниже).
+    let manifest = crate::instances::load_content_manifest(paths, &inst.id);
     let game_dir =
         crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, &inst.id));
     let trash = game_dir.join(".trash");
@@ -443,28 +445,48 @@ pub async fn update_all(
     // корзины) — иначе осталась бы половина обновлённого инстанса, а манифест
     // врал бы про файлы на диске. save_content_manifest — только после полного
     // успеха.
+    // D70: свопы и запись манифеста — под per-instance локом
+    // (packupdate::content_manifest_lock): параллельные toggle/remove и
+    // обновление пака больше не теряют обновления. Манифест ПЕРЕЧИТЫВАЕТСЯ
+    // внутри секции: пока качали, он мог измениться (снимок выше годился
+    // только для планирования). Внутри guard'а нет .await — future остаётся
+    // Send, сеть в секцию не попадает.
     let mut done: Vec<SwapRecord> = Vec::new();
-    for p in &plan {
-        match swap_updated_file(&p.old_path, &p.temp, &p.dest, &trash, &p.filename) {
-            Ok(rec) => {
-                if let Some(e) = manifest.iter_mut().find(|e| e.file == p.check_file) {
-                    e.file = p.new_file_field.clone();
-                    e.version_id = Some(p.version_id.clone());
-                    e.sha1 = p.new_sha1.clone();
+    let mut swap_err: Option<LauncherError> = None;
+    {
+        let lock = crate::instances::packupdate::content_manifest_lock(&inst.id);
+        let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+        let mut fresh = crate::instances::load_content_manifest(paths, &inst.id);
+        for p in &plan {
+            match swap_updated_file(&p.old_path, &p.temp, &p.dest, &trash, &p.filename) {
+                Ok(rec) => {
+                    if let Some(e) = fresh.iter_mut().find(|e| e.file == p.check_file) {
+                        e.file = p.new_file_field.clone();
+                        e.version_id = Some(p.version_id.clone());
+                        e.sha1 = p.new_sha1.clone();
+                    }
+                    done.push(rec);
+                    updated += 1;
                 }
-                done.push(rec);
-                updated += 1;
+                Err(e) => {
+                    swap_err = Some(e);
+                    break;
+                }
             }
-            Err(e) => {
-                rollback_swaps(&done);
-                for p in &plan {
-                    crate::util::fs::remove_file_ignore(&p.temp);
-                }
-                return Err(e);
+        }
+        if swap_err.is_none() {
+            if let Err(e) = crate::instances::save_content_manifest(paths, &inst.id, &fresh) {
+                swap_err = Some(e);
             }
         }
     }
-    crate::instances::save_content_manifest(paths, &inst.id, &manifest)?;
+    if let Some(e) = swap_err {
+        rollback_swaps(&done);
+        for p in &plan {
+            crate::util::fs::remove_file_ignore(&p.temp);
+        }
+        return Err(e);
+    }
     Ok(updated)
 }
 
@@ -567,8 +589,8 @@ pub async fn backfill_project_ids(
     client: &HttpClient,
     inst: &Instance,
 ) -> Result<usize> {
-    let mut manifest = crate::instances::load_content_manifest(paths, &inst.id);
-    let need: Vec<String> = manifest
+    let snapshot = crate::instances::load_content_manifest(paths, &inst.id);
+    let need: Vec<String> = snapshot
         .iter()
         .filter(|e| {
             e.source == ContentSource::Modrinth && e.project_id.is_none() && e.sha1.is_some()
@@ -582,6 +604,12 @@ pub async fn backfill_project_ids(
     let by_hash = batch_latest_versions(client, &need, None, None)
         .await
         .unwrap_or_default();
+    // D70: дописывание манифеста — под per-instance локом
+    // (packupdate::content_manifest_lock), манифест перечитывается после сети:
+    // параллельные контентные операции не теряются.
+    let lock = crate::instances::packupdate::content_manifest_lock(&inst.id);
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+    let mut manifest = crate::instances::load_content_manifest(paths, &inst.id);
     let mut filled = 0usize;
     for e in manifest.iter_mut() {
         if e.project_id.is_some() || e.source != ContentSource::Modrinth {

@@ -65,6 +65,8 @@ export const api = {
     invoke<Instance>("instance_create", { mcVersion, name }),
   instanceRename: (id: string, name: string) =>
     invoke<Instance>("instance_rename", { id, name }),
+  instanceGroupSet: (id: string, group: string | null) =>
+    invoke<Instance>("instance_group_set", { id, group }),
   /** Смена версии MC инстанса (как в Prism): ядро докачивает файлы новой версии. */
   instanceVersionChange: (id: string, newMcVersion: string) =>
     invoke<{ ok: boolean }>("instance_version_change", { id, newMcVersion }),

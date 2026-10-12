@@ -163,6 +163,20 @@ pub async fn instance_rename(
 }
 
 #[tauri::command]
+pub async fn instance_group_set(
+    state: State<'_, AppState>,
+    id: String,
+    group: Option<String>,
+) -> Result<Instance> {
+    // D70: группа — метка библиотеки, дисковая запись как у rename (A27).
+    // Sync `set_group`, а не async-обёртка: под spawn_blocking живёт только она.
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || instances::set_group(&paths, &id, group))
+        .await
+        .map_err(join_err)?
+}
+
+#[tauri::command]
 pub async fn instance_duplicate(state: State<'_, AppState>, id: String) -> Result<Instance> {
     let paths = state.paths.clone();
     tauri::async_runtime::spawn_blocking(move || instances::duplicate(&paths, &id))

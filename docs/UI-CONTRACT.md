@@ -21,7 +21,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 
 ## Команды (invoke)
 
-Все 111 команд `invoke_handler` (пересчитано по реестру, D69), обработчики — `src-tauri/src/commands/mod.rs` (кроме
+Все 112 команд `invoke_handler` (пересчитано по реестру, D70), обработчики — `src-tauri/src/commands/mod.rs` (кроме
 `shortcut_take_pending` — он в `lib.rs:61`).
 
 ### Инстансы и процессы
@@ -31,6 +31,7 @@ snake_case) и `DeviceCodeStart` (snake_case, как в протоколе OAuth
 | `instance_list` | — | `Instance[]` (сортировка по имени; битый `instance.json` пропускается с предупреждением) | — |
 | `instance_create` | `{mcVersion, name}` | `Instance` (имя санитизируется) | version_not_found, network, json, invalid_input, io |
 | `instance_rename` | `{id, name}` | `Instance` | invalid_input (работающий инстанс), not_found, io |
+| `instance_group_set` | `{id, group: string|null}` | `Instance` (D70: группа библиотеки; трим, пустая → null, >64 символов → invalid_input; работающий инстанс НЕ блокируется — метка UI) | invalid_input, not_found, io |
 | `instance_duplicate` | `{id}` | `Instance` (имя «… (копия)»; общее — hardlink из стора, уникальное — копия) | invalid_input (работающий инстанс), not_found, io |
 | `instance_delete` | `{id, wipe}` | `{ok}` (`wipe:false` → корзина ОС, `true` → насовсем) | invalid_input (работающий инстанс), not_found, io, internal |
 | `instance_open_dir` | `{id}` | `{ok}` (создаёт каталог и открывает проводник) | not_found, io, internal |

@@ -61,6 +61,13 @@
   "instances.rename.title": "Rename Instance",
   "instances.rename.label": "New Name",
   "instances.rename.emptyError": "Instance name cannot be empty",
+  "instances.group.moveTo": "Move to group…",
+  "instances.group.none": "No group",
+  "instances.group.apply": "Done",
+  "instances.group.remove": "Remove from group",
+  "instances.group.placeholder": "Group name",
+  "instances.group.saved": "Group updated",
+  "instances.group.tooLong": "Must be 64 characters or fewer",
   "instances.changeVersion.menu": "Change Minecraft version",
   "changeVersion.title": "Change Minecraft version",
   "changeVersion.current": "Current version: {version}",
@@ -606,5 +613,7 @@
   "settings.backups.delete": "Delete this backup?",
   "settings.backups.open": "Open folder",
   "settings.backups.unlimited": "No limit",
-  "instanceCard.updates": "Mod updates available: {n}"
+  "instanceCard.updates": "Mod updates available: {n}",
+  "whatsNew.title": "What's new in {version}",
+  "whatsNew.continue": "Continue"
 }

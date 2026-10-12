@@ -13,10 +13,47 @@ import CreateInstanceDialog from "../components/CreateInstanceDialog";
 import DeleteInstanceDialog from "../components/DeleteInstanceDialog";
 import InstanceSettingsModal from "../components/InstanceSettingsModal";
 import RenameInstanceModal from "../components/RenameInstanceModal";
+import InstanceGroupModal from "../components/InstanceGroupModal";
 import ChangeVersionModal from "../components/ChangeVersionModal";
 import LogViewerModal from "../components/LogViewerModal";
 import { rowClickOpens } from "./InstanceDetailPage";
 import type { Instance } from "../../api/types";
+
+/**
+ * D70: разбить видимый список на секции групп. null — секции не нужны →
+ * страница рендерится плоско, ровно как до появления групп. `hasAnyGroup`
+ * считается по ПОЛНОМУ списку (группировка — свойство библиотеки, а не
+ * результата поиска); содержимое секций — из `visible`, поэтому секции,
+ * опустевшие после поиска, просто не попадают в выдачу. Порядок именованных
+ * групп — алфавит с учётом языка интерфейса; «без группы» возвращается
+ * отдельно и рисуется последней. Список приходит уже отсортированным
+ * (sort-селект) — секции лишь группируют его, не меняя порядок внутри.
+ */
+function buildSections(
+  visible: Instance[],
+  hasAnyGroup: boolean,
+): {
+  named: { name: string; items: Instance[] }[];
+  noGroup: Instance[];
+} | null {
+  if (!hasAnyGroup) return null;
+  const byGroup = new Map<string, Instance[]>();
+  const noGroup: Instance[] = [];
+  for (const inst of visible) {
+    const g = inst.group?.trim();
+    if (g) {
+      const arr = byGroup.get(g);
+      if (arr) arr.push(inst);
+      else byGroup.set(g, [inst]);
+    } else {
+      noGroup.push(inst);
+    }
+  }
+  const named = [...byGroup.keys()]
+    .sort((a, b) => a.localeCompare(b, currentLanguage()))
+    .map((name) => ({ name, items: byGroup.get(name) as Instance[] }));
+  return { named, noGroup };
+}
 
 /** Колбэки строки (без status): строятся один раз на инстанс, чтобы memo работал. */
 type RowCallbacks = {
@@ -28,6 +65,8 @@ type RowCallbacks = {
   onDelete: () => void;
   onSettings: () => void;
   onRename: () => void;
+  /** D70: открыть модалку «Переместить в группу…». */
+  onGroup: () => void;
   onChangeVersion: () => void;
   onLogs: () => void;
   onBackup: () => void;
@@ -67,6 +106,8 @@ export default function InstancesPage({
   const [creating, setCreating] = useState(false);
   const [settingsInst, setSettingsInst] = useState<Instance | null>(null);
   const [renameInst, setRenameInst] = useState<Instance | null>(null);
+  // D70: инстанс, для которого открыта модалка «Переместить в группу…».
+  const [groupInst, setGroupInst] = useState<Instance | null>(null);
   const [changeVersionInst, setChangeVersionInst] = useState<Instance | null>(null);
   const [logsInst, setLogsInst] = useState<Instance | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -90,10 +131,14 @@ export default function InstancesPage({
   } else if (sort === "created") {
     visible.sort((a, b) => b.createdAt - a.createdAt);
   } else {
-    // recent: по lastPlayed по убыванию; у неоткрывавшихся lastPlayed нет —
-    // они уходят в конец (0 меньше любого таймстампа) в исходном порядке.
-    visible.sort((a, b) => (b.lastPlayed ?? 0) - (a.lastPlayed ?? 0));
+  // recent: по lastPlayed по убыванию; у неоткрывавшихся lastPlayed нет —
+  // они уходят в конец (0 меньше любого таймстампа) в исходном порядке.
+  visible.sort((a, b) => (b.lastPlayed ?? 0) - (a.lastPlayed ?? 0));
   }
+
+  // D70: секции включаются, если хотя бы у одного инстанса (по всему списку)
+  // есть группа; иначе — прежний плоский рендер ровно как раньше.
+  const sections = buildSections(visible, list.some((i) => i.group));
 
   // DISC-A02: импорт архива модпака (.mrpack/.zip) тем же ядерным вызовом, что
   // и drop в Shell; отмена диалога — тихо, ошибка — через apiErrorText (B11).
@@ -145,6 +190,8 @@ export default function InstancesPage({
         onDuplicate: () => void duplicate(inst.id).catch((e) => setError(apiErrorText(e))),
         onSettings: () => setSettingsInst(inst),
         onRename: () => setRenameInst(inst),
+        // D70: модалку группы монтирует эта страница (по образцу rename).
+        onGroup: () => setGroupInst(inst),
         onChangeVersion: () => setChangeVersionInst(inst),
         onLogs: () => setLogsInst(inst),
         onBackup: () =>
@@ -225,6 +272,46 @@ export default function InstancesPage({
     load,
   ]);
 
+  // D70: существующие группы для datalist модалки — из полного списка, алфавит.
+  const existingGroups = useMemo(
+    () =>
+      [...new Set(list.map((i) => i.group).filter((g): g is string => !!g))].sort((a, b) =>
+        a.localeCompare(b, currentLanguage()),
+      ),
+    [list],
+  );
+
+  // D70: прежний JSX карточки ровно (селекторы [role="button"]
+  // [aria-label^="Открыть "] не меняем), вынесен в локальную функцию, чтобы
+  // не дублировать его в секциях и в плоском рендере.
+  const renderCards = (items: Instance[]) =>
+    items.map((inst) => {
+      const callbacks = rowCallbacks.get(inst.id);
+      return callbacks ? (
+        // Клик по телу карточки открывает страницу инстанса; кнопки
+        // внутри (Play/Stop, кебаб и его меню) остаются рабочими.
+        <div
+          key={inst.id}
+          role="button"
+          tabIndex={0}
+          aria-label={t("instance.open", { name: inst.name })}
+          onClick={(e) => {
+            if (rowClickOpens(e.target)) onOpenInstance(inst.id);
+          }}
+          onKeyDown={(e) => {
+            if (e.target !== e.currentTarget) return; // Enter на кнопках карточки
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onOpenInstance(inst.id);
+            }
+          }}
+          className="cursor-pointer rounded-lg"
+        >
+          <InstanceCard inst={inst} status={status[inst.id]} callbacks={callbacks} />
+        </div>
+      ) : null;
+    });
+
   return (
     // D65: сетка GD-«библиотеки» — шире (3 плитки в ряд на ~1280); паддинги
     // даёт Shell (p-6). Компактный ряд управления сверху, ниже — плитки.
@@ -281,36 +368,42 @@ export default function InstancesPage({
             {t("shell.search.noResultsHint", { query })}
           </div>
         </div>
+      ) : sections ? (
+        // D70: секции групп — заголовок (небольшой, в духе страницы) + прежняя
+        // сетка внутри; секция «Без группы» — всегда последней. Пустые после
+        // поиска секции в buildSections не попадают вовсе.
+        <div className="flex flex-col gap-5">
+          {sections.named.map(({ name, items }) => (
+            <section key={name} className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-text-muted">{name}</h3>
+                <span className="chip-mono">{items.length}</span>
+              </div>
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3">
+                {renderCards(items)}
+              </div>
+            </section>
+          ))}
+          {sections.noGroup.length > 0 && (
+            <section className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-text-muted">
+                  {t("instances.group.none")}
+                </h3>
+                <span className="chip-mono">{sections.noGroup.length}</span>
+              </div>
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3">
+                {renderCards(sections.noGroup)}
+              </div>
+            </section>
+          )}
+        </div>
       ) : (
         // D65: плитки ~300px высотой (высота задаёт InstanceCard) — auto-fill
         // даёт ровно 3 колонки на ~1280 и остаётся адаптивным на худших ширинах.
+        // D70: ни у кого нет группы — прежний плоский рендер без заголовков.
         <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3">
-          {visible.map((inst) => {
-            const callbacks = rowCallbacks.get(inst.id);
-            return callbacks ? (
-              // Клик по телу карточки открывает страницу инстанса; кнопки
-              // внутри (Play/Stop, кебаб и его меню) остаются рабочими.
-              <div
-                key={inst.id}
-                role="button"
-                tabIndex={0}
-                aria-label={t("instance.open", { name: inst.name })}
-                onClick={(e) => {
-                  if (rowClickOpens(e.target)) onOpenInstance(inst.id);
-                }}
-                onKeyDown={(e) => {
-                  if (e.target !== e.currentTarget) return; // Enter на кнопках карточки
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    onOpenInstance(inst.id);
-                  }
-                }}
-                className="cursor-pointer rounded-lg"
-              >
-                <InstanceCard inst={inst} status={status[inst.id]} callbacks={callbacks} />
-              </div>
-            ) : null;
-          })}
+          {renderCards(visible)}
         </div>
       )}
 
@@ -338,6 +431,16 @@ export default function InstancesPage({
         <RenameInstanceModal
           instance={renameInst}
           onClose={() => setRenameInst(null)}
+        />
+      )}
+
+      {/* D70: перемещение в группу; уведомление здесь, перечитку делает стор. */}
+      {groupInst && (
+        <InstanceGroupModal
+          instance={groupInst}
+          groups={existingGroups}
+          onClose={() => setGroupInst(null)}
+          onSaved={() => setNotice(t("instances.group.saved"))}
         />
       )}
 

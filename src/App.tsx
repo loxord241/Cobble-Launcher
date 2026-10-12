@@ -5,6 +5,7 @@ import Onboarding from "./ui/pages/Onboarding";
 import { useSettings } from "./state/settings";
 import { t } from "./i18n";
 import { useInstances } from "./state/instances";
+import WhatsNewModal from "./ui/components/WhatsNewModal";
 
 export default function App() {
   // PERF#1 (аудит 2026-10-03): без селекторов App подписан на ВЕСЬ стор —
@@ -63,6 +64,9 @@ export default function App() {
   return (
     <>
       <Shell onLogout={handleLogout} />
+      {/* D70: «Что нового» после автообновления — сам решает, показываться
+          или нет; гейт онбординга дублируем условием монтирования. */}
+      {!showOnboarding && settings?.onboardingDone && <WhatsNewModal />}
       {error && (
         <div
           role="alert"

@@ -17,12 +17,44 @@ use crate::net::download::{DownloadEngine, DownloadTask};
 use crate::net::http::HttpClient;
 use crate::paths::Paths;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Потолок ченджлога в PackUpdateInfo: UI показывает пару строк, а ченджлоги
 /// паков бывают на экраны текста. Режем по СИМВОЛАМ (не байтам) — кириллица.
 const CHANGELOG_MAX_CHARS: usize = 600;
+
+/// D70: реестр per-instance локов критической секции read-modify-write
+/// манифеста контента (content-manifest.json). `pack_update_apply` (здесь) и
+/// мутирующие контентные операции (content::toggle/remove/install_local/
+/// copy_entry, install::download_and_record, updates::update_all) пишут ОДИН
+/// файл: без лока параллельные вызовы теряли бы обновление (кто последний
+/// записал — тот и прав). Лок на каждый инстанс свой: операции разных
+/// инстансов не блокируют друг друга. Arc — лок живёт, пока его держит хоть
+/// одна секция, даже если реестр уже выкинул запись (записи не выкидываем:
+/// их столько, сколько инстансов). Лок через сетевые await НЕ держится:
+/// скачивания — вне критических секций.
+static CONTENT_MANIFEST_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+    OnceLock::new();
+
+/// D70: лок критической секции read-modify-write манифеста контента
+/// инстанса `instance_id`. Берётся ТОЛЬКО на время локальных дисковых
+/// операций (перечитать → изменить → записать), никогда — через сетевые
+/// await. Отравленный реестр (паника предыдущего владельца) не мешает:
+/// внутри просто Arc'ы, забираем их как есть.
+pub(crate) fn content_manifest_lock(instance_id: &str) -> Arc<Mutex<()>> {
+    let registry = CONTENT_MANIFEST_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = registry.lock().unwrap_or_else(|p| p.into_inner());
+    map.entry(instance_id.to_string()).or_default().clone()
+}
+
+/// D70: проект пака снят с Modrinth (404/410) — тот же предикат, что у
+/// поштучной проверки контента (updates.rs::project_gone): тихую проверку
+/// это не должно ронять.
+fn gone(err: &LauncherError) -> bool {
+    matches!(err, LauncherError::HttpStatus { status: 404 | 410, .. })
+}
 
 /// Найденное обновление модпака (контракт фронту, camelCase).
 #[derive(Debug, Clone, Serialize)]
@@ -100,7 +132,23 @@ pub async fn check(
             "проверка обновлений модпака".into(),
         ));
     }
-    let versions = project_versions(http, &pack.project_id).await?;
+    // D70: если установленная версия пака удалена с Modrinth, список версий
+    // её больше не содержит — newest_update честно предложит последнюю
+    // ОСТАВШУЮСЯ версию (её номер может быть МЕНЬШЕ установленного — это
+    // валидный даунгрейд, apply применяет его штатно: бэкап + дифф).
+    // Снятый целиком проект (404/410) — не ошибка тихой проверки: оставшихся
+    // версий список не отдал, предложить нечего — Ok(None), баннер исчезает.
+    let versions = match project_versions(http, &pack.project_id).await {
+        Ok(v) => v,
+        Err(e) if gone(&e) => {
+            tracing::warn!(
+                "проверка обновлений пака: проект {} недоступен ({e})",
+                pack.project_id
+            );
+            return Ok(None);
+        }
+        Err(e) => return Err(e),
+    };
     Ok(newest_update(&versions, &pack.version_id))
 }
 
@@ -367,13 +415,13 @@ pub async fn apply(
 
     // 4. Манифест нового пака + валидация загрузчика ДО всяких мутаций:
     // неизвестный загрузчик/битый манифест не должны стоить пользователю
-    // удалённых файлов.
+    // удалённых файлов. Снимок старого манифеста здесь — только эвристика
+    // скачивания (вкл/выкл, пропуск совпавших хэшей); сам дифф D70
+    // пересчитывается внутри критической секции ПОД ЛОКОМ (шаг 6).
     let index = crate::modrinth::mrpack::open_mrpack(&tmp_path)?;
     let loader = crate::modrinth::mrpack::resolve_loader(&index.dependencies)?;
     let planned = plan_files(&index)?;
     let old_manifest = crate::instances::load_content_manifest(paths, instance_id);
-    let removed = removed_pack_entries(&old_manifest, &planned);
-    let user_kept = preserved_user_entries(&old_manifest, &planned);
 
     // Бэкап инстанса целиком (zip в backups/) — честная защита: дальше идут
     // массовые удаления/перезаписи. Теперь ПОСЛЕ сетевых проверок и разбора
@@ -432,19 +480,33 @@ pub async fn apply(
         }
     }
 
-    // 6. Удаление выбывших из пака (обе формы имени, .disabled — «тот же
-    // файл»). До записи манифеста: сбой здесь оставляет инстанс в старом
-    // состоянии, повторная попытка пересчитает тот же дифф.
-    if !removed.is_empty() {
-        progress(format!("удаляю файлы старой версии: {}…", removed.len()));
-        let r_list = removed.clone();
-        let r_dir = mc_dir.clone();
-        let r_paths = paths.clone();
-        let r_id = instance_id.to_string();
-        let r_res = tokio::task::spawn_blocking(move || -> Result<()> {
-            for e in &r_list {
+    // 6–8. D70: критическая секция read-modify-write манифеста под
+    // per-instance локом content_manifest_lock — параллельные контентные
+    // операции (toggle/remove/install_local/copy_entry) и повторный apply
+    // больше не теряют обновления манифеста. Лок НЕ держится через сетевые
+    // await: скачивания завершены выше, а вся секция (перечитать манифест →
+    // дифф → удалить выбывших → overrides → записать манифест) — локальный
+    // диск без сети, одним куском в blocking-пуле. Манифест ПЕРЕЧИТЫВАЕТСЯ
+    // внутри секции: пока качались файлы, пользователь мог переключить или
+    // удалить контент — дифф по устаревшему снимку вернул бы его выбор назад.
+    let c_planned = planned.clone();
+    let c_paths = paths.clone();
+    let c_id = instance_id.to_string();
+    let c_dir = mc_dir.clone();
+    let c_tmp = tmp_path.clone();
+    let (removed_len, extracted) = {
+        tokio::task::spawn_blocking(move || -> Result<(usize, usize)> {
+            let lock = content_manifest_lock(&c_id);
+            let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+            let fresh = crate::instances::load_content_manifest(&c_paths, &c_id);
+            let removed = removed_pack_entries(&fresh, &c_planned);
+
+            // 6. Удаление выбывших из пака (обе формы имени, .disabled — «тот же
+            // файл»). До записи манифеста: сбой здесь оставляет инстанс в старом
+            // состоянии, повторная попытка пересчитает тот же дифф.
+            for e in &removed {
                 // Барьер traversal: удаляем только внутри каталогов контента.
-                if crate::instances::content::resolve_content_file(&r_paths, &r_id, &e.file)
+                if crate::instances::content::resolve_content_file(&c_paths, &c_id, &e.file)
                     .is_err()
                 {
                     tracing::warn!(
@@ -455,7 +517,7 @@ pub async fn apply(
                 }
                 for enabled in [true, false] {
                     let p = crate::util::fs::long_path(
-                        &r_dir.join(crate::instances::content::disk_path(&e.file, enabled)),
+                        &c_dir.join(crate::instances::content::disk_path(&e.file, enabled)),
                     );
                     if p.exists() {
                         // ENV-11b: антивирус придерживает jar — повторяем удаление.
@@ -463,54 +525,48 @@ pub async fn apply(
                     }
                 }
             }
-            Ok(())
-        })
-        .await
-        .map_err(|e| LauncherError::Io(std::io::Error::other(format!("удаление: {e}"))))?;
-        r_res?;
-    }
 
-    // 7. Overrides нового пака поверх (перезапись — семантика обновления
-    // пака). saves/ из overrides не распаковываем никогда: пользовательские
-    // миры не пачкаются даже чужим архивом (zip-slip закрывает сам экстрактор).
-    progress("применяю overrides…".into());
-    let o_dir = mc_dir.clone();
-    let o_tmp = tmp_path.clone();
-    let extracted = {
-        tokio::task::spawn_blocking(move || -> Result<usize> {
-            let pack = std::fs::File::open(crate::util::fs::long_path(&o_tmp))?;
-            crate::util::zip::extract_zip_stripping(
+            // 7. Overrides нового пака поверх (перезапись — семантика обновления
+            // пака). saves/ из overrides не распаковываем никогда: пользовательские
+            // миры не пачкаются даже чужим архивом (zip-slip закрывает сам
+            // экстрактор).
+            let pack = std::fs::File::open(crate::util::fs::long_path(&c_tmp))?;
+            let extracted = crate::util::zip::extract_zip_stripping(
                 pack,
-                &o_dir,
+                &c_dir,
                 "overrides/",
                 |rel| !rel.starts_with("saves/") && !rel.contains("/saves/"),
                 |_| {},
             )
-            .map(|v| v.len())
+            .map(|v| v.len())?;
+
+            // 8. Новый манифест: файлы пака (с прежним вкл/выкл) + пользовательское.
+            let manifest: Vec<ContentEntry> = c_planned
+                .iter()
+                .filter_map(|p| {
+                    Some(ContentEntry {
+                        kind: p.kind?,
+                        file: p.file.clone(),
+                        source: ContentSource::Modrinth,
+                        project_id: p.project_id.clone(),
+                        version_id: p.version_id.clone(),
+                        sha1: p.sha1.clone(),
+                        url: Some(p.url.clone()),
+                        enabled: old_enabled_for(&fresh, &p.file).unwrap_or(true),
+                    })
+                })
+                .chain(preserved_user_entries(&fresh, &c_planned))
+                .collect();
+            crate::instances::save_content_manifest(&c_paths, &c_id, &manifest)?;
+            Ok((removed.len(), extracted))
         })
         .await
-        .map_err(|e| LauncherError::Io(std::io::Error::other(format!("overrides: {e}"))))??
+        .map_err(|e| LauncherError::Io(std::io::Error::other(format!("обновление пака: {e}"))))??
     };
+    if removed_len > 0 {
+        progress(format!("удаляю файлы старой версии: {removed_len}…"));
+    }
     tracing::info!("обновление пака: overrides применены ({extracted} файлов)");
-
-    // 8. Новый манифест: файлы пака (с прежним вкл/выкл) + пользовательское.
-    let manifest: Vec<ContentEntry> = planned
-        .iter()
-        .filter_map(|p| {
-            Some(ContentEntry {
-                kind: p.kind?,
-                file: p.file.clone(),
-                source: ContentSource::Modrinth,
-                project_id: p.project_id.clone(),
-                version_id: p.version_id.clone(),
-                sha1: p.sha1.clone(),
-                url: Some(p.url.clone()),
-                enabled: old_enabled_for(&old_manifest, &p.file).unwrap_or(true),
-            })
-        })
-        .chain(user_kept)
-        .collect();
-    crate::instances::save_content_manifest(paths, instance_id, &manifest)?;
 
     // 9. instance.json: новая ссылка пака; сменился minecraft в dependencies —
     // и mc_version инстанса (instances::update — A28, под SAVE_LOCK).
@@ -692,6 +748,85 @@ mod tests {
         assert!(json.contains("\"versionId\":\"v-new\""), "{json}");
         assert!(json.contains("\"versionNumber\":\"2.0.0\""), "{json}");
         assert!(!json.contains("version_id"), "{json}");
+    }
+
+    /// D70: установленная версия удалена с Modrinth (в списке её нет) — чек
+    /// предлагает последнюю ОСТАВШУЮСЯ, даже если её номер МЕНЬШЕ
+    /// установленного (валидный даунгрейд: автор откатил релиз). Контракт
+    /// PackUpdateInfo прежний.
+    #[test]
+    fn newest_update_offers_downgrade_when_installed_version_gone() {
+        let fixture = r#"[
+            {"id":"v-1.5","project_id":"p","version_number":"1.5.0"},
+            {"id":"v-1.0","project_id":"p","version_number":"1.0.0"}
+        ]"#;
+        let versions: Vec<Version> = serde_json::from_str(fixture).unwrap();
+        // Установлена была «2.0.0», которой на Modrinth больше нет.
+        let upd = newest_update(&versions, "v-2.0")
+            .expect("после удаления версии должно быть предложено обновление");
+        assert_eq!(upd.version_id, "v-1.5");
+        assert_eq!(upd.version_number, "1.5.0");
+        assert!(
+            upd.version_number.as_str() < "2.0.0",
+            "номер предложенной версии меньше установленного — это даунгрейд"
+        );
+    }
+
+    /// D70: предикат gone — 404/410 (снят с Modrinth), прочие ошибки (403,
+    /// сеть) остаются ошибками.
+    #[test]
+    fn gone_predicate_matches_only_404_410() {
+        let mk = |status: u16| LauncherError::HttpStatus {
+            status,
+            url: "https://api.modrinth.com/v2/project/p/version".into(),
+        };
+        assert!(gone(&mk(404)));
+        assert!(gone(&mk(410)));
+        assert!(!gone(&mk(403)));
+        assert!(!gone(&mk(500)));
+        assert!(!gone(&LauncherError::OfflineMode("x".into())));
+    }
+
+    /// D70: реестр per-instance локов — один id выдаёт ОДИН и тот же лок,
+    /// разные id — разные; критические секции двух потоков на одном локе
+    /// не пересекаются.
+    #[test]
+    fn content_manifest_lock_serializes_sections() {
+        let a1 = content_manifest_lock("d70-lock-a");
+        let a2 = content_manifest_lock("d70-lock-a");
+        assert!(Arc::ptr_eq(&a1, &a2), "один id — один и тот же лок");
+        let b = content_manifest_lock("d70-lock-b");
+        assert!(!Arc::ptr_eq(&a1, &b), "разные id — разные локи");
+
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static IN_SECTION: AtomicUsize = AtomicUsize::new(0);
+        static VIOLATIONS: AtomicUsize = AtomicUsize::new(0);
+        let shared = content_manifest_lock("d70-lock-shared");
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let lock = shared.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..100 {
+                        let _g = lock.lock().unwrap();
+                        // Секция занята ещё кем-то — пересечение, это баг.
+                        if IN_SECTION.fetch_add(1, Ordering::SeqCst) != 0 {
+                            VIOLATIONS.fetch_add(1, Ordering::SeqCst);
+                        }
+                        // Имитация критической секции read-modify-write.
+                        std::thread::sleep(std::time::Duration::from_micros(200));
+                        IN_SECTION.fetch_sub(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(
+            VIOLATIONS.load(Ordering::SeqCst),
+            0,
+            "критические секции не должны пересекаться"
+        );
     }
 
     // ---------- дифф манифестов (чистые функции) ----------
@@ -1004,9 +1139,18 @@ mod tests {
         let app = axum::Router::new()
             .route(
                 "/v2/project/{id}/version",
-                axum::routing::get(move || {
+                axum::routing::get(move |path: axum::extract::Path<String>| {
                     let v = versions_json.clone();
-                    async move { axum::Json(v) }
+                    async move {
+                        // D70: «proj-gone» — пак, снятый с Modrinth целиком
+                        // (404): тихая проверка обязана дать Ok(None), а не
+                        // ошибку при каждом запуске.
+                        if path.as_str() == "proj-gone" {
+                            Err(axum::http::StatusCode::NOT_FOUND)
+                        } else {
+                            Ok(axum::Json(v))
+                        }
+                    }
                 }),
             )
             .route(
@@ -1253,5 +1397,34 @@ mod tests {
         assert!(again.is_none(), "после обновления баннер должен исчезнуть");
         // Архив пака скачивался ровно один раз.
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // D70: установленная версия удалена с Modrinth (в списке её нет) —
+        // чек предлагает последнюю ОСТАВШУЮСЯ (apply применяет как даунгрейд).
+        let mut ghost = Instance::new("Пак-призрак", "1.20.1");
+        ghost.modpack = Some(ModpackRef {
+            project_id: "pack-proj".into(),
+            version_id: "v-deleted".into(),
+            version_number: "9.9.9".into(),
+        });
+        let ghost_upd = check(&paths, &client, &ghost)
+            .await
+            .unwrap()
+            .expect("оставшаяся версия предлагается");
+        assert_eq!(ghost_upd.version_id, "v-new");
+        assert_eq!(ghost_upd.version_number, "2.0.0");
+
+        // D70: пак снят с Modrinth целиком (404 от /project/{id}/version) —
+        // тихая проверка не падает ошибкой, а честно отвечает «обновлений нет».
+        let mut gone_inst = Instance::new("Пак-удалённый", "1.20.1");
+        gone_inst.modpack = Some(ModpackRef {
+            project_id: "proj-gone".into(),
+            version_id: "v-old".into(),
+            version_number: "1.0.0".into(),
+        });
+        let gone_upd = check(&paths, &client, &gone_inst).await.unwrap();
+        assert!(
+            gone_upd.is_none(),
+            "404 проекта — не ошибка, а «обновлений нет»: {gone_upd:?}"
+        );
     }
 }

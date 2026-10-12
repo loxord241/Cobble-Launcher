@@ -6,6 +6,7 @@
 //! выключение = переименование файла на диске + `enabled: false`.
 
 use crate::errors::{LauncherError, Result};
+use crate::instances::packupdate::content_manifest_lock;
 use crate::instances::{
     instance_dir, load_content_manifest, minecraft_dir, save_content_manifest, ContentEntry,
     Instance,
@@ -70,6 +71,13 @@ pub(crate) fn disk_path(entry_file: &str, enabled: bool) -> PathBuf {
 /// Логический путь в манифесте не меняется.
 pub fn toggle(paths: &Paths, id: &str, file: &str) -> Result<ContentEntry> {
     resolve_content_file(paths, id, file)?;
+    // D70: критическая секция read-modify-write манифеста — под per-instance
+    // локом (реестр в packupdate::content_manifest_lock): параллельные
+    // toggle/remove/install_local и обновление пака не теряют обновления.
+    // Внутри только локальный диск (переименование + запись), сети нет —
+    // блокировка потока blocking-пула допустима.
+    let lock = content_manifest_lock(id);
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
     let mut manifest = load_content_manifest(paths, id);
     let entry = manifest
         .iter_mut()
@@ -100,6 +108,10 @@ pub fn toggle(paths: &Paths, id: &str, file: &str) -> Result<ContentEntry> {
 /// Удалить контент: файл в обоих вариантах имени + запись из манифеста.
 pub fn remove(paths: &Paths, id: &str, file: &str) -> Result<()> {
     resolve_content_file(paths, id, file)?;
+    // D70: критическая секция read-modify-write манифеста — под per-instance
+    // локом (см. toggle).
+    let lock = content_manifest_lock(id);
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
     let mut manifest = load_content_manifest(paths, id);
     let before = manifest.len();
     manifest.retain(|e| e.file != file);
@@ -118,6 +130,24 @@ pub fn remove(paths: &Paths, id: &str, file: &str) -> Result<()> {
     save_content_manifest(paths, id, &manifest)
 }
 
+/// D70: чистый валидатор источника локальной установки (drag & drop):
+/// из полного пути достаётся имя файла и проверяется, что это ПРОСТОЕ имя
+/// (без разделителей и `:` — оно же ляжет в поле `file` манифеста). Сетевые
+/// UNC-пути валидны наравне с локальными: `\\server\share\file.zip`,
+/// `//server/share/file.zip` и длинная форма `\\?\UNC\server\share\file.zip`
+/// — file_name() отдаёт последний компонент, а читать/копировать файл умеет
+/// std::fs с любого из этих видов (long_path корректно превращает глубокие
+/// UNC в `\\?\UNC\…`). Отклоняются относительный мусор без имени и корни
+/// шар без файла.
+pub(crate) fn local_source_name(path: &str) -> Result<&str> {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::trim)
+        .filter(|n| !n.is_empty() && !n.contains(['\\', '/', ':']))
+        .ok_or_else(|| LauncherError::InvalidInput(format!("недопустимое имя файла: {path}")))
+}
+
 /// Установить локальный файл (drag & drop): .jar — мод, .zip — шейдер
 /// (если внутри есть каталог shaders/) или ресурспак. Источник — путь,
 /// который юзер сам бросил на окно; файл копируется в каталог контента
@@ -128,12 +158,7 @@ pub fn install_local(paths: &Paths, id: &str, path: &str) -> Result<ContentEntry
     use crate::instances::ContentSource;
 
     let src = std::path::Path::new(path);
-    let name = src
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(str::trim)
-        .filter(|n| !n.is_empty() && !n.contains(['\\', '/', ':']))
-        .ok_or_else(|| LauncherError::InvalidInput(format!("недопустимое имя файла: {path}")))?;
+    let name = local_source_name(path)?;
     let lower = name.to_lowercase();
     let kind = if lower.ends_with(".jar") {
         ContentKind::Mod
@@ -165,6 +190,13 @@ pub fn install_local(paths: &Paths, id: &str, path: &str) -> Result<ContentEntry
         ContentKind::Datapack => "datapacks", // сюда не попадаем (см. выше)
     };
     let file = format!("{dir}/{name}");
+    // D70: «проверка коллизии → копия → запись манифеста» атомарна
+    // относительно других контентных операций (per-instance лок из
+    // packupdate): без лока два параллельных install_local с одним именем
+    // оба проходили бы проверку коллизии, а обновление пака могло бы
+    // перетереть запись. Внутри лока только локальный диск, сети нет.
+    let lock = content_manifest_lock(id);
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
     // Коллизия в обоих состояниях имени — честный отказ, тихо молчать нельзя.
     let base = minecraft_dir(&instance_dir(paths, id));
     for enabled in [true, false] {
@@ -218,6 +250,11 @@ pub fn copy_entry(paths: &Paths, from_id: &str, to_id: &str, file: &str) -> Resu
     // Барьер traversal для пути файла в ОБЕИХ раскладках (одинаковый префикс).
     resolve_content_file(paths, from_id, file)?;
     resolve_content_file(paths, to_id, file)?;
+    // D70: read-modify-write манифеста ПРИЁМНИКА — под per-instance локом
+    // (реестр в packupdate::content_manifest_lock). Манифест источника здесь
+    // только читается — лок на from_id не нужен.
+    let lock = content_manifest_lock(to_id);
+    let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
     let src_entry = load_content_manifest(paths, from_id)
         .into_iter()
         .find(|e| e.file == file)
@@ -571,6 +608,38 @@ mod tests {
         let e = toggle(&paths, &inst.id, "mods/a.jar").unwrap();
         assert!(e.enabled);
         assert!(long(&mc.join("mods/a.jar")).exists());
+    }
+
+    /// D70: UNC-пути (сетевой drag & drop) проходят валидатор локальной
+    /// установки — все формы сетевого пути дают простое имя файла; корни
+    /// шар без файла и пустой путь отклоняются. Без сети и реальной шары:
+    /// валидатор чистый.
+    #[test]
+    fn local_source_name_accepts_unc_paths() {
+        assert_eq!(
+            local_source_name(r"\\server\share\file.zip").unwrap(),
+            "file.zip"
+        );
+        assert_eq!(
+            local_source_name(r"\\server\share\мод\pro-mod.jar").unwrap(),
+            "pro-mod.jar"
+        );
+        assert_eq!(
+            local_source_name("//server/share/file.zip").unwrap(),
+            "file.zip"
+        );
+        assert_eq!(
+            local_source_name(r"\\?\UNC\server\share\file.zip").unwrap(),
+            "file.zip"
+        );
+        assert_eq!(
+            local_source_name(r"C:\Users\me\Downloads\file.zip").unwrap(),
+            "file.zip"
+        );
+        for bad in ["", r"\\server\share", r"\\?\UNC\server\share", r"\\?\C:\"] {
+            let err = local_source_name(bad).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "{bad:?} должен быть отклонён");
+        }
     }
 
     /// (а) Запись выключена, но на диске только активный файл: включение —

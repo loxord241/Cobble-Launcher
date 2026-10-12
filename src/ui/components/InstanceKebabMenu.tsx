@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import {
   Sparkles,
   FolderOpen,
+  FolderInput,
   Copy,
   Trash2,
   MoreVertical,
@@ -30,6 +31,8 @@ export type KebabCallbacks = {
   onDelete: () => void;
   onSettings?: () => void;
   onRename?: () => void;
+  /** D70: переместить в группу библиотеки (модалку монтирует вызывающая страница). */
+  onGroup?: () => void;
   /** Смена версии Minecraft (как в Prism): модалку монтирует вызывающая страница. */
   onChangeVersion?: () => void;
   onLogs?: () => void;
@@ -133,6 +136,7 @@ export default function InstanceKebabMenu({
   const {
     onSettings,
     onRename,
+    onGroup,
     onChangeVersion,
     onLogs,
     onBackup,
@@ -206,6 +210,18 @@ export default function InstanceKebabMenu({
                 onClick={() => {
                   closeMenu();
                   onRename();
+                }}
+              />
+            )}
+            {/* D70: перемещение в группу библиотеки — рядом с переименованием. */}
+            {onGroup && (
+              <MenuItem
+                icon={FolderInput}
+                label={t("instances.group.moveTo")}
+                disabled={busy}
+                onClick={() => {
+                  closeMenu();
+                  onGroup();
                 }}
               />
             )}
