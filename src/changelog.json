@@ -3,23 +3,31 @@
     "date": "2026-10-12",
     "ru": [
       "Папки для инстансов в библиотеке — группируйте игровые сборки.",
-      "Окно «Что нового» — краткий обзор изменений после каждого обновления лаунчера.",
-      "Полировка: защита от гонок при обновлении модпаков, даунгрейд пака при откате удалённой версии, поддержка UNC-путей для локальных файлов, проверка редиректов на каждом сетевом переходе."
+      "Обновление модпака больше не удаляет моды, которые вы ставили сами из каталога.",
+      "Ярлык на рабочем столе запускает игру даже при закрытом лаунчере; офлайн-запуск ванильных сборок починен.",
+      "Серверы: чекбокс «игроки из локальной сети» (по умолчанию сервер виден только вам), все загрузки проверяются хэшами, повторный «Стоп» не обрывает сохранение мира.",
+      "Стабильность: более 60 исправлений по итогам полного аудита — гонки, память, валидация путей, приватность выгрузки логов."
     ],
     "en": [
       "Folders for instances in the library — group your game builds.",
-      "A \"What's new\" window with a short changelog after each launcher update.",
-      "Polish: race protection for modpack updates, pack downgrade for older remote versions, UNC paths for local files, and redirect checks on every network hop."
+      "Updating a modpack no longer deletes mods you installed yourself from the catalog.",
+      "The desktop shortcut launches the game even when the launcher is closed; offline launch of vanilla instances is fixed.",
+      "Servers: a \"LAN players\" checkbox (by default the server is visible only to you), every download is hash-verified, a second Stop can no longer interrupt world saving.",
+      "Stability: 60+ fixes from a full audit — races, memory, path validation, and log-sharing privacy."
     ],
     "uk": [
       "Теки для інстансів у бібліотеці — групуйте свої ігрові збірки.",
-      "Вікно «Що нового» — короткий огляд змін після кожного оновлення лаунчера.",
-      "Шліфування: захист від гонок під час оновлення модпаків, даунгрейд паку для старшої віддаленої версії, підтримка UNC-шляхів для локальних файлів і перевірка редиректів на кожному переході."
+      "Оновлення модпаку більше не видаляє моди, які ви встановлювали самі з каталогу.",
+      "Ярлик на робочому столі запускає гру навіть коли лаунчер закритий; офлайн-запуск ванільних збірок виправлено.",
+      "Сервери: галочка «гравці з локальної мережі» (за замовчуванням сервер видимий лише вам), усі завантаження перевіряються хешами, повторний «Стоп» не перериває збереження світу.",
+      "Стабільність: понад 60 виправлень за підсумками повного аудиту — гонки, пам’ять, валідація шляхів, приватність вивантаження логів."
     ],
     "pl": [
       "Foldery dla instancji w bibliotece — grupuj swoje paczki gry.",
-      "Okno „Co nowego” — krótki przegląd zmian po każdej aktualizacji launchera.",
-      "Szlif: zabezpieczenie przed wyścigami przy aktualizacji modpacków, downgrade paczki dla starszej wersji zdalnej, obsługa ścieżek UNC dla plików lokalnych i sprawdzanie przekierowań przy każdym przejściu sieciowym."
+      "Aktualizacja modpacka nie usuwa już modów dodanych samodzielnie z katalogu.",
+      "Skrót na pulpicie uruchamia grę nawet przy zamkniętym launcherze; naprawiono offline’owe uruchamianie czystych instalacji.",
+      "Serwery: pole „gracze z sieci lokalnej” (domyślnie serwer widoczny tylko dla ciebie), każde pobieranie weryfikowane hashem, powtórny „Stop” nie przerywa zapisu świata.",
+      "Stabilność: ponad 60 poprawek po pełnym audycie — wyścigi, pamięć, walidacja ścieżek, prywatność udostępniania logów."
     ]
   }
 }

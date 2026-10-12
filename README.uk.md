@@ -12,7 +12,7 @@
 [![Ліцензія](https://img.shields.io/github/license/loxord241/Cobble-Launcher?style=flat-square)](LICENSE)
 [![Платформа](https://img.shields.io/badge/Windows-10%2F11_x64-blue?style=flat-square&logo=windows)](https://github.com/loxord241/Cobble-Launcher/releases/latest)
 [![Мови](https://img.shields.io/badge/мови-ru%C2%B7en%C2%B7uk%C2%B7pl-green?style=flat-square)](#мови)
-[![Тести](https://img.shields.io/badge/тести-589%2B10-success?style=flat-square)](#збірка-з-вихідного-коду)
+[![Тести](https://img.shields.io/badge/тести-661%2B10-success?style=flat-square)](#збірка-з-вихідного-коду)
 
 **[Завантажити останню версію](https://github.com/loxord241/Cobble-Launcher/releases/latest)** ·
 [Повідомити про проблему](https://github.com/loxord241/Cobble-Launcher/issues) ·
@@ -122,7 +122,7 @@ npm run tauri build
 
 ```bash
 npm run build                # TypeScript strict + Vite
-cd src-tauri && cargo test   # 589 тести ядра + 10 інтеграційних
+cd src-tauri && cargo test   # 661 тести ядра + 10 інтеграційних
 ```
 
 ## Стек і структура
