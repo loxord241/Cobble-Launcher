@@ -1,8 +1,11 @@
 // D70: модалка «Что нового» после автообновления. Показывается один раз на
 // версию: ключ localStorage "changelogSeenVersion" хранит последнюю увиденную
-// версию; он отличается от текущей → показ. Первый запуск (ключа нет) — ключ
-// молча записывается без показа. Список изменений — src/changelog.json по
-// текущему языку (фолбэк en → ru); записи для версии нет — не открываемся.
+// версию; он отличается от текущей → показ. D72-хвост: «первый запуск» (ключа
+// нет) различается маркером "changelogFreshProfile", который ставит App при
+// первом детекте онбординга — у обновившихся со старых версий маркера нет,
+// и окно обязано показаться, иначе обновление молча глотало changelog.
+// Список изменений — src/changelog.json по текущему языку (фолбэк en → ru);
+// записи для версии нет — не открываемся.
 import { useCallback, useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { X } from "lucide-react";
@@ -22,6 +25,8 @@ type Changelog = Record<string, ChangelogEntry>;
 
 const changelog = rawChangelog as Changelog;
 const SEEN_KEY = "changelogSeenVersion";
+// Маркер свежей установки (ставит App при первом детекте онбординга).
+const FRESH_KEY = "changelogFreshProfile";
 
 /** Пункты для текущего языка с фолбэком en → ru; пусто — показывать нечего. */
 function itemsFor(version: string): string[] {
@@ -63,13 +68,26 @@ export default function WhatsNewModal() {
         // Пустая версия (сбой getVersion) — не показываем вовсе.
         if (cancelled || !v) return;
         const seen = readSeen();
-        if (seen === null) {
-          // Первый запуск: молча фиксируем версию, ничего не показываем.
-          writeSeen(v);
-          return;
-        }
         if (seen === v) return; // эту версию уже показывали
         if (itemsFor(v).length === 0) return; // записи в changelog нет
+        // Маркер свежей установки гасим сразу при чтении: независимо от того,
+        // смонтировались мы в этой сессии или после перезапуска.
+        let fresh = false;
+        try {
+          fresh = localStorage.getItem(FRESH_KEY) === "1";
+          if (fresh) localStorage.removeItem(FRESH_KEY);
+        } catch {
+          /* приватный режим — считаем профиль обновившимся */
+        }
+        if (seen === null) {
+          if (fresh) {
+            // Свежая установка: окно не нужно — всё и так новое.
+            writeSeen(v);
+            return;
+          }
+          // Ключа нет, маркера тоже: профиль жил до появления трекинга
+          // (обновление со старой версии) — показываем честно.
+        }
         setVersion(v);
       })
       .catch(() => {

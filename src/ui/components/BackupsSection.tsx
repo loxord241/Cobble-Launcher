@@ -2,14 +2,16 @@
 // без пропсов, вставляется в SettingsPage одной строкой. Верх — политика
 // хранения (сколько последних бэкапов инстанса держать; ротацию выполняет
 // ядро после каждого нового бэкапа), низ — реестр всех zip из каталога
-// бэкапов с удалением по одному. Команды backups_list/backup_delete и поле
-// Settings.backupKeep — контракт оркестратора F4.
+// бэкапов с восстановлением и удалением по одному (D72-хвост). Команды
+// backups_list/backup_delete/backup_restore и поле Settings.backupKeep —
+// контракт оркестратора F4.
 import { useCallback, useEffect, useState } from "react";
-import { Archive, FolderOpen, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, FolderOpen, Trash2 } from "lucide-react";
 import { api } from "../../api/client";
 import { apiErrorText, currentLanguage, t } from "../../i18n";
 import { askConfirm } from "../confirm";
 import { formatSize } from "../format";
+import { useInstances } from "../../state/instances";
 import type { BackupEntry } from "../../api/types";
 
 /** Пресеты политики хранения; 0 — без ротации (∞, как раньше). */
@@ -21,6 +23,10 @@ export default function BackupsSection() {
   const [backups, setBackups] = useState<BackupEntry[] | null>(null);
   const [busyFile, setBusyFile] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // После восстановления инстанс мог вернуться из удалённых — перечитываем
+  // библиотеку (список живёт в zustand, страница инстансов подписана).
+  const reloadInstances = useInstances((s) => s.load);
 
   const refresh = useCallback(async () => {
     try {
@@ -75,6 +81,32 @@ export default function BackupsSection() {
     }
   };
 
+  /** Восстановление бэкапа (D72-хвост): цель — id из архива, так что
+   * работает и для переименованных, и для удалённых инстансов (вернётся
+   * заново). Текущее состояние ядро сохраняет авто-бэкапом — операция
+   * обратима через этот же список. */
+  const restoreBackup = async (entry: BackupEntry) => {
+    const ok = await askConfirm(t("settings.backups.restore"), {
+      danger: true,
+      confirmLabel: t("settings.backups.restore"),
+      detail: `${t("settings.backups.restoreDetail", { name: entry.instance })}\n${entry.file} · ${new Date(entry.createdAt * 1000).toLocaleString(currentLanguage())} · ${formatSize(entry.sizeBytes)}`,
+    });
+    if (!ok) return;
+    setBusyFile(entry.file);
+    setNotice(null);
+    try {
+      const inst = await api.backupRestore(entry.file);
+      setNotice(t("settings.backups.restoreDone", { name: inst.name }));
+      setError(null);
+      await refresh();
+      await reloadInstances();
+    } catch (e) {
+      setError(apiErrorText(e));
+    } finally {
+      setBusyFile(null);
+    }
+  };
+
   return (
     <section>
       <h3 className="mb-3 text-[13px] font-semibold uppercase tracking-wider text-text-muted">
@@ -109,6 +141,16 @@ export default function BackupsSection() {
           >
             {error}
           </p>
+        )}
+
+        {/* Успешное восстановление — зелёная плашка */}
+        {notice && (
+          <div
+            className="mt-3 rounded-lg border border-success/40 bg-success/10 p-3 text-sm text-success"
+            role="status"
+          >
+            {notice}
+          </div>
         )}
 
         {/* Реестр всех бэкапов: инстанс · дата · размер */}
@@ -148,6 +190,17 @@ export default function BackupsSection() {
                     </span>
                     <span className="font-mono">{formatSize(b.sizeBytes)}</span>
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => void restoreBackup(b)}
+                    disabled={busyFile === b.file}
+                    aria-busy={busyFile === b.file}
+                    aria-label={`${t("settings.backups.restore")}: ${b.file}`}
+                    className="btn-ghost btn-sm shrink-0"
+                  >
+                    <ArchiveRestore size={14} aria-hidden />
+                    {t("settings.backups.restore")}
+                  </button>
                   <button
                     type="button"
                     onClick={() => void removeBackup(b)}

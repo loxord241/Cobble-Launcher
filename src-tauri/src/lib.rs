@@ -317,6 +317,7 @@ pub fn run() -> tauri::Result<()> {
             commands::pack_update_apply,
             commands::backups_list,
             commands::backup_delete,
+            commands::backup_restore,
             commands::content_install_local,
             commands::panorama_art,
             commands::crash_analyze,

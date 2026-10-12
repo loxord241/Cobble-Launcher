@@ -820,6 +820,28 @@ pub async fn backup_delete(state: State<'_, AppState>, file_name: String) -> Res
     .map_err(join_err)?
 }
 
+/// Восстановить инстанс из бэкапа по имени файла (D72-хвост: кнопка
+/// «Восстановить» в реестре бэкапов). Цель — id из архива: гардим фазы
+/// запуска до дисковой работы, тяжёлая замена — в spawn_blocking
+/// (внутри ещё и .lock-проверка ядра).
+#[tauri::command]
+pub async fn backup_restore(state: State<'_, AppState>, file: String) -> Result<Instance> {
+    let paths = state.paths.clone();
+    let file_for_peek = file.clone();
+    let target_id = tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::backups::archived_instance_id(&paths, &file_for_peek)
+    })
+    .await
+    .map_err(join_err)??;
+    refuse_if_busy(&state, &target_id, "восстановление из бэкапа").await?;
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::backups::restore(&paths, &file)
+    })
+    .await
+    .map_err(join_err)?
+}
+
 /// Установить иконку инстанса из локального файла (PNG/JPEG/WebP ≤ 300 КБ).
 #[tauri::command]
 pub async fn instance_icon_set(

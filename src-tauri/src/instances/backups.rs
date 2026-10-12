@@ -1,11 +1,14 @@
-//! Реестр бэкапов инстансов (F4): список для UI, удаление, ротация.
+//! Реестр бэкапов инстансов (F4): список для UI, удаление, ротация,
+//! восстановление конкретного бэкапа (D72-хвост).
 //!
 //! Бэкапы — zip в `backups/` (Paths::backups_dir) с именем
 //! «{имя инстанса}-{unix-сек}.zip»; создаёт их content::backup. Раньше
 //! они копились бесконечно: теперь ядро умеет перечислять их для UI,
 //! удалять по имени (с барьером traversal) и ронять старейшие сверх
 //! лимита после каждого нового бэкапа (ротацию вызывает commands-обёртка,
-//! т.к. слою instances настройки недоступны).
+//! т.к. слою instances настройки недоступны). restore() заменяет содержимое
+//! инстанса архивом целиком (цель — по id из instance.json внутри бэкапа,
+//! удалённый инстанс создаётся заново) с авто-бэкапом текущего состояния.
 
 use crate::errors::{LauncherError, Result};
 use crate::paths::Paths;
@@ -94,11 +97,12 @@ pub fn list(paths: &Paths) -> Vec<BackupEntry> {
     out
 }
 
-/// Удалить бэкап по имени файла. `file` обязан быть ПРОСТЫМ именем
-/// (без `/`, `\`, `..`), с расширением .zip, и реально лежать в каталоге
-/// бэкапов: путь канонизируется и сверяется префиксом с канонизированным
-/// backups_dir — traversal и симлинк наружу недопустимы (A1).
-pub fn delete(paths: &Paths, file: &str) -> Result<()> {
+/// Валидировать имя файла бэкапа и вернуть канонизированный путь к нему.
+/// `file` обязан быть ПРОСТЫМ именем (без `/`, `\`, `..`), с расширением
+/// .zip, и реально лежать в каталоге бэкапов: путь канонизируется и сверяется
+/// префиксом с канонизированным backups_dir — traversal и симлинк наружу
+/// недопустимы (A1). Общий барьер delete и restore.
+fn validated_backup_path(paths: &Paths, file: &str) -> Result<std::path::PathBuf> {
     if file.is_empty()
         || file.contains('/')
         || file.contains('\\')
@@ -123,8 +127,163 @@ pub fn delete(paths: &Paths, file: &str) -> Result<()> {
             target_real.display()
         )));
     }
+    Ok(target_real)
+}
+
+pub fn delete(paths: &Paths, file: &str) -> Result<()> {
+    let target_real = validated_backup_path(paths, file)?;
     std::fs::remove_file(target_real)?;
     Ok(())
+}
+
+/// Прочитать instance.json из бэкапа (запись `instance/instance.json`) —
+/// он определяет цель восстановления (id) и несёт состояние инстанса
+/// на момент бэкапа. Чужой/битый архив — честный InvalidInput.
+fn read_archived_instance(zip_path: &std::path::Path) -> Result<crate::instances::Instance> {
+    let f = std::fs::File::open(crate::util::fs::long_path(zip_path))?;
+    let mut archive = zip::ZipArchive::new(f)
+        .map_err(|e| LauncherError::Zip(format!("не удалось открыть архив: {e}")))?;
+    let mut entry = archive
+        .by_name("instance/instance.json")
+        .map_err(|_| {
+            LauncherError::InvalidInput(
+                "в архиве нет instance/instance.json — это не бэкап инстанса".into(),
+            )
+        })?;
+    // instance.json — маленький JSON; гигантская «запись» — не наш формат.
+    if entry.size() > 1_000_000 {
+        return Err(LauncherError::InvalidInput(
+            "запись instance/instance.json аномально велика".into(),
+        ));
+    }
+    let mut buf = Vec::new();
+    std::io::Read::read_to_end(&mut entry, &mut buf)?;
+    serde_json::from_slice(&buf)
+        .map_err(|e| LauncherError::InvalidInput(format!("битый instance.json в бэкапе: {e}")))
+}
+
+/// id инстанса, зашитый в бэкапе (командный слой гардит фазы по этому id
+/// до тяжёлой дисковой работы restore).
+pub fn archived_instance_id(paths: &Paths, file: &str) -> Result<String> {
+    let zip_path = validated_backup_path(paths, file)?;
+    if parse_backup_name(file).is_none() {
+        return Err(LauncherError::InvalidInput(format!(
+            "имя не по формату бэкапа «{{инстанс}}-{{штамп}}.zip»: {file:?}"
+        )));
+    }
+    Ok(read_archived_instance(&zip_path)?.id)
+}
+
+/// Хвосты прошлых попыток восстановления (`tmp/restore-*`): без `old/` —
+/// мусор, убираем; с `old/` — след НЕСРАБОТАВШЕГО отката, там пользовательские
+/// данные, не трогаем (жалко байт, но потерять мир — хуже).
+fn cleanup_stale_restore_dirs(paths: &Paths) {
+    let tmp = paths.root().join("tmp");
+    let Ok(entries) = std::fs::read_dir(crate::util::fs::long_path(&tmp)) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        if !name.starts_with("restore-") {
+            continue;
+        }
+        if crate::util::fs::long_path(&p.join("old")).exists() {
+            tracing::warn!("tmp/{name} хранит несработавший откат восстановления — не трогаем");
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(crate::util::fs::long_path(&p));
+    }
+}
+
+/// Восстановить бэкап по имени файла (кнопка «Восстановить» в реестре).
+/// Цель определяется по id из архива (instance.json), а не по имени в имени
+/// файла: инстанс с этим id заменяется содержимым бэкапа ЦЕЛИКОМ (замена
+/// каталога через rename, не распаковка поверх — иначе слились бы старые и
+/// новые файлы); если инстанса нет — он создаётся заново (вернуть удалённый).
+/// Перед заменой существующего читаемого состояния делается обычный бэкап
+/// (content::backup) — операция обратима через тот же список бэкапов.
+/// Работающий инстанс — отказ InstanceRunning и до, и внутри замены.
+pub fn restore(paths: &Paths, file: &str) -> Result<crate::instances::Instance> {
+    let zip_path = validated_backup_path(paths, file)?;
+    if parse_backup_name(file).is_none() {
+        return Err(LauncherError::InvalidInput(format!(
+            "имя не по формату бэкапа «{{инстанс}}-{{штамп}}.zip»: {file:?}"
+        )));
+    }
+    let archived = read_archived_instance(&zip_path)?;
+    super::valid_id(&archived.id)?;
+    let target = super::instance_dir(paths, &archived.id);
+    if super::running_pid(&target).is_some() {
+        return Err(LauncherError::InstanceRunning(archived.id.clone()));
+    }
+    cleanup_stale_restore_dirs(paths);
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let work = paths.root().join("tmp").join(format!(
+        "restore-{}-{}",
+        stamp,
+        std::process::id()
+    ));
+    std::fs::create_dir_all(crate::util::fs::long_path(&work))?;
+
+    // Замена выполнена (или откат состоялся) — рабочую папку можно сносить;
+    // несработавший откат оставляет `old` и запрещает уборку.
+    let mut safe_to_clean = true;
+    let outcome = (|| -> Result<crate::instances::Instance> {
+        let f = std::fs::File::open(crate::util::fs::long_path(&zip_path))?;
+        let extracted = work.join("instance");
+        crate::util::zip::extract_zip_stripping(f, &extracted, "instance/", |_| true, |_| {})?;
+        if !crate::util::fs::long_path(&extracted.join("instance.json")).exists() {
+            return Err(LauncherError::InvalidInput(
+                "в архиве нет instance/instance.json — это не бэкап инстанса".into(),
+            ));
+        }
+        if target.exists() {
+            // Страховка: текущее состояние — обычным бэкапом (ротация applies).
+            match super::load(paths, &archived.id) {
+                Ok(current) => {
+                    super::content::backup(paths, &current)?;
+                }
+                Err(e) => tracing::warn!(
+                    "restore: instance.json цели не читается ({e}) — замена без авто-бэкапа"
+                ),
+            }
+            let old = work.join("old");
+            crate::util::fs::rename_with_retry(&target, &old)?;
+            if let Err(e) = crate::util::fs::rename_with_retry(&extracted, &target) {
+                // Откат: вернуть прежний каталог на место; если не выйдет —
+                // данные остаются под work/old, уборка запрещена.
+                if let Err(re) = crate::util::fs::rename_with_retry(&old, &target) {
+                    safe_to_clean = false;
+                    tracing::error!(
+                        "restore: откат не удался ({re}); прежний каталог: {}",
+                        old.display()
+                    );
+                }
+                return Err(e);
+            }
+            // Прежний каталог уже спасён авто-бэкапом — мусор убираем. Сбой
+            // (занятый антивирусом файл) не отменяет восстановление.
+            if let Err(e) = std::fs::remove_dir_all(crate::util::fs::long_path(&old)) {
+                tracing::warn!("restore: не убран прежний каталог {}: {e}", old.display());
+            }
+        } else {
+            std::fs::create_dir_all(crate::util::fs::long_path(&paths.instances_dir()))?;
+            crate::util::fs::rename_with_retry(&extracted, &target)?;
+        }
+        super::load(paths, &archived.id)
+    })();
+
+    if safe_to_clean {
+        let _ = std::fs::remove_dir_all(crate::util::fs::long_path(&work));
+    }
+    outcome
 }
 
 /// Ротация бэкапов инстанса: оставить `keep` новейших (по штампу из имени),
@@ -332,5 +491,185 @@ mod tests {
 
         let err = delete(&paths, "Ghost-100.zip").unwrap_err();
         assert_eq!(err.code(), "not_found", "несуществующий — NotFound: {err}");
+    }
+
+    /// Хелпер restore-тестов: инстанс с модом и миром на диске.
+    fn setup_with_instance() -> (tempfile::TempDir, Paths, crate::instances::Instance) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let inst = crate::instances::Instance::new("Тест", "1.20.1");
+        crate::instances::save(&paths, &inst).unwrap();
+        let mc = crate::instances::minecraft_dir(&crate::instances::instance_dir(
+            &paths,
+            &inst.id,
+        ));
+        std::fs::create_dir_all(long(&mc.join("mods"))).unwrap();
+        std::fs::create_dir_all(long(&mc.join("saves/w1"))).unwrap();
+        std::fs::write(long(&mc.join("mods/a.jar")), b"OLD").unwrap();
+        std::fs::write(long(&mc.join("saves/w1/level.dat")), b"W1").unwrap();
+        (dir, paths, inst)
+    }
+
+    /// restore: замена ЦЕЛИКОМ (не распаковка поверх) — старое состояние
+    /// вытеснено, новое дописывание не смешано; авто-бэкап текущего появился
+    /// в реестре.
+    #[test]
+    fn restore_replaces_state_whole_and_makes_safety_backup() {
+        let (_d, paths, inst) = setup_with_instance();
+        let saved = crate::instances::content::backup(&paths, &inst).unwrap();
+        let file = std::path::Path::new(&saved.path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        // Текущее состояние ушло вперёд: мод переписан, добавлен второй.
+        let mc = crate::instances::minecraft_dir(&crate::instances::instance_dir(
+            &paths,
+            &inst.id,
+        ));
+        std::fs::write(long(&mc.join("mods/a.jar")), b"NEW").unwrap();
+        std::fs::write(long(&mc.join("mods/b.jar")), b"B").unwrap();
+
+        let restored = restore(&paths, &file).unwrap();
+        assert_eq!(restored.id, inst.id);
+        assert_eq!(restored.name, inst.name, "состояние бэкапа вернулось");
+
+        assert_eq!(
+            std::fs::read(long(&mc.join("mods/a.jar"))).unwrap(),
+            b"OLD",
+            "мод из бэкапа вернулся"
+        );
+        assert!(
+            !long(&mc.join("mods/b.jar")).exists(),
+            "появившийся после бэкапа мод вытеснен целиком, не смешан"
+        );
+        assert_eq!(
+            std::fs::read(long(&mc.join("saves/w1/level.dat"))).unwrap(),
+            b"W1"
+        );
+
+        // Авто-бэкап: в реестре два архива этого инстанса — исходный и
+        // страховочный (новейший).
+        let mine: Vec<BackupEntry> = list(&paths)
+            .into_iter()
+            .filter(|e| e.instance == "Тест")
+            .collect();
+        assert_eq!(mine.len(), 2, "страховочный бэкап появился: {mine:?}");
+        assert!(
+            std::fs::read(long(&paths.backups_dir().join(&mine[0].file)))
+                .map(|b| !b.is_empty())
+                .unwrap_or(false),
+            "страховочный архив не пуст"
+        );
+    }
+
+    /// restore: инстанс удалён — создаётся заново из архива (вернуть
+    /// случайно удалённый инстанс), с тем же id и появляется в списке.
+    #[test]
+    fn restore_recreates_deleted_instance() {
+        let (_d, paths, inst) = setup_with_instance();
+        let saved = crate::instances::content::backup(&paths, &inst).unwrap();
+        let file = std::path::Path::new(&saved.path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        std::fs::remove_dir_all(long(&crate::instances::instance_dir(&paths, &inst.id))).unwrap();
+        assert!(crate::instances::list(&paths).is_empty());
+
+        let restored = restore(&paths, &file).unwrap();
+        assert_eq!(restored.id, inst.id);
+        assert_eq!(restored.name, "Тест");
+        assert_eq!(
+            crate::instances::list(&paths).len(),
+            1,
+            "инстанс снова в списке"
+        );
+        let mc = crate::instances::minecraft_dir(&crate::instances::instance_dir(
+            &paths,
+            &inst.id,
+        ));
+        assert_eq!(std::fs::read(long(&mc.join("mods/a.jar"))).unwrap(), b"OLD");
+    }
+
+    /// restore: работающий инстанс — отказ instance_running; мусорные имена
+    /// и чужие архивы отклоняются; ничего не заменяется.
+    #[test]
+    fn restore_guards_running_and_bad_input() {
+        let (_d, paths, inst) = setup_with_instance();
+        let saved = crate::instances::content::backup(&paths, &inst).unwrap();
+        let file = std::path::Path::new(&saved.path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        // Работающий: .lock с живым PID.
+        std::fs::write(
+            long(&crate::instances::instance_dir(&paths, &inst.id).join(".lock")),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        let err = restore(&paths, &file).unwrap_err();
+        assert_eq!(err.code(), "instance_running", "{err}");
+        assert_eq!(
+            std::fs::read(
+                long(&crate::instances::minecraft_dir(&crate::instances::instance_dir(
+                    &paths, &inst.id
+                ))
+                .join("mods/a.jar"))
+            )
+            .unwrap(),
+            b"OLD",
+            "состояние не тронуто отказом"
+        );
+        std::fs::remove_file(
+            long(&crate::instances::instance_dir(&paths, &inst.id).join(".lock")),
+        )
+        .unwrap();
+
+        // Чужой архив без instance/instance.json — InvalidInput.
+        let foreign = paths.backups_dir().join("X-100.zip");
+        let f = std::fs::File::create(long(&foreign)).unwrap();
+        let mut w = zip::ZipWriter::new(f);
+        let opts: zip::write::SimpleFileOptions = Default::default();
+        w.start_file("other/file.txt", opts).unwrap();
+        use std::io::Write as _;
+        w.write_all(b"x").unwrap();
+        w.finish().unwrap();
+        let err = restore(&paths, "X-100.zip").unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+
+        // Не zip вовсе, но имя по формату — ошибка распаковки/парса.
+        std::fs::write(long(&paths.backups_dir().join("Y-100.zip")), b"garbage").unwrap();
+        assert!(restore(&paths, "Y-100.zip").is_err());
+
+        // Traversal и не-простые имена — тот же барьер, что у delete.
+        for bad in ["../evil.zip", "a/b.zip", "a\\b.zip", "", "nozip"] {
+            let err = restore(&paths, bad).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "имя {bad:?}: {err}");
+        }
+        // Не формат «{инстанс}-{штамп}.zip» — отклоняется, хоть файл и валиден.
+        std::fs::write(long(&paths.backups_dir().join("plain.zip")), b"z").unwrap();
+        let err = restore(&paths, "plain.zip").unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+    }
+
+    /// archived_instance_id: совпадает с id инстанса в бэкапе; для мусора —
+    /// отказ (командный слой гардит фазы по этому id до тяжёлой работы).
+    #[test]
+    fn archived_instance_id_reads_backup_target() {
+        let (_d, paths, inst) = setup_with_instance();
+        let saved = crate::instances::content::backup(&paths, &inst).unwrap();
+        let file = std::path::Path::new(&saved.path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(archived_instance_id(&paths, &file).unwrap(), inst.id);
+        assert!(archived_instance_id(&paths, "plain.zip").is_err());
     }
 }

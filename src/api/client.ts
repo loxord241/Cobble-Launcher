@@ -166,6 +166,7 @@ export const api = {
   // D69: менеджер бэкапов (список/удаление) в Настройках.
   backupsList: () => invoke<BackupEntry[]>("backups_list"),
   backupDelete: (fileName: string) => invoke<void>("backup_delete", { fileName }),
+  backupRestore: (file: string) => invoke<Instance>("backup_restore", { file }),
   contentBackfillProjects: (instanceId: string) =>
     invoke<number>("content_backfill_projects", { instanceId }),
   // Установка модпака: группа загрузок приходит в ответе — по ней фильтруются

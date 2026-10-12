@@ -29,7 +29,19 @@ export default function App() {
 
   useEffect(() => {
     if (loaded && showOnboarding === null) {
-      setShowOnboarding(!settings?.onboardingDone);
+      const fresh = !settings?.onboardingDone;
+      // D72-хвост: у обновившихся со старых версий ключа changelogSeenVersion
+      // нет, и «первый запуск» в WhatsNewModal навсегда глотал окно. Свежая
+      // установка помечается здесь маркером (его гасит WhatsNewModal), у
+      // обновившихся маркера нет — им окно показывается.
+      if (fresh) {
+        try {
+          localStorage.setItem("changelogFreshProfile", "1");
+        } catch {
+          /* приватный режим — WhatsNewModal сочтёт профиль обновившимся */
+        }
+      }
+      setShowOnboarding(fresh);
     }
   }, [loaded, settings, showOnboarding]);
 
