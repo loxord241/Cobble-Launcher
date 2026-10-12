@@ -54,6 +54,23 @@ async function main() {
   await dialog.locator("input").first().fill(SERVER_NAME);
   const portInput = dialog.locator('input[type="number"]').first();
   await portInput.fill(String(PORT));
+  // Снимок каталогов серверов ДО создания: мастер не отдаёт id/path наружу,
+  // поэтому детерминированный выбор — D71: предпочитаем каталог, появившийся
+  // за время прогона, из них самый свежий по mtime.
+  const listServerDirs = () => fs.readdirSync(SERVERS)
+    .filter((d) => d.startsWith("server-") || d.startsWith("priemka-"));
+  const dirsBefore = new Set(
+    fs.existsSync(SERVERS) ? listServerDirs() : [],
+  );
+  const mtimeMs = (d) => fs.statSync(path.join(SERVERS, d)).mtimeMs;
+  const pickServerDir = () => {
+    const dirs = fs.existsSync(SERVERS) ? listServerDirs() : [];
+    if (!dirs.length) return null;
+    const fresh = dirs.filter((d) => !dirsBefore.has(d))
+      .sort((a, b) => mtimeMs(b) - mtimeMs(a));
+    if (fresh.length) return fresh[0];
+    return dirs.sort((a, b) => mtimeMs(b) - mtimeMs(a))[0];
+  };
   // RAM-ползунок: оставляем дефолт (2048) — инпут рядом с ползунком.
   await dialog.getByRole("button", { name: "Создать" }).click();
   // Создание качает server.jar (~47 МБ) — до 5 минут.
@@ -92,8 +109,9 @@ async function main() {
     .waitFor({ timeout: 240000 });
   ok("живой лог сервера (строки старта/готовности)");
 
-  // 5. Файлы на диске: eula.txt, server.properties, server.jar.
-  const dir = fs.readdirSync(SERVERS).find((d) => d.startsWith("server-") || d.startsWith("priemka-"));
+  // 5. Файлы на диске: eula.txt, server.properties, server.jar. Каталог —
+  // детерминированно (D71): появившийся за прогон / самый свежий по mtime.
+  const dir = pickServerDir();
   if (!dir) fail("каталог сервера не найден в " + SERVERS);
   else {
     const sdir = path.join(SERVERS, dir);

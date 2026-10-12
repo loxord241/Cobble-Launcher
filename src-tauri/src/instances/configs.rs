@@ -126,11 +126,20 @@ pub fn list(paths: &Paths, instance_id: &str) -> Result<Vec<ConfigFile>> {
 /// Прочитать конфиг: cap 1 МБ (больше — InvalidInput). Конфиги модов бывают
 /// не UTF-8 — битые байты честно заменяются через from_utf8_lossy (U+FFFD),
 /// а не ошибка: редактор всё равно показывает текст.
+/// D71: размер проверяется по metadata ДО чтения — гигантский файл не
+/// грузится в память целиком ради отказа; повторная проверка после чтения —
+/// страховка от выросшего между metadata и read файла.
 pub fn read(paths: &Paths, instance_id: &str, rel: &str) -> Result<String> {
     let path = resolve_rel(paths, instance_id, rel)?;
     let long = long_path(&path);
     if !long.is_file() {
         return Err(LauncherError::NotFound(format!("конфиг {rel}")));
+    }
+    let declared = std::fs::metadata(&long)?.len();
+    if declared > MAX_CONFIG_BYTES {
+        return Err(LauncherError::InvalidInput(format!(
+            "файл {rel} больше 1 МБ ({declared} байт) — откройте его в проводнике"
+        )));
     }
     let data = std::fs::read(&long)?;
     if data.len() as u64 > MAX_CONFIG_BYTES {

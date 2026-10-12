@@ -313,6 +313,7 @@ mod tests {
             sha1: None,
             url: None,
             enabled,
+            from_pack: false,
         }
     }
 

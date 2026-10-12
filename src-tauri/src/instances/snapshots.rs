@@ -343,6 +343,7 @@ mod tests {
             sha1: Some("deadbeef".into()),
             url: None,
             enabled: true,
+            from_pack: true,
         }
     }
 

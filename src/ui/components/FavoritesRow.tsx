@@ -127,7 +127,7 @@ function FavoriteTile({
           <div
             aria-hidden
             className="absolute inset-0 scale-125 bg-cover bg-center blur-lg brightness-[.4]"
-            style={{ backgroundImage: `url(${meta.iconUrl})` }}
+            style={{ backgroundImage: `url("${meta.iconUrl}")` }}
           />
           <img
             src={meta.iconUrl}

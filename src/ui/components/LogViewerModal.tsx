@@ -44,6 +44,10 @@ export default function LogViewerModal({
   const [copied, setCopied] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
+  // D71: автоскролл только пока пользователь у низа контейнера (как в
+  // ServerTab): ушёл вверх — догонялку не дёргаем, программный доскролл
+  // читается onScroll'ом и не сбивает ref (|дельта до низа| < 40px = «у низа»).
+  const atBottomRef = useRef(true);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // A33: Escape + ловушка фокуса + возврат фокуса на кебаб-триггер.
   // D41: requestClose — закрытие с анимацией (для ✕ и подложки).
@@ -91,8 +95,10 @@ export default function LogViewerModal({
   // Статусная строка модалки: ошибка IPC/сети/чтения архива/открытия ссылки.
   const [error, setError] = useState<string | null>(null);
 
+  // D71: скроллим в конец только когда пользователь и так у низа — иначе
+  // каждая новая строка отдирала прокрутку от места, куда он ушёл читать.
   useEffect(() => {
-    if (autoScroll && containerRef.current) {
+    if (autoScroll && atBottomRef.current && containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
   }, [visibleLines, autoScroll]);
@@ -324,6 +330,12 @@ export default function LogViewerModal({
         )}
         <div
           ref={containerRef}
+          onScroll={(e) => {
+            // D71: актуализируем «у низа» — в том числе после программного
+            // доскролла (scrollHeight-scrollTop-clientHeight всегда >= 0).
+            const el = e.currentTarget;
+            atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          }}
           className="mt-3 flex-1 overflow-y-auto rounded-md border border-border-app bg-bg p-3 font-mono text-xs leading-relaxed text-text selection:bg-accent selection:text-on-accent"
         >
           {visibleLines.length === 0 ? (

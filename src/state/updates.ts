@@ -46,7 +46,14 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       // D64: ядро в офлайн-режиме отвечает кодом offline_mode; тихий старт-чек
       // ошибку глотает (старт офлайн — не повод для плашки обновлений), ручной
       // чек показывает честный локализованный текст.
-      set({ info: null, checked: true, error: opts?.silent ? null : apiErrorText(e) });
+      // D71: прежний info НЕ обнуляем — раз найденный апдейт не должен
+      // исчезать с бейджа из-за одной неудачной перепроверки (например,
+      // кратковременный офлайн).
+      set((s) => ({
+        info: s.info,
+        checked: true,
+        error: opts?.silent ? null : apiErrorText(e),
+      }));
     } finally {
       set({ busy: false });
     }

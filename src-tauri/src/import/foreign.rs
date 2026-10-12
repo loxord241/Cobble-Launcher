@@ -770,6 +770,9 @@ fn content_entry(rel: &str) -> Option<ContentEntry> {
         sha1: None,
         url: None,
         enabled,
+        // D71: чужой инстанс импортируется как пользовательские файлы —
+        // обновление пака (если юзер поверх поставит пак) их не снесёт.
+        from_pack: false,
     })
 }
 

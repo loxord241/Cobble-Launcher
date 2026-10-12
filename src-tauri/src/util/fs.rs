@@ -89,21 +89,49 @@ pub fn part_path_unique(dest: &Path, key: &str) -> PathBuf {
     dest.with_file_name(name)
 }
 
-/// Атомарная запись байтов: данные → `.part` → rename поверх цели (спека §3).
+/// Атомарная запись байтов: данные → уникальный `.part-<12hex>` → rename
+/// поверх цели. D71: part уникален per-вызов — два параллельных atomic_write
+/// одной цели больше не пишут в общий `<имя>.part` (второй File::create
+/// усекал чужой недописанный файл, наверх уезжала каша). Суффикс в формате
+/// `<имя>.part-<12hex>` — с прочерком: не совпадает ни с plain `.part`
+/// (worlds/snapshots пишут потоки сами), ни с движковым `<имя>.part.<12hex>`
+/// (is_engine_part_name требует точку — уборщики download.rs наш хвост не
+/// тронут). При любой ошибке (запись, sync, rename) part сносится.
 pub fn atomic_write(dest: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(long_path(parent))?;
     }
-    let part = part_path(dest);
-    {
-        let mut f = fs::File::create(long_path(&part))?;
-        f.write_all(data)?;
-        f.sync_all()?;
+    let part = atomic_part_path(dest);
+    let written = (|| -> Result<()> {
+        {
+            let mut f = fs::File::create(long_path(&part))?;
+            f.write_all(data)?;
+            f.sync_all()?;
+        }
+        // A26: rename на Windows падает с 5/32, когда файл на миг придержал
+        // Defender/OneDrive/индексатор — повтор вместо потери настройки.
+        rename_with_retry(&part, dest)?;
+        Ok(())
+    })();
+    if written.is_err() {
+        // Уборка на всех путях выхода с ошибкой: хвост не остаётся.
+        remove_file_ignore(&part);
     }
-    // A26: rename на Windows падает с 5/32, когда файл на миг придержал
-    // Defender/OneDrive/индексатор — повтор вместо потери настройки.
-    rename_with_retry(&part, dest)?;
-    Ok(())
+    written
+}
+
+/// D71: уникальный part-путь atomic_write: `<имя>.part-<12hex>`, hex —
+/// обрезка свежего uuid v4 (каждый вызов — свой путь, коллизии параллельных
+/// записей одной цели исключены).
+fn atomic_part_path(dest: &Path) -> PathBuf {
+    let mut name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let uid = uuid::Uuid::new_v4().simple().to_string();
+    name.push_str(".part-");
+    name.push_str(&uid[..12]);
+    dest.with_file_name(name)
 }
 
 /// 1 попытка + 3 повтора с паузами (A26): окно блокировки файла антивирусом —
@@ -229,7 +257,61 @@ mod tests {
         assert_eq!(fs::read(&dest).unwrap(), b"v1");
         atomic_write(&dest, b"v2-longer").unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"v2-longer");
-        assert!(!part_path(&dest).exists());
+        // D71: после записи не остаётся ни plain `.part`, ни уникального
+        // `.part-<12hex>` (после rename он переименован, не скопирован).
+        let leftovers: Vec<_> = fs::read_dir(dir.path().join("a"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".part"))
+            .collect();
+        assert!(leftovers.is_empty(), "хвосты part: {leftovers:?}");
+    }
+
+    /// D71: уникальный part-суффикс — `<имя>.part-<ровно 12 hex>`, каждый
+    /// вызов даёт новый путь, формат не совпадает с движковым
+    /// `<имя>.part.<12hex>` (is_engine_part_name из download.rs) — их
+    /// уборщики друг друга не трогают.
+    #[test]
+    fn atomic_part_path_is_unique_and_not_engine_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("servers.json");
+        let a = atomic_part_path(&dest);
+        let b = atomic_part_path(&dest);
+        assert_ne!(a, b, "каждый вызов — свой part-путь");
+
+        for p in [&a, &b] {
+            let name = p.file_name().unwrap().to_string_lossy();
+            let (head, tail) = name.rsplit_once(".part-").expect("формат <имя>.part-<hex>");
+            assert_eq!(head, "servers.json");
+            assert_eq!(tail.len(), 12, "суффикс ровно 12 hex: {name}");
+            assert!(tail.bytes().all(|c| c.is_ascii_hexdigit()), "{name}");
+            // Не матчится движковым распознавателем (другой формат: точка).
+            assert!(
+                !crate::net::download::is_engine_part_name(&name),
+                "{name} не должен выглядеть как part движка загрузок"
+            );
+            // И не является plain `.part`-суффиксом.
+            assert!(!name.ends_with(".part"));
+        }
+    }
+
+    /// D71: ошибка записи/переименования не оставляет part-хвост: rename в
+    /// существующий каталог ломается (после ретраев), part снесён уборкой.
+    #[test]
+    fn atomic_write_error_cleans_part() {
+        let dir = tempfile::tempdir().unwrap();
+        // «Цель» — каталог: rename файла в каталог не succeeds никогда.
+        let dest_dir = dir.path().join("busy-target");
+        fs::create_dir_all(&dest_dir).unwrap();
+        assert!(atomic_write(&dest_dir, b"data").is_err(), "rename обязан упасть");
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".part"))
+            .collect();
+        assert!(leftovers.is_empty(), "part-хвост после ошибки: {leftovers:?}");
     }
 
     #[test]

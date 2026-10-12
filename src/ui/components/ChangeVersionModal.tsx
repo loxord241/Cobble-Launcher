@@ -1,7 +1,7 @@
 // Модалка смены версии Minecraft у инстанса (как в Prism): выбор версии из
 // манифеста, предупреждение про моды, подтверждение. Ядро (instance_version_
 // change) само докачивает файлы новой версии; миры/моды/настройки остаются.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { X, Check, Loader2 } from "lucide-react";
 import { api } from "../../api/client";
 import { apiErrorText, t } from "../../i18n";
@@ -28,10 +28,14 @@ export default function ChangeVersionModal({
   const [sel, setSel] = useState(instance.mcVersion);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // D71: зеркало busy для canClose (паттерн DropInstall): пока ядро докачивает
+  // файлы новой версии — Escape/✕/подложка закрытие не расходуют.
+  const busyRef = useRef(false);
   // A33: Escape, ловушка фокуса и возврат фокуса на триггер (единый хук).
   // D41: requestClose — закрытие с анимацией (для ✕ и подложки).
   const { containerRef: dialogRef, requestClose } = useModalA11y(onClose, {
     initialFocus: "#change-version-select",
+    canClose: () => !busyRef.current,
   });
 
   useEffect(() => {
@@ -67,6 +71,7 @@ export default function ChangeVersionModal({
   const submit = async () => {
     if (same) return;
     setBusy(true);
+    busyRef.current = true;
     setError(null);
     try {
       await api.instanceVersionChange(instance.id, sel);
@@ -75,6 +80,7 @@ export default function ChangeVersionModal({
       setError(apiErrorText(e));
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
   };
 

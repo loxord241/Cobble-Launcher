@@ -318,7 +318,9 @@ export default function InstancesPage({
     <div className="mx-auto flex max-w-[1280px] flex-col gap-4">
       <div className="mt-1 flex flex-wrap items-center gap-2">
         <h2 className="text-lg font-semibold tracking-tight">{t("nav.instances")}</h2>
-        <span className="chip-mono">{list.length}</span>
+        {/* D71: при активном поиске честнее показывать число НАЙДЕННЫХ —
+            иначе чип рисует полный список, а карточек на экране меньше. */}
+        <span className="chip-mono">{query.trim() ? visible.length : list.length}</span>
         <button onClick={importArchive} className="btn-ghost btn-sm ml-auto">
           <Import size={16} aria-hidden />
           {t("instances.import")}

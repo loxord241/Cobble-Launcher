@@ -33,10 +33,14 @@ export default function CreateInstanceDialog({
   const [loaderVersion, setLoaderVersion] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // D71: зеркало busy для canClose (паттерн DropInstall): пока идёт создание —
+  // Escape/✕/подложка закрытие не расходуют, модалка не остаётся «кирпичом».
+  const busyRef = useRef(false);
   // A33/A34: Escape, ловушка фокуса и возврат фокуса на триггер.
   // D41: requestClose — закрытие с анимацией (для ✕ и подложки).
   const { containerRef: dialogRef, requestClose } = useModalA11y(onClose, {
     initialFocus: "#ci-name",
+    canClose: () => !busyRef.current,
   });
 
   useEffect(() => {
@@ -73,6 +77,7 @@ export default function CreateInstanceDialog({
 
   const submit = async () => {
     setBusy(true);
+    busyRef.current = true;
     setError(null);
     // B7: если упало удаление осиротевшего инстанса — показываем и эту ошибку
     // тоже, рядом с основной (не прячем).
@@ -99,6 +104,7 @@ export default function CreateInstanceDialog({
       setError(deleteError ? `${main}\n${deleteError}` : main);
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
   };
 

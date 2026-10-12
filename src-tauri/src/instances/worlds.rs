@@ -134,9 +134,50 @@ pub fn list_worlds(paths: &Paths, instance_id: &str) -> Result<Vec<WorldInfo>> {
     Ok(out)
 }
 
+/// D71: сколько последних мировых бэкапов одного мира одного инстанса
+/// остаётся после ротации (каталог backups/worlds/ иначе растёт бесконечно).
+const WORLD_BACKUP_KEEP: usize = 10;
+
+/// D71: простая ротация мировых бэкапов по образцу backups::rotate: в
+/// dest_dir остаются последние WORLD_BACKUP_KEEP архивов с префиксом
+/// `prefix` («<мир>-<id8>-»), старейшие (по штампу из имени) удаляются.
+/// Best-effort: сбой удаления одного файла только логируется и не отменяет
+/// только что созданный архив.
+fn rotate_world_backups(dest_dir: &Path, prefix: &str) {
+    let Ok(entries) = std::fs::read_dir(long_path(dest_dir)) else {
+        return;
+    };
+    let mut mine: Vec<(u64, String)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(prefix) {
+                return None;
+            }
+            // Штамп из имени — тот же парсер, что у бэкапов инстансов
+            // (учитывает и суффикс коллизий «-N»).
+            let (_, stamp) = crate::instances::backups::parse_backup_name(&name)?;
+            Some((stamp, name))
+        })
+        .collect();
+    if mine.len() <= WORLD_BACKUP_KEEP {
+        return;
+    }
+    // Старейшие первее: по штампу, при равных — по имени (детерминизм).
+    mine.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    for (_, name) in &mine[..mine.len() - WORLD_BACKUP_KEEP] {
+        if let Err(e) = std::fs::remove_file(long_path(&dest_dir.join(name))) {
+            tracing::warn!("ротация мировых бэкапов: не удалён {name}: {e}");
+        }
+    }
+}
+
 /// Бэкап мира (F24): saves/<world> целиком (включая DIM-1/DIM1) в zip
-/// `backups/worlds/<мир>-<unixts>.zip` (рядом с бэкапами инстанса,
+/// `backups/worlds/<мир>-<id8>-<unixts>.zip` (рядом с бэкапами инстанса,
 /// paths.backups_dir()). Работающий инстанс блокирует операцию.
+/// D71: в имя включаются первые 8 символов id инстанса — одинаковые имена
+/// миров в разных инстансах больше не дают коллизии архивов «с точностью
+/// до секунды». После успеха — ротация (последние 10 архивов этого мира).
 pub fn backup_world(paths: &Paths, instance_id: &str, world: &str) -> Result<ArchiveResult> {
     valid_id(instance_id)?;
     if running_pid(&instance_dir(paths, instance_id)).is_some() {
@@ -145,7 +186,8 @@ pub fn backup_world(paths: &Paths, instance_id: &str, world: &str) -> Result<Arc
     let world_dir = resolve_world(paths, instance_id, world)?;
     let dest_dir = paths.backups_dir().join("worlds");
     std::fs::create_dir_all(long_path(&dest_dir))?;
-    let dest = dest_dir.join(format!("{world}-{}.zip", now_secs()));
+    let short_id: String = instance_id.chars().take(8).collect();
+    let dest = dest_dir.join(format!("{world}-{short_id}-{}.zip", now_secs()));
 
     // D64: пишем в соседний `.part` и переименовываем атомарно. Прежний
     // File::create(dest) при коллизии «та же секунда» усекал бы готовый архив
@@ -170,6 +212,9 @@ pub fn backup_world(paths: &Paths, instance_id: &str, world: &str) -> Result<Arc
         Ok(count) => {
             // A26: rename с повторами на случай придержания архива антивирусом.
             crate::util::fs::rename_with_retry(&part, &dest)?;
+            // D71: ротация после успешного бэкапа — best-effort, сбой не
+            // отменяет только что созданный архив.
+            rotate_world_backups(&dest_dir, &format!("{world}-{short_id}-"));
             let bytes = std::fs::metadata(long_path(&dest))?.len();
             Ok(ArchiveResult {
                 path: dest.to_string_lossy().into(),
@@ -379,6 +424,80 @@ mod tests {
         // Оба архива валидны (ZipArchive проверяет центральный каталог).
         assert!(!zip_names(&r1).is_empty());
         assert!(!zip_names(&r2).is_empty());
+    }
+
+    /// D71: имя архива мира содержит первые 8 символов id инстанса —
+    /// одинаковые имена миров в разных инстансах не коллидируют.
+    #[test]
+    fn backup_name_includes_instance_id_prefix() {
+        let (_d, paths, inst) = setup();
+        make_world(&paths, &inst.id, "w1", false, false);
+        let res = backup_world(&paths, &inst.id, "w1").unwrap();
+        let name = Path::new(&res.path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let short: String = inst.id.chars().take(8).collect();
+        assert!(
+            name.starts_with(&format!("w1-{short}-")),
+            "имя с id8 инстанса: {name}"
+        );
+    }
+
+    /// D71: ротация мировых бэкапов — остаются последние 10 архивов мира
+    /// с данным префиксом, старейшие удаляются, чужие миры не тронуты.
+    #[test]
+    fn world_backup_rotation_keeps_last_ten() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let worlds_dir = paths.backups_dir().join("worlds");
+        std::fs::create_dir_all(long(&worlds_dir)).unwrap();
+        for stamp in 1..=12u64 {
+            std::fs::write(
+                long(&worlds_dir.join(format!("w1-abc12345-{stamp:010}.zip"))),
+                b"z",
+            )
+            .unwrap();
+        }
+        // Чужой мир и не-архив — ротации не подлежат.
+        std::fs::write(long(&worlds_dir.join("w2-abc12345-0000000012.zip")), b"z").unwrap();
+        std::fs::write(long(&worlds_dir.join("w1-abc12345-suspect.zip")), b"z").unwrap();
+
+        rotate_world_backups(&worlds_dir, "w1-abc12345-");
+
+        let left: Vec<String> = std::fs::read_dir(long(&worlds_dir))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        // Считаем только имена со штампом (хвост перед .zip — цифры):
+        // «suspect» делит префикс, но бэкапом не является.
+        let archives = left
+            .iter()
+            .filter(|n| {
+                n.starts_with("w1-abc12345-")
+                    && n.strip_suffix(".zip")
+                        .and_then(|s| s.rsplit('-').next())
+                        .is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
+            })
+            .count();
+        assert_eq!(archives, 10, "осталось ровно 10 архивов мира: {left:?}");
+        assert!(
+            left.iter().any(|n| n == "w1-abc12345-0000000012.zip"),
+            "новейший остался"
+        );
+        assert!(
+            !left.iter().any(|n| n == "w1-abc12345-0000000001.zip"),
+            "старейший удалён"
+        );
+        assert!(!left.iter().any(|n| n == "w1-abc12345-0000000002.zip"));
+        assert!(left.iter().any(|n| n.starts_with("w2-")), "чужой мир не тронут");
+        assert!(
+            left.iter().any(|n| n == "w1-abc12345-suspect.zip"),
+            "имя без штампа ротацией не считается"
+        );
     }
 
     #[test]

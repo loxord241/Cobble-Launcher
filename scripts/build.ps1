@@ -23,8 +23,8 @@ if ($Bundle -and (Test-Path $keyPath)) {
         exit 1
     }
     $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $keyPath -Raw
-    # D62: .Trim() молча портил пароли с пробелами по краям. Убираем только
-    # завершающий перевод строки файла (CRLF/LF) — сами пробелы не трогаем.
+    # D62: .Trim() silently corrupted passwords with leading/trailing spaces.
+    # Strip only the trailing newline of the file (CRLF/LF); keep the spaces.
     $rawPass = Get-Content $passPath -Raw
     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $rawPass -replace "\r?\n$", ""
 }

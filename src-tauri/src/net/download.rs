@@ -103,7 +103,8 @@ fn instance_id_from_group(group: &str) -> Option<String> {
 
 /// A51: маркер part-файла движка между именем цели и хэшем группы — формат
 /// задаёт `util::fs::part_path_unique` (`<имя>.part.<12 hex>`), менять его
-/// нельзя (ENV-2 завязан на уникальность по группе).
+/// нельзя (ENV-2 завязан на уникальность по группе; предикат уборщика
+/// `is_engine_part_name` матчит ровно 12 hex после маркера).
 pub const PART_FILE_MARK: &str = ".part.";
 
 /// A51: суффикс-маркер для уборщиков part-файлов (см. `part_files_in`).
@@ -136,6 +137,20 @@ pub fn part_files_in(dir: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// D71: ключ уникальности part-файла задачи — группа + URL + sha1. Группы
+/// разводят параллельные движки (ENV-2), идентификация задачи — два файла
+/// с одинаковым dest в ОДНОЙ группе (дубль пути в чужом манифесте): раньше
+/// оба воркера писали в один `.part`. Детерминирован: повторы задачи дают
+/// тот же путь.
+fn part_task_key(task: &DownloadTask) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        task.group,
+        task.url,
+        task.sha1.as_deref().unwrap_or_default()
+    )
 }
 
 /// Результат потоковой записи: дайджесты, посчитанные на лету.
@@ -561,7 +576,11 @@ impl DownloadEngine {
         // тому, что второй движок усекал чужой недокачанный файл, а финальный
         // rename ловил ERROR_SHARING_VIOLATION. Валидный dest выше уже отдался
         // из кэша, так что существующий файл гонка не портит.
-        let part = long_path(&part_path_unique(&task.dest, &task.group));
+        // D71: ключ — группа + идентификация задачи (см. part_task_key):
+        // два файла с одинаковым dest из одного манифеста больше не делят
+        // `.part`. Формат имени прежний (`<имя>.part.<12hex>` от SHA1 ключа)
+        // — предикат уборщика `is_engine_part_name` матчит его без изменений.
+        let part = long_path(&part_path_unique(&task.dest, &part_task_key(task)));
         let _ = crate::util::fs::remove_file_with_retry(&part);
 
         for attempt in 1..=MAX_ATTEMPTS {
@@ -1193,6 +1212,47 @@ mod tests {
         assert_eq!(found.len(), 1, "только движковый .part.<hex>: {found:?}");
         assert_eq!(found[0], p);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D71: два файла с одинаковым dest в одной группе (дубль пути в чужом
+    /// .mrpack с разными хэшами) получают РАЗНЫЕ part-пути — воркеры больше
+    /// не пишут в один `.part`; формат имени сохранён, уборщик матчит оба.
+    #[test]
+    fn same_dest_different_tasks_get_distinct_part_paths() {
+        let mk = |url: &str, sha1: Option<&str>| DownloadTask {
+            id: "t".into(),
+            url: url.into(),
+            dest: PathBuf::from("C:/tmp/mods/x.jar"),
+            sha1: sha1.map(String::from),
+            sha512: None,
+            size: None,
+            group: "mrpack:test".into(),
+            priority: 0,
+        };
+        let a = mk("https://cdn.modrinth.com/a.jar", Some("a".repeat(40)).as_deref());
+        let b = mk("https://github.com/x/y/releases/download/v1/b.jar", None);
+        let pa = part_path_unique(&a.dest, &part_task_key(&a));
+        let pb = part_path_unique(&b.dest, &part_task_key(&b));
+        assert_ne!(pa, pb, "разные задачи с одним dest обязаны иметь разные .part");
+
+        // Формат прежний: предикат уборщика распознаёт оба хвоста.
+        for p in [&pa, &pb] {
+            let name = p.file_name().unwrap().to_str().unwrap();
+            assert!(
+                is_engine_part_name(name),
+                "часть задачи обязана матчится уборщиком: {name}"
+            );
+        }
+        // Детерминизм: та же задача — тот же part (повторы не плодят мусор).
+        assert_eq!(pa, part_path_unique(&a.dest, &part_task_key(&a)));
+        // ENV-2 не сломан: та же задача в другой группе — другой part.
+        let mut other_group = a.clone();
+        other_group.group = "mrpack:other".into();
+        assert_ne!(
+            pa,
+            part_path_unique(&a.dest, &part_task_key(&other_group)),
+            "группа остаётся частью ключа"
+        );
     }
 
     /// D62: у теста свой каталог в temp (не общий tmp), чтобы параллельные

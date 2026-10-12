@@ -185,12 +185,35 @@ pub fn server_start(
 /// taskkill /F /T (запасной). Возвращает true, если вышли сами. Если stdin
 /// недоступен (лаунчер перезапускали, а сервер жив) — сразу жёсткий kill c
 /// честным false. Не запущен — false (останавливать нечего).
+///
+/// D71: повторный stop во время graceful-ожидания не приводит к taskkill /F /T
+/// посреди записи мира: stdin уже забран первым stop'ом, второй видел бы
+/// None и уходил в жёсткую ветку. Поэтому проверка «остановка уже идёт» и
+/// взятие stdin атомарны (один короткий мьютекс), а флаг живёт до конца
+/// graceful-ветки (снимается Drop-гвардом на всех путях выхода).
 pub fn server_stop(paths: &crate::paths::Paths, id: &str) -> Result<bool> {
     crate::instances::valid_id(id)?;
 
-    // 1. Лаунчер держит stdin — штатная остановка.
-    let stdin = lock_children().get_mut(id).and_then(|e| e.stdin.take());
+    // D71: атомарно: флаг свободен? + взять stdin + поставить флаг. Без
+    // атомарности второй stop успевает пройти проверку флага до его установки
+    // и остаться без stdin — уходит в жёсткий kill.
+    let stdin = {
+        let mut flags = lock_stop_flags();
+        if flags.contains(id) {
+            return Err(LauncherError::InvalidInput(format!(
+                "остановка сервера {id} уже идёт — дождитесь её завершения"
+            )));
+        }
+        let stdin = lock_children().get_mut(id).and_then(|e| e.stdin.take());
+        if stdin.is_some() {
+            flags.insert(id.to_string());
+        }
+        stdin
+    };
     if let Some(mut stdin) = stdin {
+        // Флаг снимается на всех путях: нормальный выход, таймаут-ветка,
+        // паника нити (Drop).
+        let _flag = StopFlagGuard(id.to_string());
         tracing::info!("сервер {id}: отправляю «stop» в stdin");
         if let Err(e) = stdin.write_all(b"stop\n").and_then(|()| stdin.flush()) {
             tracing::warn!("сервер {id}: stdin не принят ({e})");
@@ -335,6 +358,31 @@ fn lock_children() -> MutexGuard<'static, HashMap<String, ChildEntry>> {
 
 fn insert_child(id: &str, entry: ChildEntry) {
     lock_children().insert(id.to_string(), entry);
+}
+
+// ---------- реестр «остановка уже идёт» (D71) ----------
+
+/// D71: per-server флаг «graceful-остановка уже идёт» — static реестр по id
+/// (по образцу packupdate::content_manifest_lock). Второй server_stop во
+/// время 60-секундного ожидания обязан получить честную ошибку, а не увечить
+/// сервер taskkill /F /T посреди сохранения мира.
+static STOP_FLAGS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+
+fn lock_stop_flags() -> MutexGuard<'static, std::collections::HashSet<String>> {
+    STOP_FLAGS
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// D71: снимает флаг «остановка уже идёт» на любом пути выхода graceful-ветки
+/// (нормальный выход, таймаут, паника нити — Drop обязан отработать).
+struct StopFlagGuard(String);
+
+impl Drop for StopFlagGuard {
+    fn drop(&mut self) {
+        lock_stop_flags().remove(&self.0);
+    }
 }
 
 // ---------- .server.lock ----------
@@ -1360,5 +1408,28 @@ mod tests {
         assert!(!server_stop(&paths, "ghost").unwrap(), "не запущен — false");
         // Некорректный id — ошибка валидации, а не паника.
         assert!(server_stop(&paths, "../evil").is_err());
+    }
+
+    /// D71: пока идёт graceful-остановка (флаг выставлен), повторный stop —
+    /// честная ошибка «остановка уже идёт», а не жёсткий kill. Флаг другого
+    /// сервера чужой stop не блокирует; Drop-гвард снимает флаг.
+    #[test]
+    fn stop_rejects_while_stop_in_progress_and_flag_clears_on_drop() {
+        let (_d, paths) = test_paths();
+
+        // Флаг выставлен «идущей остановкой» (как в server_stop перед ожиданием)
+        // и прикрыт гвардом — второй stop отказывает.
+        lock_stop_flags().insert("stopping".to_string());
+        {
+            let _guard = StopFlagGuard("stopping".into());
+            assert!(lock_stop_flags().contains("stopping"), "флаг на месте");
+            let err = server_stop(&paths, "stopping").unwrap_err();
+            assert!(err.to_string().contains("уже идёт"), "{err}");
+            // Чужой id не затронут.
+            assert!(!lock_stop_flags().contains("other"));
+        }
+        // Guard упал — флаг снят, stop проходит штатно (сервер не запущен → false).
+        assert!(!lock_stop_flags().contains("stopping"), "Drop снял флаг");
+        assert!(!server_stop(&paths, "stopping").unwrap());
     }
 }

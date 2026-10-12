@@ -439,6 +439,7 @@ mod tests {
             sha1: None,
             url: None,
             enabled: true,
+            from_pack: false,
         };
         let mut api_mod = rp.clone();
         api_mod.file = "mods/api-mod.jar".into();
@@ -588,6 +589,7 @@ mod tests {
             sha1: None,
             url: None,
             enabled: true,
+            from_pack: false,
         };
         let mut second = entry.clone();
         second.file = "mods/b/dupe.jar".into();

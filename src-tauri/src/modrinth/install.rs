@@ -289,6 +289,10 @@ async fn download_and_record(
         sha1: file.hashes.get("sha1").cloned(),
         url: Some(file.url.clone()),
         enabled: true,
+        // D71: файл поставлен САМИМ пользователем («Добавить моды»), а не
+        // модпаком: при обновлении пака такая запись — пользовательская
+        // (from_pack=false) и удалению «как выбывшей из пака» не подлежит.
+        from_pack: false,
     };
     // D70: запись манифеста — под per-instance локом
     // (packupdate::content_manifest_lock) и из СВЕЖЕЙ перечитки: пока шла

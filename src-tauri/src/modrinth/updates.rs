@@ -8,7 +8,59 @@ use crate::net::download::{DownloadEngine, DownloadTask};
 use crate::net::http::HttpClient;
 use crate::paths::Paths;
 use serde::Serialize;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// D71: реентерабельность-щит update_all — атомарный флаг по инстансу в
+/// Static-реестре (по образцу packupdate::content_manifest_lock). Команда
+/// content_update_all без has_engine-гарда допускала второй параллельный
+/// вызов: два update_all на один инстанс качали одно и то же и свопали
+/// файлы дважды. Флаг НЕ лок: ожидания нет — второй вызов сразу получает
+/// честную ошибку «обновление уже идёт».
+static UPDATE_IN_PROGRESS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+
+/// Флаг «update_all идёт»: ключ реестра — `instance:{id}:update` (группа
+/// задач update_all в движке загрузок — `instance:{id}`). Записи не
+/// выкидываются: их столько, сколько инстансов, Arc переживает реестр.
+fn update_in_progress_flag(instance_id: &str) -> Arc<AtomicBool> {
+    let key = format!("instance:{instance_id}:update");
+    let registry = UPDATE_IN_PROGRESS.get_or_init(|| Mutex::new(HashMap::new()));
+    registry
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key)
+        .or_default()
+        .clone()
+}
+
+/// D71: RAII-хранитель щита: взять можно один раз на инстанс, отпускается
+/// при любом выходе из update_all (успех, ошибка, отмена).
+struct UpdateGuard(Arc<AtomicBool>);
+
+impl std::fmt::Debug for UpdateGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UpdateGuard(держится)")
+    }
+}
+
+impl UpdateGuard {
+    fn acquire(instance_id: &str) -> Result<Self> {
+        let flag = update_in_progress_flag(instance_id);
+        if flag.swap(true, Ordering::SeqCst) {
+            return Err(LauncherError::InvalidInput(format!(
+                "обновление модов инстанса {instance_id} уже идёт — дождитесь завершения"
+            )));
+        }
+        Ok(UpdateGuard(flag))
+    }
+}
+
+impl Drop for UpdateGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
 
 /// Найденное обновление одного контента.
 #[derive(Debug, Clone, Serialize)]
@@ -24,6 +76,7 @@ pub struct UpdateCheck {
 
 /// Запись манифеста, для которой осмысленна проверка обновлений (A25: собираем
 /// кандидатов заранее, чтобы дважды не перебирать манифест и не путать группы).
+#[derive(Debug)]
 struct Candidate {
     file: String,
     project_id: String,
@@ -44,6 +97,21 @@ fn candidates(manifest: &[crate::instances::ContentEntry]) -> Vec<Candidate> {
                 sha1: e.sha1.clone(),
                 kind: e.kind,
             })
+        })
+        // D71: мусорный project_id (чужой .mrpack, ручная правка манифеста)
+        // в поштучном фолбэке ушёл бы в validate_id_or_slug → InvalidInput,
+        // который project_gone не матчит, и валял бы ВЕСЬ чек. Пропускаем
+        // запись с warn — как снятый с Modrinth проект (project_gone).
+        .filter(|c| match api::validate_id_or_slug(&c.project_id) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(
+                    "проверка обновлений: {} — мусорный project_id {:?} ({e}), пропускаю",
+                    c.file,
+                    c.project_id
+                );
+                false
+            }
         })
         .collect()
 }
@@ -258,6 +326,9 @@ pub async fn update_all(
     engine: Arc<DownloadEngine>,
     inst: &Instance,
 ) -> Result<usize> {
+    // D71: щит реентерабельности — второй параллельный update_all того же
+    // инстанса получает честную ошибку вместо двойной скачки/свопов.
+    let _update_guard = UpdateGuard::acquire(&inst.id)?;
     let checks = check_updates(paths, &client, inst).await?;
     // D70: снимок только для планирования; запись манифеста идёт из свежей
     // перечитки под локом (см. критическую секцию ниже).
@@ -299,11 +370,12 @@ pub async fn update_all(
     // с полным параллелизмом (раньше run() звался на каждый файл — движок
     // вырождался в последовательную скачку). Фаза 2 — свопы старых файлов и
     // ОДНА запись манифеста (раньше — N×atomic_write с fsync).
+    // D71: dest/old_path в плане больше НЕТ — они вычисляются в фазе свопа
+    // из АКТУАЛЬНОЙ записи манифеста (toggle во время скачки не подсовывает
+    // неактуальные пути); в плане остаётся только куда качать temp.
     struct PlannedUpdate {
         task: DownloadTask,
         temp: std::path::PathBuf,
-        dest: std::path::PathBuf,
-        old_path: std::path::PathBuf,
         filename: String,
         check_file: String,
         version_id: String,
@@ -398,8 +470,6 @@ pub async fn update_all(
                 priority: 25,
             },
             temp,
-            dest,
-            old_path: game_dir.join(&old_entry.file),
             filename: name.clone(),
             check_file: check.file.clone(),
             version_id: latest.id.clone(),
@@ -451,6 +521,14 @@ pub async fn update_all(
     // внутри секции: пока качали, он мог измениться (снимок выше годился
     // только для планирования). Внутри guard'а нет .await — future остаётся
     // Send, сеть в секцию не попадает.
+    // D71: пути каждого свопа вычисляются из АКТУАЛЬНОЙ записи свежего
+    // манифеста (content::disk_path по enabled), а не из снимка фазы
+    // планирования: toggle во время скачивания больше не разворачивается
+    // свопом (выключенный мод остаётся выключенным — новая версия ставится
+    // под `.disabled`), а удалённая запись не «воскрешает» файл. Остаточное
+    // окно: toggle/remove, пришедшие ВО ВРЕМЯ секции, ждут этот же лок и
+    // применяются после нас уже к обновлённым файлам (штатная сериализация);
+    // потерянных обновлений нет — секция синхронна, лок общий с toggle.
     let mut done: Vec<SwapRecord> = Vec::new();
     let mut swap_err: Option<LauncherError> = None;
     {
@@ -458,13 +536,38 @@ pub async fn update_all(
         let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
         let mut fresh = crate::instances::load_content_manifest(paths, &inst.id);
         for p in &plan {
-            match swap_updated_file(&p.old_path, &p.temp, &p.dest, &trash, &p.filename) {
+            let Some(entry) = fresh.iter_mut().find(|e| e.file == p.check_file) else {
+                // Записи больше нет (remove во время скачивания): обновлять
+                // нечего — temp в мусор, своп пропускается, пачка едет дальше.
+                tracing::warn!(
+                    "обновление {}: запись исчезла из манифеста во время скачивания — своп пропущен",
+                    p.check_file
+                );
+                crate::util::fs::remove_file_ignore(&p.temp);
+                continue;
+            };
+            // D71-5(b): файл из манифеста идёт на диск только после
+            // containment-проверки (контентные каталоги, только вниз) —
+            // hand-edited манифест не вынесет своп мимо каталога игры.
+            if let Err(e) =
+                crate::instances::content::resolve_content_file(paths, &inst.id, &entry.file)
+            {
+                swap_err = Some(e);
+                break;
+            }
+            if let Err(e) =
+                crate::instances::content::resolve_content_file(paths, &inst.id, &p.new_file_field)
+            {
+                swap_err = Some(e);
+                break;
+            }
+            let (old_path, dest) =
+                actual_swap_paths(&entry.file, entry.enabled, &p.new_file_field, &game_dir);
+            match swap_updated_file(&old_path, &p.temp, &dest, &trash, &p.filename) {
                 Ok(rec) => {
-                    if let Some(e) = fresh.iter_mut().find(|e| e.file == p.check_file) {
-                        e.file = p.new_file_field.clone();
-                        e.version_id = Some(p.version_id.clone());
-                        e.sha1 = p.new_sha1.clone();
-                    }
+                    entry.file = p.new_file_field.clone();
+                    entry.version_id = Some(p.version_id.clone());
+                    entry.sha1 = p.new_sha1.clone();
                     done.push(rec);
                     updated += 1;
                 }
@@ -488,6 +591,23 @@ pub async fn update_all(
         return Err(e);
     }
     Ok(updated)
+}
+
+/// D71: пути свопа по АКТУАЛЬНОЙ записи манифеста. Старый файл лежит под
+/// текущим состоянием enabled (`mods/x.jar` или `mods/x.jar.disabled`) —
+/// иначе toggle, случившийся во время скачивания, уводил своп мимо файла.
+/// Новая версия ставится под ТЕМ ЖЕ состоянием: выключенный пользователем
+/// мод после обновления остаётся выключенным, а не «включается обратно».
+fn actual_swap_paths(
+    entry_file: &str,
+    enabled: bool,
+    new_file_field: &str,
+    game_dir: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let disk = |file: &str| {
+        game_dir.join(crate::instances::content::disk_path(file, enabled))
+    };
+    (disk(entry_file), disk(new_file_field))
 }
 
 fn chrono_suffix() -> String {
@@ -832,6 +952,7 @@ mod tests {
             sha1: Some(sha1.into()),
             url: None,
             enabled: true,
+            from_pack: true,
         }
     }
 
@@ -1015,6 +1136,91 @@ mod tests {
             "{err:?}"
         );
         assert_eq!(err.code(), "network", "контракт для фронта прежний");
+
+        // D71: мусорный project_id из манифеста (чужой .mrpack, ручная правка)
+        // не валит весь чек: запись отсекается в candidates ДО сети и до
+        // validate_id_or_slug в поштучном фолбэке — Ok с пустым результатом,
+        // ни одного запроса. Без фикса здесь был бы InvalidInput на весь вызов.
+        let dir_garbage = tempfile::tempdir().unwrap();
+        let paths_garbage = test_paths(&dir_garbage);
+        let inst_garbage = Instance::new("Тест-мусорный-id", "1.21.1");
+        crate::instances::save_content_manifest(
+            &paths_garbage,
+            &inst_garbage.id,
+            &[entry(
+                ContentKind::Mod,
+                "mods/garbage.jar",
+                "../evil id",
+                "g-1",
+                "HASH-GARBAGE",
+            )],
+        )
+        .unwrap();
+        let before_garbage = project_calls.load(Ordering::SeqCst);
+        let updates_garbage = check_updates(&paths_garbage, &client, &inst_garbage)
+            .await
+            .unwrap_or_else(|e| panic!("мусорный project_id не должен ронять проверку: {e}"));
+        assert!(updates_garbage.is_empty(), "{updates_garbage:?}");
+        assert_eq!(
+            project_calls.load(Ordering::SeqCst),
+            before_garbage,
+            "мусорный id отсекается до сети"
+        );
+    }
+
+    /// D71: candidates пропускает записи с project_id, не проходящим
+    /// validate_id_or_slug (с warn), и оставляет живые рядом.
+    #[test]
+    fn candidates_skip_garbage_project_ids() {
+        let manifest = vec![
+            entry(ContentKind::Mod, "mods/ok.jar", "proj-ok", "v1", "SHA-OK"),
+            entry(ContentKind::Mod, "mods/evil.jar", "../evil id", "v2", "SHA-EVIL"),
+            entry(ContentKind::Mod, "mods/empty.jar", "", "v3", "SHA-EMPTY"),
+        ];
+        let c = candidates(&manifest);
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!(c[0].project_id, "proj-ok");
+    }
+
+    /// D71: щит реентерабельности update_all — второй acquire того же
+    /// инстанса получает ошибку, после отпускания (Drop при любом выходе)
+    /// щит берётся снова; разные инстансы не мешают друг другу.
+    #[test]
+    fn update_guard_blocks_reentrant_update_all() {
+        let id = "d71-guard-inst";
+        let first = UpdateGuard::acquire(id).expect("первый acquire проходит");
+        let err = UpdateGuard::acquire(id).expect_err("второй обязан упасть");
+        assert_eq!(err.code(), "invalid_input", "{err}");
+        assert!(err.to_string().contains("уже идёт"), "{err}");
+        drop(first);
+        let again = UpdateGuard::acquire(id).expect("после Drop щит свободен");
+        drop(again);
+        // Другой инстанс — свой флаг.
+        UpdateGuard::acquire("d71-guard-other").expect("чужой инстанс не заблокирован");
+    }
+
+    /// D71: пути свопа берутся по АКТУАЛЬНОЙ записи: выключенный мод лежит
+    /// под `.disabled`, новая версия ставится тоже под `.disabled` — toggle
+    /// во время скачивания не «включает» мод обратно. Включённый — прежние
+    /// имена без суффикса.
+    #[test]
+    fn actual_swap_paths_honor_enabled_state() {
+        let game = std::path::PathBuf::from("C:/game");
+        let (old, dest) = actual_swap_paths("mods/x.jar", true, "mods/x.jar", &game);
+        assert_eq!(old, game.join("mods/x.jar"));
+        assert_eq!(dest, game.join("mods/x.jar"));
+
+        let (old, dest) = actual_swap_paths("mods/x.jar", false, "mods/x.jar", &game);
+        assert_eq!(
+            old,
+            game.join("mods/x.jar.disabled"),
+            "старый файл ищется под .disabled"
+        );
+        assert_eq!(
+            dest,
+            game.join("mods/x.jar.disabled"),
+            "новая версия не включается обратно"
+        );
     }
 }
 

@@ -27,6 +27,12 @@ pub const RAW_BODY_TIMEOUT: Duration = Duration::from_secs(60);
 /// Тела, которые легитимно велики (установщики, архивы через bytes()).
 pub const RAW_BIG_BODY_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// D71: кап тела JSON-ответов (get_json_retry). Легитимные ответы API —
+/// сотни килобайт; больше — либо битый сервер, либо попытка надуть память
+/// ядра. Читается кап+1 байт, перебор — сетевая ошибка «тело JSON больше
+/// лимита» (serde-парс не вызывается вовсе).
+const MAX_JSON_BODY_BYTES: usize = 16 * 1024 * 1024;
+
 /// Redirect-барьер (бэклог D61): политика по умолчанию следует за Location
 /// без проверок — открытый редирект на доверенном CDN мог увести запрос на
 /// приватный/loopback-адрес (SSRF) или на понижение https→http. Allowlist у
@@ -39,7 +45,10 @@ fn redirect_allowed(next: &reqwest::Url) -> bool {
         return false;
     }
     if let Some(host) = next.host_str() {
-        if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") {
+        // D71: `.local`-суффикс (mDNS) сравнивается в нижнем регистре —
+        // «Printer.LOCAL» раньше проходил барьер как «публичный хост».
+        let lower = host.to_ascii_lowercase();
+        if lower == "localhost" || lower.ends_with(".local") {
             return false;
         }
         // url-крейт отдаёт IPv6-хост в скобках («[::1]») — снимаем их.
@@ -266,15 +275,13 @@ impl HttpClient {
                     tokio::time::sleep(backoff_delay(attempt)).await;
                 }
                 Ok(Ok(resp)) if resp.status().is_success() => {
-                    // Тело тоже под локальным таймаутом: сервер может отдать
-                    // заголовки и замолчать уже в BODY.
-                    match tokio::time::timeout(JSON_ATTEMPT_TIMEOUT, resp.json::<T>()).await {
-                        Ok(parsed) => return parsed.map_err(LauncherError::from),
-                        Err(_) => {
-                            return Err(LauncherError::network(format!(
-                                "тело не получено за {JSON_ATTEMPT_TIMEOUT:?}: {url}"
-                            )));
-                        }
+                    // D71: тело читается вручную с капом размера и локальным
+                    // таймаутом (сервер может отдать заголовки и замолчать
+                    // уже в BODY): resp.json() тащил бы тело целиком без
+                    // ограничения.
+                    match Self::read_json_body::<T>(resp).await {
+                        Ok(parsed) => return Ok(parsed),
+                        Err(e) => return Err(e),
                     }
                 }
                 Ok(Ok(resp)) if is_retryable(resp.status().as_u16()) => {
@@ -305,6 +312,37 @@ impl HttpClient {
                 }
             }
         }
+    }
+
+    /// D71: тело успешного ответа под капом размера и локальным таймаутом.
+    /// reqwest::Response в async-API не даёт std::io::Read (take() недоступен),
+    /// поэтому кап считается по чанкам — семантика та же (лимит+1 и проверка).
+    async fn read_json_body<T: serde::de::DeserializeOwned>(
+        mut resp: reqwest::Response,
+    ) -> Result<T> {
+        let mut buf: Vec<u8> = Vec::new();
+        loop {
+            // chunk() — двойной Result: внешний от таймаута, внутренний — сеть,
+            // Option — конец тела.
+            match tokio::time::timeout(JSON_ATTEMPT_TIMEOUT, resp.chunk()).await {
+                Ok(Ok(Some(chunk))) => {
+                    if buf.len().saturating_add(chunk.len()) > MAX_JSON_BODY_BYTES {
+                        return Err(LauncherError::network(format!(
+                            "тело JSON больше лимита ({MAX_JSON_BODY_BYTES} байт)"
+                        )));
+                    }
+                    buf.extend_from_slice(&chunk);
+                }
+                Ok(Ok(None)) => break,
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => {
+                    return Err(LauncherError::network(format!(
+                        "тело не получено за {JSON_ATTEMPT_TIMEOUT:?}"
+                    )));
+                }
+            }
+        }
+        Ok(serde_json::from_slice(&buf)?)
     }
 
     /// D70: GET с per-call allowlist на КАЖДОМ хопе редиректа. Глобальная
@@ -351,7 +389,17 @@ impl HttpClient {
                 }
             };
             let status = resp.status();
-            if !matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
+            let code = status.as_u16();
+            if !matches!(code, 301 | 302 | 303 | 307 | 308) {
+                // D71: прочие 3xx (300/304/305/306) — не редиректы, за ними
+                // не идти: тело может отсутствовать (304), а Location может
+                // быть коварным (300 с несколькими вариантами). Честная
+                // сетевая ошибка вместо молчаливой отдачи «пустого» ответа.
+                if status.is_redirection() {
+                    return Err(LauncherError::network(format!(
+                        "неожиданный 3xx без Location: {status} для {next}"
+                    )));
+                }
                 return Ok(resp);
             }
             hops += 1;
@@ -461,6 +509,9 @@ mod tests {
             "ftp://example.com/x",
             "file:///etc/passwd",
             "http://printer.local/x",
+            // D71: `.local` сравнивается в нижнем регистре.
+            "http://PRINTER.LOCAL/x",
+            "http://MyBox.Local/a",
         ] {
             let url: reqwest::Url = blocked.parse().unwrap();
             assert!(!redirect_allowed(&url), "{blocked} должен быть заблокирован");
@@ -704,5 +755,92 @@ mod tests {
         let err = r.expect_err("офлайн должен дать ошибку");
         assert!(matches!(err, LauncherError::OfflineMode(_)));
         assert_eq!(err.code(), "offline_mode");
+    }
+
+    /// D71: не-редиректный 3xx (304 без Location, 300) в get_with_allowlist —
+    /// честная сетевая ошибка, а не молчаливый возврат «пустого» ответа.
+    #[tokio::test]
+    async fn allowlist_request_errors_on_non_redirect_3xx() {
+        for status in [
+            axum::http::StatusCode::NOT_MODIFIED, // 304
+            axum::http::StatusCode::MULTIPLE_CHOICES, // 300
+        ] {
+            let app = axum::Router::new().route(
+                "/weird-3xx",
+                axum::routing::get(move || async move { status }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+            let c = HttpClient::new(None).unwrap();
+            let err = c
+                .get_with_allowlist(
+                    &format!("http://{addr}/weird-3xx"),
+                    |u: &reqwest::Url| u.scheme() == "http",
+                )
+                .await
+                .expect_err("не-редиректный 3xx обязан быть ошибкой");
+            let msg = format!("{err}");
+            assert_eq!(err.code(), "network", "{msg}");
+            assert!(
+                msg.contains("неожиданный 3xx"),
+                "ожидали отказ на 3xx, получили: {msg}"
+            );
+        }
+    }
+
+    /// D71: кап тела JSON в get_json_retry — тело больше 16 МБ даёт сетевую
+    /// ошибку «тело JSON больше лимита» без serde-парса и без ретраев.
+    #[tokio::test]
+    async fn get_json_body_over_cap_is_rejected_without_retry() {
+        use std::sync::atomic::Ordering;
+        let calls = Arc::new(AtomicU32::new(0));
+        let srv = calls.clone();
+        let app = axum::Router::new().route(
+            "/huge",
+            axum::routing::get(move || {
+                let calls = srv.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    // 17 МБ — за капом; содержимое не JSON: перебор должен
+                    // отсечься до парса.
+                    axum::body::Body::from(vec![b'a'; MAX_JSON_BODY_BYTES + 1024 * 1024])
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let c = HttpClient::new(None).unwrap();
+        let r: Result<serde_json::Value> = c.get_json_retry(&format!("http://{addr}/huge")).await;
+        let err = r.expect_err("тело за капом обязано дать ошибку");
+        let msg = format!("{err}");
+        assert!(msg.contains("тело JSON больше лимита"), "{msg}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "перерасход капа не ретраится"
+        );
+    }
+
+    /// D71: тело в пределах капа (и кап читается до конца) — парс как раньше.
+    #[tokio::test]
+    async fn get_json_body_within_cap_parses() {
+        let app = axum::Router::new().route(
+            "/ok",
+            axum::routing::get(|| async { axum::Json(serde_json::json!({"ok": 1})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let c = HttpClient::new(None).unwrap();
+        let v: serde_json::Value = c
+            .get_json_retry(&format!("http://{addr}/ok"))
+            .await
+            .expect("маленькое тело парсится как раньше");
+        assert_eq!(v["ok"], 1);
     }
 }

@@ -8,6 +8,7 @@ use crate::net::http::HttpClient;
 use crate::paths::Paths;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -87,18 +88,51 @@ impl MrpackIndex {
                 self.files.len()
             )));
         }
+        // D71: два файла с одним путём в одном .mrpack сводятся к одному dest —
+        // с разными хэшами это противоречие (каждый байт обязан сверяться с
+        // «тем самым» хэшем, а лежать будет что-то одно): честный отказ. С
+        // одинаковыми хэшами — безвредный дубль описания, ниже дедуплицируется.
+        let mut seen: HashMap<String, &HashMap<String, String>> = HashMap::new();
+        for f in &self.files {
+            let key = normalized_mrpack_path(&f.path);
+            match seen.get(&key) {
+                Some(prev) if *prev != &f.hashes => {
+                    return Err(LauncherError::InvalidInput(format!(
+                        "в манифесте два файла с путём {} и разными хэшами",
+                        f.path
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    seen.insert(key, &f.hashes);
+                }
+            }
+        }
         Ok(())
     }
 
     /// Файлы для КЛИЕНТА: env.client != "unsupported" (спека §6.6).
+    /// D71: дедуп по нормализованному пути — записи с одинаковым путём и
+    /// одинаковыми хэшами (проверка в validate) дают одну задачу загрузки,
+    /// а не две гонки за один dest.
     pub fn client_files(&self) -> impl Iterator<Item = &MrpackFile> {
-        self.files.iter().filter(|f| {
+        let mut seen: std::collections::HashSet<String> = Default::default();
+        self.files.iter().filter(move |f| {
             f.env
                 .as_ref()
                 .and_then(|e| e.get("client").map(|c| c != "unsupported"))
                 .unwrap_or(true)
+                && seen.insert(normalized_mrpack_path(&f.path))
         })
     }
+}
+
+/// D71: нормализация пути из манифеста для сравнения dest'ов — то же
+/// приведение разделителей, что делает safe_relative_path (dest строится
+/// из него); сравнение без регистра: на Windows `mods/A.jar` и `mods/a.jar`
+/// — один и тот же файл на диске.
+fn normalized_mrpack_path(path: &str) -> String {
+    path.replace('\\', "/").to_lowercase()
 }
 
 /// Открыть .mrpack (zip) и распарсить modrinth.index.json.
@@ -108,7 +142,7 @@ pub(crate) fn open_mrpack(path: &Path) -> Result<MrpackIndex> {
     let file = std::fs::File::open(crate::util::fs::long_path(path))?;
     let mut zip = zip::ZipArchive::new(file)
         .map_err(|e| LauncherError::Zip(format!("не удалось открыть .mrpack: {e}")))?;
-    let index_entry = zip
+    let mut index_entry = zip
         .by_name("modrinth.index.json")
         .map_err(|_| {
             LauncherError::InvalidInput(
@@ -116,7 +150,8 @@ pub(crate) fn open_mrpack(path: &Path) -> Result<MrpackIndex> {
             )
         })?;
     // D23-зеркало: заявленный распакованный размер проверяем ДО чтения —
-    // чужой zip может объявить гигабайтный index.json и уронить ядро по OOM.
+    // чужой zip может объявить гигабайтный index.json и уронить ядро по OOM
+    // (быстрый отказ без распаковки, если заголовок честный).
     if index_entry.size() > MAX_MRPACK_MANIFEST_BYTES {
         return Err(LauncherError::InvalidInput(format!(
             "манифест modrinth.index.json слишком большой: {} байт (лимит {} МБ)",
@@ -124,7 +159,21 @@ pub(crate) fn open_mrpack(path: &Path) -> Result<MrpackIndex> {
             MAX_MRPACK_MANIFEST_BYTES / (1024 * 1024)
         )));
     }
-    let index: MrpackIndex = serde_json::from_reader(index_entry)?;
+    // D71: заголовок может соврать (заявлено 100 байт, в записи гигантский
+    // deflate) — чтение ограничено take(лимит+1) по ФАКТИЧЕСКИ распакованным
+    // байтам; перебор = InvalidInput до serde и до второй копии буфера.
+    let mut bytes = Vec::new();
+    (&mut index_entry)
+        .take(MAX_MRPACK_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_MRPACK_MANIFEST_BYTES {
+        return Err(LauncherError::InvalidInput(format!(
+            "манифест modrinth.index.json слишком большой: {} байт (лимит {} МБ)",
+            bytes.len(),
+            MAX_MRPACK_MANIFEST_BYTES / (1024 * 1024)
+        )));
+    }
+    let index: MrpackIndex = serde_json::from_slice(&bytes)?;
     index.validate()?;
     Ok(index)
 }
@@ -180,19 +229,26 @@ fn read_missing_mods_checker(path: &Path) -> Vec<MissingModsEntry> {
             return Vec::new();
         }
     };
-    let Ok(entry) = zip.by_name(ENTRY) else {
+    let Ok(mut entry) = zip.by_name(ENTRY) else {
         return Vec::new(); // конфига нет — обычный пак
     };
     // Тот же кап, что у index.json: конфиг — килобайты, гигабайтная запись
-    // из чужого архива в память не читается (D23-зеркало).
-    if entry.size() > MAX_MRPACK_MANIFEST_BYTES {
+    // из чужого архива в память не читается (D23-зеркало). D71: чтение тоже
+    // под take(лимит+1) по фактическим байтам — совравший заголовок записи
+    // (заявлено мало, deflate огромный) не надувает память: перебор = skip.
+    let mut bytes = Vec::new();
+    let read_ok = (&mut entry)
+        .take(MAX_MRPACK_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_ok();
+    if !read_ok || bytes.len() as u64 > MAX_MRPACK_MANIFEST_BYTES {
         tracing::warn!(
-            "конфиг {ENTRY} слишком большой ({} байт) — предустановка пропущена",
-            entry.size()
+            "конфиг {ENTRY} слишком большой ({} байт фактически) — предустановка пропущена",
+            bytes.len()
         );
         return Vec::new();
     }
-    let mut parsed: Vec<MissingModsEntry> = match serde_json::from_reader(entry) {
+    let mut parsed: Vec<MissingModsEntry> = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("битый конфиг {ENTRY}: {e} — предустановка пропущена");
@@ -266,6 +322,15 @@ pub fn ensure_allowed_mrpack_url(url: &str) -> Result<()> {
             "в модпаке разрешены только https-ссылки: {url}"
         )));
     }
+    // D71: явный нестандартный порт на доверенном хосте — способ увести
+    // запрос к чужому сервису; дефолтный 443 в URL не пишется (port() = None).
+    if let Some(p) = parsed.port() {
+        if p != 443 {
+            return Err(LauncherError::InvalidInput(format!(
+                "в модпаке разрешён только порт 443: {url}"
+            )));
+        }
+    }
     if ALLOWED_MRPACK_HOSTS
         .iter()
         .any(|h| host.eq_ignore_ascii_case(h))
@@ -288,7 +353,9 @@ pub(crate) fn allowed_mrpack_hop(u: &reqwest::Url) -> bool {
     if matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
         return true;
     }
+    // D71: порт — только дефолтный 443 (держать синхронно с ensure_allowed_mrpack_url).
     u.scheme() == "https"
+        && u.port().is_none_or(|p| p == 443)
         && ALLOWED_MRPACK_HOSTS
             .iter()
             .any(|h| host.eq_ignore_ascii_case(h))
@@ -318,6 +385,14 @@ pub(crate) fn ensure_allowed_cdn_url(url: &str) -> Result<()> {
             "картинки разрешено тянуть только по https: {url}"
         )));
     }
+    // D71: порт — только дефолтный 443 (держать синхронно с allowed_cdn_hop).
+    if let Some(p) = parsed.port() {
+        if p != 443 {
+            return Err(LauncherError::InvalidInput(format!(
+                "для картинок разрешён только порт 443: {url}"
+            )));
+        }
+    }
     if ALLOWED_CDN_HOSTS
         .iter()
         .any(|h| host.eq_ignore_ascii_case(h))
@@ -338,10 +413,50 @@ pub(crate) fn allowed_cdn_hop(u: &reqwest::Url) -> bool {
     if matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
         return true;
     }
+    // D71: порт — только дефолтный 443 (держать синхронно с ensure_allowed_cdn_url).
     u.scheme() == "https"
+        && u.port().is_none_or(|p| p == 443)
         && ALLOWED_CDN_HOSTS
             .iter()
             .any(|h| host.eq_ignore_ascii_case(h))
+}
+
+/// D71: GET с allowlist и двумя короткими повторами на 429/5xx и сетевых
+/// сбоях (по образцу get_json_retry, но паузы короче: .mrpack качается с
+/// CDN, где миг 5xx — не повод сыпать установку; полный backoff тут излишен).
+/// На исчерпании возвращается ПОСЛЕДНИЙ ответ (429/5xx) — error_for_status()
+/// у вызывающего даст ошибку как раньше; сетевые Err отдаются наружу сразу
+/// после последней попытки. Не-429/5xx (404 и пр.) не повторяются вовсе.
+const MRPACK_FETCH_ATTEMPTS: u32 = 3;
+const MRPACK_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(400);
+
+async fn get_mrpack_file_with_retry(client: &HttpClient, url: &str) -> Result<reqwest::Response> {
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        match client.get_with_allowlist(url, allowed_mrpack_hop).await {
+            Ok(resp) => {
+                let retryable =
+                    resp.status().as_u16() == 429 || resp.status().is_server_error();
+                if !retryable || attempt >= MRPACK_FETCH_ATTEMPTS {
+                    return Ok(resp);
+                }
+                tracing::warn!(
+                    "GET {url}: HTTP {} — повтор {attempt}/{}",
+                    resp.status(),
+                    MRPACK_FETCH_ATTEMPTS
+                );
+                tokio::time::sleep(MRPACK_RETRY_PAUSE * attempt).await;
+            }
+            Err(e) => {
+                if attempt >= MRPACK_FETCH_ATTEMPTS {
+                    return Err(e);
+                }
+                tracing::warn!("GET {url}: {e} — повтор {attempt}/{MRPACK_FETCH_ATTEMPTS}");
+                tokio::time::sleep(MRPACK_RETRY_PAUSE * attempt).await;
+            }
+        }
+    }
 }
 
 /// Скачать картинку (иконка/арт проекта) с жёстким капом размера.
@@ -641,6 +756,24 @@ pub(crate) fn ids_from_cdn_url(url: &str) -> (Option<String>, Option<String>) {
     (project, version)
 }
 
+/// D71: project_id из НЕдоверенного .mrpack (поле projectId в files[], не
+/// описанное спекой) не должен попадать в content-manifest как есть: мусор
+/// («../evil», пробелы, пустота) при проверке обновлений уходил в URL
+/// `/project/{id}` и валил весь чек. Мусор → None с warn: файл остаётся в
+/// манифесте, но обновления по нему не проверяются (как у legacy-записей).
+fn sanitized_project_id(raw: Option<String>) -> Option<String> {
+    match raw {
+        Some(id) if crate::modrinth::api::validate_id_or_slug(&id).is_ok() => Some(id),
+        Some(id) => {
+            tracing::warn!(
+                "в манифесте пака мусорный project_id {id:?} — обновления по файлу проверяться не будут"
+            );
+            None
+        }
+        None => None,
+    }
+}
+
 /// Полная установка .mrpack: инстанс по dependencies → overrides поверх →
 /// файлы с хэшами → content-manifest. Возвращает созданный инстанс.
 ///
@@ -798,11 +931,15 @@ pub async fn install_mrpack(
             kind,
             file: rel_str,
             source: ContentSource::Modrinth,
-            project_id: f.project_id.clone().or(url_project),
+            // D71: project_id (как и доборка из CDN-ссылки) — недоверенные
+            // данные: мусор не пишется в манифест, чтобы не валить check_updates.
+            project_id: sanitized_project_id(f.project_id.clone().or(url_project)),
             version_id: f.version_id.clone().or(url_version),
             sha1: f.hashes.get("sha1").cloned(),
             url: f.downloads.first().cloned(),
             enabled: true,
+            // D71 (параллельная полоса): файлы из .mrpack — члены пака.
+            from_pack: true,
         });
     }
     crate::instances::save_content_manifest(paths, &inst.id, &manifest)?;
@@ -908,8 +1045,8 @@ pub async fn install_modpack_project(
     }
     // D70: URL файла приходит из JSON версии (внешние данные) — GET с
     // allowlist на первом URL и каждом хопе (https + ALLOWED_MRPACK_HOSTS).
-    let resp = client
-        .get_with_allowlist(&file.url, allowed_mrpack_hop)
+    // D71: с двумя короткими повторами на 429/5xx/сетевые (см. хелпер).
+    let resp = get_mrpack_file_with_retry(&client, &file.url)
         .await?
         .error_for_status()?;
 
@@ -1409,7 +1546,8 @@ mod tests {
     }
 
     /// D70: предикаты хопов get_with_allowlist не разъезжаются с ensure-* —
-    /// один вердикт на каждый URL.
+    /// один вердикт на каждый URL. D71: нестандартный порт на доверенном
+    /// хосте отвергается ОБОИМИ (дефолтный 443 в URL не пишется — port() None).
     #[test]
     fn hop_predicates_agree_with_ensure() {
         for url in [
@@ -1419,6 +1557,8 @@ mod tests {
             "http://cdn.modrinth.com/a.png",  // не https
             "https://evil.example.com/a.png", // не allowlist
             "ftp://cdn.modrinth.com/a.png",   // не https
+            "https://cdn.modrinth.com:8443/a.png", // нестандартный порт
+            "https://api.modrinth.com:8080/x",     // нестандартный порт
         ] {
             let parsed = reqwest::Url::parse(url).unwrap();
             assert_eq!(
@@ -1432,6 +1572,91 @@ mod tests {
                 "cdn-предикат разошёлся с ensure на {url}"
             );
         }
+        // Порт-чек прямо: дефолт (его отсутствие) и явный :443 — можно.
+        for url in [
+            "https://cdn.modrinth.com/a.png",
+            "https://cdn.modrinth.com:443/a.png",
+        ] {
+            let parsed = reqwest::Url::parse(url).unwrap();
+            assert!(allowed_mrpack_hop(&parsed), "{url}");
+            assert!(allowed_cdn_hop(&parsed), "{url}");
+        }
+    }
+
+    /// D71: get_mrpack_file_with_retry — два коротких повтора на 5xx: три
+    /// попытки (500, 500, 200) завершаются успехом, счётчик = 3.
+    #[tokio::test]
+    async fn mrpack_fetch_retries_5xx_then_succeeds() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let srv = calls.clone();
+        let app = axum::Router::new().route(
+            "/pack.mrpack",
+            axum::routing::get(move || {
+                let calls = srv.clone();
+                async move {
+                    let n = calls.fetch_add(1, Ordering::SeqCst);
+                    if n < 2 {
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+                    } else {
+                        axum::http::StatusCode::OK
+                    }
+                }
+            }),
+        );
+        let base = spawn_axum(app).await;
+        let client = HttpClient::new(None).unwrap();
+        let resp = get_mrpack_file_with_retry(&client, &format!("{base}/pack.mrpack"))
+            .await
+            .expect("третья попытка обязана пройти");
+        assert_eq!(resp.status(), 200);
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "500+500+200 = три попытки");
+    }
+
+    /// D71: исчерпание повторов — наружу возвращается ПОСЛЕДНИЙ ответ (5xx),
+    /// ровно MRPACK_FETCH_ATTEMPTS попыток; error_for_status() даст ошибку.
+    #[tokio::test]
+    async fn mrpack_fetch_gives_up_after_attempts_with_last_response() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let srv = calls.clone();
+        let app = axum::Router::new().fallback(move || {
+            let calls = srv.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                axum::http::StatusCode::BAD_GATEWAY
+            }
+        });
+        let base = spawn_axum(app).await;
+        let client = HttpClient::new(None).unwrap();
+        let resp = get_mrpack_file_with_retry(&client, &format!("{base}/pack.mrpack"))
+            .await
+            .expect("после ретраев отдаётся сам ответ, не сетевая ошибка");
+        assert_eq!(resp.status().as_u16(), 502);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            usize::try_from(MRPACK_FETCH_ATTEMPTS).unwrap(),
+            "попыток ровно MRPACK_FETCH_ATTEMPTS"
+        );
+    }
+
+    /// D71: не-429/5xx (404) не повторяется — одна попытка, ответ наружу.
+    #[tokio::test]
+    async fn mrpack_fetch_does_not_retry_404() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let srv = calls.clone();
+        let app = axum::Router::new().fallback(move || {
+            let calls = srv.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                axum::http::StatusCode::NOT_FOUND
+            }
+        });
+        let base = spawn_axum(app).await;
+        let client = HttpClient::new(None).unwrap();
+        let resp = get_mrpack_file_with_retry(&client, &format!("{base}/nope.mrpack"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "404 не ретраится");
     }
 
     /// A24: модпак со ссылкой на внутренний хост отвергается ДО сети и до
@@ -1564,6 +1789,64 @@ mod tests {
         assert!(read_missing_mods_checker(&pack).is_empty());
     }
 
+    /// D71: zip-запись с ПОРЧЕННЫМ заголовком — в central directory и local
+    /// header заявлено 100 байт, а распаковывается 17 МБ нулей (сжатые данные
+    /// и их размер оставлены честными, чтобы декомпрессор получил весь поток).
+    /// Прежний код читал бы запись целиком после проверки ЗАЯВЛЕННОГО размера;
+    /// теперь take(лимит+1) режет поток по факту — InvalidInput про размер.
+    fn write_oversized_entry_with_lying_header(path: &Path, entry_name: &str) {
+        write_oversized_entry(path, entry_name);
+        let mut data = std::fs::read(path).unwrap();
+        let lie: [u8; 4] = 100u32.to_le_bytes();
+        // local header «PK\x03\x04»: нерасжатый размер — смещение +22.
+        let lh = data
+            .windows(4)
+            .position(|w| w == b"PK\x03\x04")
+            .expect("local header найден");
+        data[lh + 22..lh + 26].copy_from_slice(&lie);
+        // central directory «PK\x01\x02»: нерасжатый размер — смещение +24
+        // (ищем с конца — внутри сжатых данных бывает та же сигнатура).
+        let cd = data
+            .windows(4)
+            .rposition(|w| w == b"PK\x01\x02")
+            .expect("central directory найден");
+        data[cd + 24..cd + 28].copy_from_slice(&lie);
+        std::fs::write(path, &data).unwrap();
+    }
+
+    #[test]
+    fn lying_size_header_does_not_bypass_manifest_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("liar.mrpack");
+        write_oversized_entry_with_lying_header(&pack, "modrinth.index.json");
+        // Санити: патч заголовка реально сработал — zip-rs видит 100 байт,
+        // т.е. прежняя проверка ЗАЯВЛЕННОГО размера эту запись пропустила бы.
+        {
+            let file = std::fs::File::open(crate::util::fs::long_path(&pack)).unwrap();
+            let mut zip = zip::ZipArchive::new(file).unwrap();
+            let entry = zip.by_name("modrinth.index.json").unwrap();
+            assert_eq!(
+                entry.size(),
+                100,
+                "патч central directory обязан подменить заявленный размер"
+            );
+        }
+        // Чтение ограничено take(лимит+1) по ФАКТУ: ошибка InvalidInput про
+        // размер, не serde и не zip.
+        let err = open_mrpack(&pack).unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+        assert!(err.to_string().contains("слишком большой"), "{err}");
+    }
+
+    /// Тот же обман заголовка против missing_mods_checker.json: warn и пусто.
+    #[test]
+    fn lying_size_header_does_not_bypass_config_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("liar-config.mrpack");
+        write_oversized_entry_with_lying_header(&pack, "overrides/config/missing_mods_checker.json");
+        assert!(read_missing_mods_checker(&pack).is_empty());
+    }
+
     /// P1: кап на число файлов в манифесте — десятки тысяч записей не проходят
     /// validate (легальные паки — сотни, остальное — мусор или DoS).
     #[test]
@@ -1584,6 +1867,58 @@ mod tests {
         let err = index.validate().unwrap_err();
         assert_eq!(err.code(), "invalid_input", "{err}");
         assert!(err.to_string().contains("слишком много файлов"), "{err}");
+    }
+
+    /// D71-регресс: crafted-пак с двумя файлами одного пути и РАЗНЫМИ хэшами
+    /// отвергается при открытии — раньше оба превращались в одну задачу/dest,
+    /// и воркеры движка затирали part-файл друг друга. Разделители пути и
+    /// регистр нормализацию проходят (`mods\y.jar` = `mods/y.jar`).
+    #[test]
+    fn mrpack_with_conflicting_duplicate_paths_is_rejected() {
+        let index = format!(
+            r#"{{"formatVersion":1,"game":"minecraft","versionId":"dup-1",
+                 "name":"Дубль",
+                 "files":[
+                    {{"path":"mods/y.jar","hashes":{{"sha1":"{}"}},
+                      "downloads":["https://cdn.modrinth.com/a.jar"],"fileSize":1}},
+                    {{"path":"mods\\y.jar","hashes":{{"sha1":"{}"}},
+                      "downloads":["https://cdn.modrinth.com/b.jar"],"fileSize":2}}
+                 ],
+                 "dependencies":{{"minecraft":"1.21.1"}}}}"#,
+            "0".repeat(40),
+            "1".repeat(40)
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("dup.mrpack");
+        write_mrpack(&pack, &index);
+        let err = open_mrpack(&pack).unwrap_err();
+        assert_eq!(err.code(), "invalid_input", "{err}");
+        let msg = err.to_string();
+        assert!(msg.contains("разными хэшами"), "{msg}");
+        assert!(msg.contains("mods/y.jar") || msg.contains("mods\\y.jar"), "{msg}");
+    }
+
+    /// D71: безвредный дубль (тот же путь, те же хэши) не отвергается, а
+    /// client_files отдаёт запись ОДИН раз — одна задача на dest.
+    #[test]
+    fn duplicate_paths_with_same_hashes_are_deduped() {
+        let index = format!(
+            r#"{{"formatVersion":1,"game":"minecraft","versionId":"dup-2",
+                 "name":"Дубль-ок",
+                 "files":[
+                    {{"path":"mods/z.jar","hashes":{{"sha1":"{}"}},
+                      "downloads":["https://cdn.modrinth.com/a.jar"],"fileSize":1}},
+                    {{"path":"mods/z.jar","hashes":{{"sha1":"{}"}},
+                      "downloads":["https://cdn.modrinth.com/a.jar"],"fileSize":1}}
+                 ],
+                 "dependencies":{{"minecraft":"1.21.1"}}}}"#,
+            "2".repeat(40),
+            "2".repeat(40)
+        );
+        let parsed: MrpackIndex = serde_json::from_str(&index).unwrap();
+        parsed.validate().expect("одинаковые хэши — не конфликт");
+        let paths: Vec<_> = parsed.client_files().map(|f| f.path.clone()).collect();
+        assert_eq!(paths, vec!["mods/z.jar".to_string()], "{paths:?}");
     }
 
     /// P2: картинки проекта (icon_url/галерейный raw_url) тянутся только с
@@ -1753,12 +2088,19 @@ mod tests {
     /// (index.version_id) — check_updates сверяет запись с версией мода, и
     /// паковая версия делала весь свежий пак «устаревшим» с полной
     /// перекачкой модов.
+    /// D71-регресс: мусорный projectId из чужого .mrpack в манифест не
+    /// попадает (None) — иначе он валил check_updates/update_all целиком.
     #[tokio::test]
     async fn manifest_records_per_file_version_not_pack() {
-        let app = axum::Router::new().route(
-            "/mods/x.jar",
-            axum::routing::get(|| async { axum::body::Body::from(MOD_BYTES.to_vec()) }),
-        );
+        let app = axum::Router::new()
+            .route(
+                "/mods/x.jar",
+                axum::routing::get(|| async { axum::body::Body::from(MOD_BYTES.to_vec()) }),
+            )
+            .route(
+                "/mods/evil.jar",
+                axum::routing::get(|| async { axum::body::Body::from(MOD_BYTES.to_vec()) }),
+            );
         let base = spawn_axum(app).await;
         let sha1 = crate::util::fs::sha1_bytes(MOD_BYTES);
         let index = format!(
@@ -1766,7 +2108,10 @@ mod tests {
                  "name":"Тест-пак",
                  "files":[{{"path":"mods/x.jar","hashes":{{"sha1":"{sha1}"}},
                             "downloads":["{base}/mods/x.jar"],"fileSize":{size},
-                            "projectId":"proj-x","versionId":"file-ver-9"}}],
+                            "projectId":"proj-x","versionId":"file-ver-9"}},
+                          {{"path":"mods/evil.jar","hashes":{{"sha1":"{sha1}"}},
+                            "downloads":["{base}/mods/evil.jar"],"fileSize":{size},
+                            "projectId":"../evil id","versionId":"file-ver-9"}}],
                  "dependencies":{{"minecraft":"1.21.1"}}}}"#,
             size = MOD_BYTES.len()
         );
@@ -1790,16 +2135,25 @@ mod tests {
         .unwrap();
 
         let manifest = crate::instances::load_content_manifest(&paths, &inst.id);
-        assert_eq!(manifest.len(), 1, "{manifest:?}");
+        assert_eq!(manifest.len(), 2, "{manifest:?}");
+        let good = manifest.iter().find(|e| e.file == "mods/x.jar").unwrap();
         assert_eq!(
-            manifest[0].project_id.as_deref(),
+            good.project_id.as_deref(),
             Some("proj-x"),
             "projectId файла из files[]"
         );
         assert_eq!(
-            manifest[0].version_id.as_deref(),
+            good.version_id.as_deref(),
             Some("file-ver-9"),
             "versionId ФАЙЛА, не версия пака pack-1.0"
+        );
+        let evil = manifest
+            .iter()
+            .find(|e| e.file == "mods/evil.jar")
+            .expect("мусорный projectId не выбрасывает файл из манифеста");
+        assert_eq!(
+            evil.project_id, None,
+            "мусорный projectId в манифест не пишется"
         );
     }
 

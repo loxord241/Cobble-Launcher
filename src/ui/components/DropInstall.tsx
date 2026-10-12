@@ -91,9 +91,12 @@ export default function DropInstall() {
 
   /** Установка .mrpack: та же ядерная команда, что и из каталога модпаков.
    * Подтверждение не нужно — прогресс виден в рельсе «Загрузки», новый
-   * инстанс создаётся сам (стор перечитываем после установки). */
+   * инстанс создаётся сам (стор перечитываем после установки).
+   * D71: возвращает успех явным значением — решение о показе pick для
+   * смешанного drop принимается по ИСХОДУ промиса, а не по фазе (phaseRef
+   * обновляется при рендере, и микротаска .then читала устаревшее значение). */
   const installMrpack = useCallback(
-    async (paths: string[]) => {
+    async (paths: string[]): Promise<boolean> => {
       setPhase({ kind: "progress", text: t("drop.newPackInstall") });
       try {
         for (const path of paths) {
@@ -108,8 +111,10 @@ export default function DropInstall() {
           }),
           RESULT_MS,
         );
+        return true;
       } catch (e) {
         flash("error", apiErrorText(e), RESULT_MS);
+        return false;
       }
     },
     [flash, loadInstances],
@@ -130,8 +135,12 @@ export default function DropInstall() {
         // Смешанный drop честен: .mrpack ставим, .jar/.zip в этом же
         // перетаскивании не теряем молча — предлагаем выбор инстанса после.
         const alsoContent = content.length > 0;
-        void installMrpack(mrpack).then(() => {
-          if (alsoContent && phaseRef.current.kind === "flash") {
+        // D71: pick открываем ТОЛЬКО по успешному исходу промиса (не по фазе:
+        // phaseRef обновляется при рендере, и микротаска .then исполнялась
+        // раньше — условие ложно, .jar/.zip терялись). Ошибка установки
+        // остаётся во flash — pick не открываем.
+        void installMrpack(mrpack).then((ok: boolean) => {
+          if (alsoContent && ok) {
             setPhase({ kind: "pick", paths: content });
           }
         });

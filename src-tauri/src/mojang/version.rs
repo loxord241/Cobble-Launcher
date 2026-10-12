@@ -200,6 +200,17 @@ impl VersionJson {
         url: &str,
         expected_sha1: &str,
     ) -> Result<Self> {
+        Self::fetch_raw(client, url, expected_sha1).await.map(|(_, v)| v)
+    }
+
+    /// То же, но возвращает и СЫРЫЕ байты: кэш (manifest.rs) обязан хранить
+    /// ровно те байты, чей sha1 в манифесте, — ресериализация ломала сверкý
+    /// и делала кэш мёртвым (P1 аудита D70: офлайн-запуск ванили).
+    pub async fn fetch_raw(
+        client: &crate::net::http::HttpClient,
+        url: &str,
+        expected_sha1: &str,
+    ) -> Result<(Vec<u8>, Self)> {
         // F16: офлайн — версия не в кэше, качать нельзя: честный отказ.
         if client.offline() {
             return Err(LauncherError::OfflineMode(url.to_string()));
@@ -220,7 +231,8 @@ impl VersionJson {
                 actual,
             });
         }
-        Ok(serde_json::from_slice(&bytes)?)
+        let v = serde_json::from_slice(&bytes)?;
+        Ok((bytes.to_vec(), v))
     }
 
     /// Разрешить цепочку inheritsFrom (макс. 5 уровней, защита от циклов — §6.4).
@@ -235,6 +247,14 @@ impl VersionJson {
             if visited.contains(&parent_id) {
                 return Err(LauncherError::InvalidInput(format!(
                     "цикл inheritsFrom: {parent_id}"
+                )));
+            }
+            // D70: родитель идёт в имя файла `<id>.json` — charset обязателен
+            // так же, как для id из meta (loaders::is_safe_version_id):
+            // "../x" в inheritsFrom иначе увёл бы чтение за пределы versions/.
+            if !crate::loaders::is_safe_version_id(&parent_id) {
+                return Err(LauncherError::InvalidInput(format!(
+                    "некорректный inheritsFrom: {parent_id}"
                 )));
             }
             if chain.len() >= MAX_INHERIT_DEPTH {

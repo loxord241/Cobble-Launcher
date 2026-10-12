@@ -82,11 +82,50 @@ pub async fn install_server_software(
     }
 }
 
+/// D71: держатель START_GUARD на всё время переустановки. Сам `MutexGuard`
+/// — `!Send`, его нельзя держать через `await` (async-фьючера tauri-команды
+/// обязана быть Send), поэтому гвард держит выделенный блокирующий поток:
+/// захватывает START_GUARD и ждёт сигнала конца; Drop держателя шлёт сигнал,
+/// поток выходит и отпускает гвард. Переустановка идёт минуты — параллельные
+/// server_start/server_delete (они берут тот же гвард) честно ждут её конца,
+/// файлы сервера никто не портит посреди сноса/установки.
+struct GuardHolder {
+    done: std::sync::mpsc::Sender<()>,
+}
+
+impl Drop for GuardHolder {
+    fn drop(&mut self) {
+        // Поток-держатель выходит и роняет гвард; если он уже умер (паника) —
+        // ошибки нет: гвард и так свободен.
+        let _ = self.done.send(());
+    }
+}
+
+/// Захватить START_GUARD в соседнем потоке и дождаться захвата. Паника при
+/// обрыве канала — поток-держатель умер до захвата, продолжать нельзя.
+fn hold_start_guard() -> GuardHolder {
+    let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _guard = crate::servers::run::start_guard();
+        let _ = acquired_tx.send(());
+        let _ = done_rx.recv();
+    });
+    acquired_rx
+        .recv()
+        .expect("поток-держатель START_GUARD умер до захвата");
+    GuardHolder { done: done_tx }
+}
+
 /// Переустановить серверное ПО: снести следы предыдущей установки и поставить
 /// заново (маркеры «уже установлен» игнорируются принудительно). Чинит
 /// побитые библиотеки лоадера и случай «установщик убит сразу после записи
 /// win_args.txt». Вход валидируется как в install_server_software; удаления —
 /// только внутри `dir` (плюс кэш установщика этой версии внутри cache_dir).
+///
+/// D71: на всё время переустановки захвачен START_GUARD (тот же, что у
+/// server_start/server_delete) и проверено is_running — параллельный старт
+/// или удаление не успеют трогать файлы под ногами инсталлятора.
 pub async fn reinstall_server_software(
     paths: &Paths,
     http: &HttpClient,
@@ -97,6 +136,19 @@ pub async fn reinstall_server_software(
     progress: &(dyn Fn(String) + Send + Sync),
 ) -> Result<()> {
     let kind = resolve_kind(mc_version, loader, loader_version)?;
+
+    // Сериализация со стартом/удалением: гвард держится до конца функции
+    // (Drop и при раннем выходе по ошибке). id сервера — имя каталога.
+    let _guard = hold_start_guard();
+    let id = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if crate::servers::run::is_running(paths, &id) {
+        return Err(LauncherError::InvalidInput(format!(
+            "сервер {id} запущен — переустановка невозможна, сначала остановите его"
+        )));
+    }
 
     // Снос следов предыдущей установки. Пути собираются из констант модуля и
     // уже проверенных id — но перед любым удалением страхуемся «всё внутри
@@ -1103,6 +1155,69 @@ mod tests {
                 "{mc}/{loader:?}: ожидался InvalidInput, получен {err:?}"
             );
         }
+    }
+
+    /// D71: переустановка запущенного сервера честно отказывается. Живой
+    /// .server.lock (свой PID теста) делает is_running истинным; до сети и
+    /// сноса файлов дело не доходит.
+    #[tokio::test]
+    async fn reinstall_rejects_running_server_under_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let id = "srv-reinst-run";
+        let sdir = crate::servers::servers_root(&paths).join(id);
+        std::fs::create_dir_all(crate::util::fs::long_path(&sdir)).unwrap();
+        let my = std::process::id();
+        // Тот же camelCase-формат .server.lock, что пишет server_start.
+        let start = crate::instances::process_start_time(my).unwrap();
+        let line = format!(r#"{{"pid":{my},"startTime":{start},"startedAtMs":0}}"#);
+        crate::util::fs::atomic_write(
+            &crate::util::fs::long_path(&sdir.join(".server.lock")),
+            line.as_bytes(),
+        )
+        .unwrap();
+        assert!(crate::servers::run::is_running(&paths, id));
+
+        let http = HttpClient::new(None).unwrap();
+        let err = reinstall_server_software(
+            &paths,
+            &http,
+            &sdir,
+            "1.20.1",
+            None,
+            None,
+            &|_: String| {},
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("запущен"), "{err}");
+        assert!(
+            sdir.join("server.jar").exists() || std::fs::read_dir(&sdir).unwrap().count() <= 1,
+            "сноса файлов до гварда не было"
+        );
+    }
+
+    /// D71: hold_start_guard держит START_GUARD: второй захват в соседнем
+    /// потоке блокируется до Drop держателя (сериализация со стартом/удалением).
+    #[test]
+    fn hold_start_guard_serializes_with_start_guard() {
+        let holder = hold_start_guard();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let taker = std::thread::spawn(move || {
+            let _g = crate::servers::run::start_guard();
+            tx.send(()).unwrap();
+        });
+        // Гвард ещё держится — второй захват не прошёл.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            rx.try_recv().is_err(),
+            "второй захват START_GUARD обязан ждать держателя"
+        );
+        drop(holder);
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("после Drop держателя гвард свободен");
+        taker.join().unwrap();
     }
 
     // ----------------------------------------------------------- прочее

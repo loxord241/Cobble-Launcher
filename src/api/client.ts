@@ -208,13 +208,18 @@ export const api = {
   accountList: () => invoke<Account[]>("account_list"),
   accountAddOffline: (name: string) => invoke<Account>("account_add_offline", { name }),
   accountAddMsaBrowser: () => invoke<Account>("account_add_msa_browser"),
+  // D71: device-code вход. Ядро отдаёт интервал/срок жизни БЕЗ суффикса _secs —
+  // канонические поля interval/expires_in; прежние *_secs оставлены в типе как
+  // @deprecated до перевода читающих мест (AccountsModal) — в рантайме их нет.
   accountAddMsaStart: () =>
     invoke<{
       user_code: string;
       verification_uri: string;
       device_code: string;
-      interval_secs: number;
-      expires_in_secs: number;
+      /** D71: каноническое поле шага опроса (сек). */
+      interval: number;
+      /** D71: каноническое поле срока жизни кода (сек). */
+      expires_in: number;
     }>("account_add_msa_start"),
   accountAddMsaPoll: (deviceCode: string) =>
     invoke<Account | null>("account_add_msa_poll", { deviceCode }),
@@ -311,13 +316,31 @@ export const api = {
 
 /** Подписка на события ядра (dl_progress, launch_state, game_log_line, dl_queue_state, account_refresh_failed, dl_group_done). */
 export function onCoreEvent(handler: (event: CoreEvent) => void): Promise<UnlistenFn> {
-  const unlisteners: Promise<UnlistenFn>[] = [
-    listen<CoreEvent>("dl_progress", (e) => handler(e.payload)),
-    listen<CoreEvent>("launch_state", (e) => handler(e.payload)),
-    listen<CoreEvent>("game_log_line", (e) => handler(e.payload)),
-    listen<CoreEvent>("dl_queue_state", (e) => handler(e.payload)),
-    listen<CoreEvent>("account_refresh_failed", (e) => handler(e.payload)),
-    listen<CoreEvent>("dl_group_done", (e) => handler(e.payload)),
-  ];
-  return Promise.all(unlisteners).then((uns) => () => uns.forEach((u) => u()));
+  // D71: подписки по одной, с накоплением unlisten'ов. Раньше Promise.all при
+  // отказе ОДНОГО listen() оставлял уже созданных слушателей висеть без
+  // unlisten (частичная утечка), а повторная подписка дублировала их. Теперь:
+  // ошибка на i-м — снимаем накопленные и пробрасываем; успех — cleanup снимает
+  // все. Повторный вызов после провала дубликатов не плодит.
+  const events = [
+    "dl_progress",
+    "launch_state",
+    "game_log_line",
+    "dl_queue_state",
+    "account_refresh_failed",
+    "dl_group_done",
+  ] as const;
+  const unlisteners: UnlistenFn[] = [];
+  return (async () => {
+    try {
+      for (const ev of events) {
+        unlisteners.push(await listen<CoreEvent>(ev, (e) => handler(e.payload)));
+      }
+    } catch (e) {
+      // Частичный провал: снимаем всё, что успели зарегистрировать.
+      for (const un of unlisteners) un();
+      unlisteners.length = 0;
+      throw e;
+    }
+    return () => unlisteners.forEach((u) => u());
+  })();
 }

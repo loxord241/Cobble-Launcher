@@ -175,9 +175,12 @@ pub async fn fetch_version_json_cached(
         }
         let _ = std::fs::remove_file(&long);
     }
-    let v = VersionJson::fetch(client, &entry.url, &entry.sha1).await?;
-    atomic_write(&path, &serde_json::to_vec_pretty(&v)?)?;
-    Ok(v)
+    let v = VersionJson::fetch_raw(client, &entry.url, &entry.sha1).await?;
+    // D70: пишем СЫРЫЕ байты (не ресериализацию) — sha1 в манифесте считан
+    // с оригинала, кэш валиден только байт-в-байт; иначе он никогда не
+    // попадает и офлайн-запуск ванили умирал на перекачке (P1 аудита D70).
+    atomic_write(&path, &v.0)?;
+    Ok(v.1)
 }
 
 /// Имя версии как имя кэш-файла: только [A-Za-z0-9._-] (id из удалённого

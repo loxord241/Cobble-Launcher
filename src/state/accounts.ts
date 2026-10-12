@@ -1,6 +1,6 @@
 // Стейт аккаунтов (M8): чип профиля в титлбаре + управление профилями.
 import { create } from "zustand";
-import { currentLanguage } from "../i18n";
+import { apiErrorText, currentLanguage } from "../i18n";
 import { api } from "../api/client";
 import type { Account, AccountKind } from "../api/types";
 
@@ -9,6 +9,11 @@ import { useSettings } from "./settings";
 interface AccountsState {
   list: Account[];
   loaded: boolean;
+  /**
+   * D71: текст последнего провала account_list (после автоповтора) — тост
+   * каркаса; null — ошибки нет. Гасится любой успешной загрузкой.
+   */
+  error: string | null;
   /**
    * F9: профили, у которых упал фоновый refresh токена (событие ядра
    * account_refresh_failed). Снимается перелогином/удалением профиля; UI-показ
@@ -31,28 +36,45 @@ interface AccountsState {
   clearDegraded: (id: string) => void;
 }
 
+// D71: авто-повтор account_list — не более одного за «эпизод» сбоя;
+// успешная загрузка сбрасывает флаг.
+let listRetryUsed = false;
+
 export const useAccounts = create<AccountsState>((set, get) => ({
   list: [],
   loaded: false,
   degradedIds: new Set<string>(),
+  error: null,
   load: async () => {
     // D62: сбой IPC не должен выглядеть как «профилей нет»: прежний
     // `.catch(() => [])` + безусловный `loaded: true` молча врали UI. При
     // ошибке — лог и выход, state (list/loaded) не трогаем.
+    // D71: НО вечное «не загружено» подвешивало ярлычный запуск (pendingShortcut
+    // в Shell ждёт loaded обоих сторов). Теперь: первая неудача — одна тихая
+    // повторная попытка через 3 с; вторая подряд — loaded=true с пустым списком
+    // и error-тостом (текст локализован apiErrorText).
     let list: Account[];
     try {
       list = await api.accountList();
     } catch (e) {
       console.error("[accounts] accountList недоступен:", e);
+      if (!listRetryUsed) {
+        listRetryUsed = true;
+        setTimeout(() => void get().load(), 3000);
+        return;
+      }
+      set({ list: [], loaded: true, error: apiErrorText(e) });
       return;
     }
+    listRetryUsed = false;
     set((s) => {
       // F9: метки удалённых профилей чистим, живых — держим: load() дёргается
       // многими действиями, и стирать свежую метку нельзя (refresh/логин/
       // удаление аккаунта все проходят через load — этого достаточно).
       const ids = new Set(list.map((a) => a.id));
       const degradedIds = new Set([...s.degradedIds].filter((id) => ids.has(id)));
-      return { list, loaded: true, degradedIds };
+      // D71: успех гасит и error предыдущего провала.
+      return { list, loaded: true, degradedIds, error: null };
     });
   },
   setActive: async (id) => {

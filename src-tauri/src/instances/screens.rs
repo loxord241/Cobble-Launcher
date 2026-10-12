@@ -17,6 +17,14 @@ use std::path::{Path, PathBuf};
 /// полный data-URL многометровой png раздувает IPC-пакет без пользы.
 const THUMB_MAX_BYTES: u64 = 300_000;
 
+/// D71: максимум файлов в списке — дальшие (самые старые) пропускаются с warn
+/// (защита от заваленного мусором каталога screenshots/).
+const MAX_SHOTS: usize = 500;
+
+/// D71: суммарный бюджет превью в data-URL на один список (≈64 МБ в IPC):
+/// кончился — остальные уходят в список без превью с warn.
+const MAX_THUMB_TOTAL: u64 = 64 * 1024 * 1024;
+
 /// Скриншот инстанса для UI (зеркало ShotInfo в src/api/types.ts).
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +88,10 @@ fn thumb_data_url(path: &Path, bytes: u64) -> Option<String> {
 /// Список скриншотов инстанса (F3): png-файлы `screenshots/`, свежие сверху.
 /// Нет каталога — пустой список (ещё не играли, не ошибка). Мусор (каталоги,
 /// не-png, имена, не прошедшие валидацию) молча пропускается.
+///
+/// D71: caps — в списке не больше MAX_SHOTS файлов (лишние, самые старые,
+/// пропускаются с warn) и суммарно не больше MAX_THUMB_TOTAL байт превью
+/// (бюджет тратится на самые свежие, остальные — без превью).
 pub fn list(paths: &Paths, instance_id: &str) -> Result<Vec<ShotInfo>> {
     valid_id(instance_id)?;
     let dir = screenshots_dir(paths, instance_id);
@@ -99,18 +111,42 @@ pub fn list(paths: &Paths, instance_id: &str) -> Result<Vec<ShotInfo>> {
         let Ok(meta) = e.metadata() else {
             continue;
         };
-        let bytes = meta.len();
-        let modified = modified_secs(&meta);
-        let thumb = thumb_data_url(&dir.join(&name), bytes);
         out.push(ShotInfo {
             name,
-            bytes,
-            modified,
-            thumb,
+            bytes: meta.len(),
+            modified: modified_secs(&meta),
+            // Превью заполняется вторым проходом, в пределах бюджета.
+            thumb: None,
         });
     }
     // Свежие сверху; при равном времени — по имени, порядок стабильный.
     out.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.name.cmp(&b.name)));
+    // Кап числа файлов: свежие остаются, дальшие (старые) — мимо списка.
+    if out.len() > MAX_SHOTS {
+        tracing::warn!(
+            "screenshots/: больше {MAX_SHOTS} скриншотов — старые {} шт. скрыты",
+            out.len() - MAX_SHOTS
+        );
+        out.truncate(MAX_SHOTS);
+    }
+    // Кап суммарных байтов превью: бюджет расходуется сверху (свежие).
+    let mut budget_left = MAX_THUMB_TOTAL;
+    let mut budget_exhausted = false;
+    for shot in &mut out {
+        if budget_exhausted || shot.bytes > budget_left {
+            if !budget_exhausted {
+                budget_exhausted = true;
+                tracing::warn!(
+                    "screenshots/: бюджет превью {MAX_THUMB_TOTAL} байт исчерпан — дальшие без превью"
+                );
+            }
+            continue;
+        }
+        if let Some(thumb) = thumb_data_url(&dir.join(&shot.name), shot.bytes) {
+            budget_left -= shot.bytes;
+            shot.thumb = Some(thumb);
+        }
+    }
     Ok(out)
 }
 
@@ -246,6 +282,52 @@ mod tests {
         assert!(edge.thumb.is_some(), "граница 300_000 включительно");
         assert!(big.thumb.is_none(), "больше порога — без превью");
         assert_eq!(big.bytes, 300_001, "сам файл в списке остаётся");
+    }
+
+    /// D71: кап числа файлов — ровно MAX_SHOTS в списке, самые старые мимо.
+    #[test]
+    fn list_caps_at_max_shots() {
+        let (_d, paths, inst) = setup();
+        for i in 0..505 {
+            let p = make_shot(&paths, &inst.id, &format!("f{i:04}.png"), 1);
+            set_mtime(&p, 1000 + i); // f0504 свежий всех
+        }
+        let shots = list(&paths, &inst.id).unwrap();
+        assert_eq!(shots.len(), MAX_SHOTS, "ровно лимит");
+        // Свежие остаются: f0504...f0005; пять самых старых скрыты.
+        assert_eq!(shots[0].name, "f0504.png");
+        let names: std::collections::HashSet<&str> =
+            shots.iter().map(|s| s.name.as_str()).collect();
+        for hidden in ["f0000.png", "f0001.png", "f0002.png", "f0003.png", "f0004.png"] {
+            assert!(!names.contains(hidden), "{hidden} должна быть скрыта");
+        }
+        assert!(names.contains("f0005.png"), "f0005 на границе остаётся");
+    }
+
+    /// D71: кап суммарных байтов превью — бюджет расходуется на самые свежие,
+    /// дальшие уходят в список без превью (файлы при этом не теряются).
+    #[test]
+    fn list_caps_total_thumb_bytes() {
+        let (_d, paths, inst) = setup();
+        // 230 файлов по 300 000 байт: бюджет 64 МБ хватает на 223 превью.
+        let count: usize = 230;
+        for i in 0..count {
+            let p = make_shot(&paths, &inst.id, &format!("t{i:04}.png"), 300_000);
+            set_mtime(&p, 2000 + i as i64); // t0229 свежий всех
+        }
+        let shots = list(&paths, &inst.id).unwrap();
+        assert_eq!(shots.len(), count, "список полный — кап только на превью");
+        let expected = (MAX_THUMB_TOTAL / 300_000) as usize;
+        let with_thumb = shots.iter().filter(|s| s.thumb.is_some()).count();
+        assert_eq!(
+            with_thumb, expected,
+            "превью получили ровно столько свежих, на сколько хватило бюджета"
+        );
+        // Бюджет расходовался сверху: свежие с превью, хвост без.
+        assert!(shots[0].thumb.is_some(), "самый свежий с превью");
+        assert!(shots[expected - 1].thumb.is_some(), "последний в бюджете");
+        assert!(shots[expected].thumb.is_none(), "сразу за бюджетом — None");
+        assert!(shots[count - 1].thumb.is_none());
     }
 
     #[test]

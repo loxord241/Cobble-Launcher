@@ -11,6 +11,13 @@ const FOCUSABLE =
 /** Длительность .anim-closing в theme/tokens.css. */
 const CLOSE_MS = 140;
 
+// D71: стек смонтированных модалок. Слушатели keydown висят на document у
+// КАЖДОЙ модалки в capture-фазе, а stopPropagation не останавливает соузловые
+// слушатели того же узла — поэтому при двух открытых модалках один Escape
+// закрывал обе сразу, а Tab-ловушки сражались за фокус (ping-pong). Нажатие
+// обрабатывает только ВЕРХНЯЯ модалка (последняя в стеке), нижние игнорируют.
+const modalStack: symbol[] = [];
+
 export function useModalA11y(
   onClose: () => void,
   opts?: { /** CSS-селектор элемента, получающего фокус первым (например поле ввода). */
@@ -55,24 +62,24 @@ export function useModalA11y(
   }, []);
 
   useEffect(() => {
+    // D71: регистрация в стеке — до возможного раннего выхода, а снятие ТОКЕНА
+    // (по indexOf, а не shift/pop) — всегда в cleanup: StrictMode double-mount
+    // и размонтирование средней модалки не ломают порядок остальных.
+    const stackToken = Symbol("modal");
+    modalStack.push(stackToken);
+
     const container = containerRef.current;
-    if (!container) return;
-    restoreRef.current = document.activeElement as HTMLElement | null;
-
-    // Начальный фокус: первый доступный элемент или сам контейнер.
-    const preferred = opts?.initialFocus
-      ? container.querySelector<HTMLElement>(opts.initialFocus)
-      : null;
-    const first = container.querySelector<HTMLElement>(FOCUSABLE);
-    (preferred ?? first ?? container).focus();
-
     const onKey = (e: KeyboardEvent) => {
+      // D71: не верхняя модалка — молча пропускаем: Escape закрывает только
+      // верхнюю, Tab-ловушка работает только у верхней.
+      if (modalStack[modalStack.length - 1] !== stackToken) return;
       if (e.key === "Escape") {
         e.stopPropagation();
         requestClose();
         return;
       }
       if (e.key !== "Tab") return;
+      if (!container) return;
       const items = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
       if (items.length === 0) return;
       const firstEl = items[0];
@@ -87,8 +94,21 @@ export function useModalA11y(
       }
     };
     document.addEventListener("keydown", onKey, true);
+
+    if (container) {
+      restoreRef.current = document.activeElement as HTMLElement | null;
+      // Начальный фокус: первый доступный элемент или сам контейнер.
+      const preferred = opts?.initialFocus
+        ? container.querySelector<HTMLElement>(opts.initialFocus)
+        : null;
+      const first = container.querySelector<HTMLElement>(FOCUSABLE);
+      (preferred ?? first ?? container).focus();
+    }
+
     return () => {
       document.removeEventListener("keydown", onKey, true);
+      const tokenIdx = modalStack.indexOf(stackToken);
+      if (tokenIdx >= 0) modalStack.splice(tokenIdx, 1);
       // Модалку размонтировали до срабатывания таймаута закрытия — не зовём
       // onClose вслепую после того, как ушёл DOM диалога.
       if (closeTimerRef.current !== null) {

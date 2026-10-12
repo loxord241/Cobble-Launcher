@@ -472,7 +472,7 @@
   "crash.diag.missing_fabric_api.advice": "Встановіть Fabric API: інстанс → вкладка «Моди» → пошук «fabric» → Встановити.",
   "crash.diag.antivirus_natives.title": "Антивірус видалив нативи",
   "crash.diag.antivirus_natives.advice": "Додайте каталог даних лаунчера до винятків Windows Defender (Безпека Windows → Захист від вірусів → Винятки) і запустіть гру знову — файли завантажаться.",
-  "accounts.launchNoAccountNotice": "Немає жодного акаунта — гра запуститься з офлайн-ім'ям Player",
+  "accounts.launchNoAccountNotice": "Немає жодного акаунта — гра запуститься з офлайн-імʼям Player",
   "shell.drop.busy": "Дочекайтеся завершення попереднього встановлення .mrpack",
   "shell.dl.active": "Активні завантаження: {count}",
   "logs.tailNote": "Показано хвіст: останні {shown} із {total} рядків",

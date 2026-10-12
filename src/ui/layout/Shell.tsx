@@ -184,6 +184,14 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
     [],
   );
 
+  // D71: провал account_list (после автоповтора в сторе) — стор честно ставит
+  // loaded с пустым списком (чтобы pendingShortcut не зависал), а ошибку
+  // показываем общим notice-каналом каркаса. showNotice стабильна.
+  const accountsError = useAccounts((s) => s.error);
+  useEffect(() => {
+    if (accountsError) showNotice("error", accountsError);
+  }, [accountsError, showNotice]);
+
   useEffect(() => {
     void loadSettings().then(() => void load());
     void subscribeEvents();
@@ -367,16 +375,24 @@ export default function Shell({ onLogout }: { onLogout: () => void }) {
 
   // F12: быстрый офлайн-профиль прямо из меню аватара; успех — активируем и
   // закрываем меню, ошибка — баннером (error) через apiErrorText.
+  // D71: in-flight гард (как onboarding InFlight): Enter во время запроса
+  // плодил дубликаты офлайн-профиля — каждый вызов уходил в addOffline.
+  const quickNickBusyRef = useRef(false);
   const addQuickNick = () => {
+    if (quickNickBusyRef.current) return;
     const nick = quickNick.trim();
     if (!NICK_RE.test(nick)) return;
+    quickNickBusyRef.current = true;
     void addOffline(nick)
       .then((acc) => setActive(acc.id))
       .then(() => {
         setQuickNick("");
         setAccountOpen(false);
       })
-      .catch((e) => showNotice("error", apiErrorText(e)));
+      .catch((e) => showNotice("error", apiErrorText(e)))
+      .finally(() => {
+        quickNickBusyRef.current = false;
+      });
   };
 
   // D65: смена языка из статус-бара — тем же механизмом, что и селект в

@@ -110,7 +110,8 @@ function InstanceCard({
             <div
               aria-hidden
               className="absolute inset-0 scale-125 bg-cover bg-center blur-lg brightness-[.35]"
-              style={{ backgroundImage: `url(${inst.icon})` }}
+              // D71: URL в кавычках — спецсимволы адреса не ломают CSS-разбор.
+              style={{ backgroundImage: `url("${inst.icon}")` }}
             />
             <img
               src={inst.icon}

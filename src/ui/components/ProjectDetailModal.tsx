@@ -306,7 +306,9 @@ export default function ProjectDetailModal({
               <div
                 aria-hidden
                 className="absolute inset-0 scale-125 bg-cover bg-center blur-lg brightness-[.5]"
-                style={{ backgroundImage: `url(${headerArt})` }}
+                // D71: URL в кавычках — скобки/специальные символы в адресе
+                // не ломают разбор background-image.
+                style={{ backgroundImage: `url("${headerArt}")` }}
               />
               <img
                 src={headerArt}

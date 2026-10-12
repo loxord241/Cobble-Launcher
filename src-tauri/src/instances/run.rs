@@ -154,6 +154,29 @@ fn lossy_line(buf: &[u8]) -> String {
     line
 }
 
+/// D71: построчное чтение с капом длины строки — `BufRead::split(b'\n')`
+/// не ограничивал размер, мод с гигабайтной строкой без перевода раздувал
+/// память ядра и уходил одним буфером в broadcast (до 8192 копий при lag).
+/// Переполненная строка обрывается на 1 МБ, хвост до ближайшего `\n`
+/// выбрасывается. `Ok(false)` — поток кончился.
+fn next_bounded_line<R: std::io::BufRead>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<bool> {
+    const MAX_LOG_LINE: usize = 1 << 20;
+    buf.clear();
+    let mut taken = std::io::Read::take(&mut *reader, MAX_LOG_LINE as u64 + 1);
+    let n = std::io::BufRead::read_until(&mut taken, b'\n', buf)?;
+    if n == 0 {
+        return Ok(false);
+    }
+    if buf.len() > MAX_LOG_LINE {
+        let mut sink = Vec::new();
+        let _ = reader.read_until(b'\n', &mut sink);
+    }
+    Ok(true)
+}
+
 /// Подготовить инстанс к запуску: файлы, Java, команда (без спавна).
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare(
@@ -764,10 +787,16 @@ pub fn launch_blocking(
     // файл с голым PID лаунчера больше не висит до следующего запуска.
     let pid = child.id();
     let start_time = process_start_time(pid).unwrap_or(0);
-    let _ = crate::util::fs::atomic_write(
+    // D71: сбой записи .lock после спавна не глотается молча: без файла
+    // instance_kill/process_status не увидят игру, а диагностика упрётся в
+    // пустоту. Падать поздно (процесс уже запущен) — честное предупреждение
+    // в лог лаунчера.
+    if let Err(e) = crate::util::fs::atomic_write(
         &inst_dir.join(".lock"),
         LockFile { pid, start_time }.to_line().as_bytes(),
-    );
+    ) {
+        tracing::warn!("инстанс {}: .lock не записан (PID {pid}): {e}", inst.id);
+    }
     emit(bus, &inst.id, LaunchPhase::Running);
 
     let mut found = true;
@@ -787,7 +816,6 @@ fn supervise_to_menu(
     instance_id: &str,
     timeout_secs: u64,
 ) -> Result<bool> {
-    use std::io::BufRead;
     let logs_dir = game_dir.join("logs");
     std::fs::create_dir_all(crate::util::fs::long_path(&logs_dir))?;
     let log_path = crate::util::fs::long_path(&logs_dir.join("latest.log"));
@@ -810,10 +838,11 @@ fn supervise_to_menu(
         std::thread::spawn(move || {
             // D64: `lines().map_while(Result::ok)` обрывал поток на первом
             // не-UTF-8 байте — нить умирала молча, хвост лога терялся.
-            // Построчное чтение байтов с lossy-декодом (см. lossy_line).
-            let reader = std::io::BufReader::new(stream);
-            for buf in reader.split(b'\n') {
-                let Ok(buf) = buf else { break };
+            // Построчное чтение байтов с lossy-декодом (см. lossy_line);
+            // D71: кап длины строки — см. next_bounded_line.
+            let mut reader = std::io::BufReader::new(stream);
+            let mut buf = Vec::with_capacity(4096);
+            while next_bounded_line(&mut reader, &mut buf).unwrap_or(false) {
                 if tx.send(lossy_line(&buf)).is_err() {
                     break;
                 }
@@ -1029,10 +1058,14 @@ pub fn launch_detached(
     // (глобальный объект не держим: устаревает). Процесс исчез до снятия
     // времени → startTime:0 — такой lock протухает мгновенно, это правильно.
     let start_time = process_start_time(pid).unwrap_or(0);
-    let _ = crate::util::fs::atomic_write(
+    // D71: сбой записи .lock после спавна не глотается молча (см. launch_blocking):
+    // предупреждение в лог лаунчера — игра уже запущена, ронять запуск поздно.
+    if let Err(e) = crate::util::fs::atomic_write(
         &inst_dir.join(".lock"),
         LockFile { pid, start_time }.to_line().as_bytes(),
-    );
+    ) {
+        tracing::warn!("инстанс {instance_id}: .lock не записан (PID {pid}): {e}");
+    }
     tracing::info!("инстанс {instance_id}: игра запущена (PID {pid})");
     bus.emit(LauncherEvent::LaunchState {
         instance_id: instance_id.to_string(),
@@ -1115,10 +1148,11 @@ fn supervise_detached(
         std::thread::spawn(move || {
             let Some(stream) = stream else { return };
             // D64: lossy-чтение вместо lines().map_while — не-UTF-8 байт больше
-            // не обрывает поток молча (подробно в supervise_to_menu).
-            let reader = std::io::BufReader::new(stream);
-            for buf in std::io::BufRead::split(reader, b'\n') {
-                let Ok(buf) = buf else { break };
+            // не обрывает поток молча (подробно в supervise_to_menu);
+            // D71: кап длины строки — см. next_bounded_line.
+            let mut reader = std::io::BufReader::new(stream);
+            let mut buf = Vec::with_capacity(4096);
+            while next_bounded_line(&mut reader, &mut buf).unwrap_or(false) {
                 if tx.send((lossy_line(&buf), kind)).is_err() {
                     break;
                 }
@@ -1513,6 +1547,7 @@ mod tests {
                 sha1: None,
                 url: None,
                 enabled,
+                from_pack: false,
             }
         };
         let manifest = vec![
@@ -1558,6 +1593,7 @@ mod tests {
             sha1: None,
             url: None,
             enabled: true,
+            from_pack: false,
         };
         crate::instances::save_content_manifest(&paths, &inst.id, &[shader]).unwrap();
 
@@ -1588,6 +1624,7 @@ mod tests {
             sha1: None,
             url: None,
             enabled: true,
+            from_pack: false,
         };
         crate::instances::save_content_manifest(&paths, &inst.id, &[shader]).unwrap();
 

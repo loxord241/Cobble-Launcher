@@ -185,6 +185,40 @@ let lastAnyDlProgressAt = 0;
  */
 const stoppingIds = new Set<string>();
 
+/**
+ * D71: тайм-ауты меток «Стоп»: потерянный exited (ядро перезапустилось,
+ * IPC-событие не дошло) не должен держать метку вечно и подавлять будущую
+ * ЧЕСТНУЮ crash-модалку этого инстанса. Снимается теми же событиями, что и
+ * метка (exited/launch), либо по тайм-ауту 30 с.
+ */
+const STOPPING_TTL_MS = 30_000;
+const stoppingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Поставить метку «Стоп» с тайм-аутом автоочистки. */
+function markStopping(id: string) {
+  stoppingIds.add(id);
+  const prev = stoppingTimers.get(id);
+  if (prev !== undefined) clearTimeout(prev);
+  stoppingTimers.set(
+    id,
+    setTimeout(() => {
+      stoppingTimers.delete(id);
+      stoppingIds.delete(id);
+    }, STOPPING_TTL_MS),
+  );
+}
+
+/** Снять метку и её тайм-аут; возвращает, была ли метка стоит (для manualStop). */
+function clearStopping(id: string): boolean {
+  const had = stoppingIds.delete(id);
+  const timer = stoppingTimers.get(id);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    stoppingTimers.delete(id);
+  }
+  return had;
+}
+
 /** ENV-10 + P1: тик опроса — снимает зависшие статусы running и заглохшие
  *  preparing/downloading/launching. */
 async function pollRunningProcesses() {
@@ -334,7 +368,8 @@ export const useInstances = create<InstancesState>((set, get) => ({
             // exit_code=1), crash-анализ и модалку не запускаем. Логи и
             // перечитку списка оставляем: хвост лога и статистика полезны
             // и после остановки.
-            const manualStop = stoppingIds.delete(instanceId);
+            // D71: clearStopping гасит и TTL-таймер метки.
+            const manualStop = clearStopping(instanceId);
             // Дозаписать буферизованные строки: crash-анализ читает logs сразу.
             flushLogs();
             // Обновить статистику launchCount/lastPlayed из ядра
@@ -397,15 +432,20 @@ export const useInstances = create<InstancesState>((set, get) => ({
           lastAnyDlProgressAt = Date.now();
           // D18/D60: если ядро прислало instanceId — привязываем прогресс строго
           // к этому инстансу. Иначе (старое ядро) прежняя эвристика-фолбэк:
-          // владелец по группе `instance:{id}`. Группы `mrpack:*` дают id
-          // проекта модпака, а не инстанса — статус не найдётся и апдейт
-          // отсечётся ниже, как и раньше.
+          // владелец по группе `instance:{id}`.
+          // D71: группы `mrpack:*` дают в instanceId имя пака/projectId, а не
+          // инстанс — виртуальный статус с чужим ключом был «фантомом»
+          // (перерисовки до 10/с, чужой идентификатор в status). Прогресс
+          // установки модпака остаётся в статус-баре очереди (dl_progress/
+          // dl_queue_state → индикатор «Загрузки» в Shell) — ничего не теряем,
+          // поэтому instanceId таких групп игнорируем целиком.
           const dl = event;
-          const id =
-            dl.instanceId ??
-            (dl.group.startsWith("instance:")
-              ? dl.group.slice("instance:".length)
-              : undefined);
+          const id = dl.group.startsWith("mrpack:")
+            ? undefined
+            : dl.instanceId ??
+              (dl.group.startsWith("instance:")
+                ? dl.group.slice("instance:".length)
+                : undefined);
           if (!id) return;
           // P1-watchdog: любой прогресс помечает загрузку живой — честная
           // длинная установка модпака не снимается по таймауту.
@@ -489,10 +529,8 @@ export const useInstances = create<InstancesState>((set, get) => ({
       console.error("[instances] подписка на события ядра не удалась:", e);
       return;
     }
-    // TODO(api/client.ts): onCoreEvent регистрирует слушателей через
-    // Promise.all; при падении одного из listen() уже зарегистрированные
-    // остаются висеть без unlisten (частичная утечка до закрытия окна). Чинится
-    // только накоплением unlisten'ов в client.ts.
+    // (D71: частичный провал listen() больше не оставляет висящих слушателей —
+    // onCoreEvent в client.ts снимает накопленные unlisten'ы при ошибке.)
 
     if (!isSubscribed) {
       // Отписаться успели, пока шла подписка — снимаем свежий слушатель.
@@ -506,7 +544,8 @@ export const useInstances = create<InstancesState>((set, get) => ({
   launch: async (id, player) => {
     // D64: новый запуск отменяет метку ручного «Стоп» — поздний exited старого
     // процесса отсечётся по launchStartedAt, метка больше не нужна.
-    stoppingIds.delete(id);
+    // D71: вместе с меткой гасится TTL-таймер.
+    clearStopping(id);
     // D64: запуск без единого профиля молча идёт под «Player» — предупреждаем
     // через готовый канал ошибки стора (баннер страницы), не блокируя запуск.
     const accounts = useAccounts.getState();
@@ -535,7 +574,8 @@ export const useInstances = create<InstancesState>((set, get) => ({
   // безопасный режим: сбрасывает JVM-флаги инстанса и выключает шейдеры.
   launchSafe: async (id, player) => {
     // D64: та же гигиена метки «Стоп» и предупреждения о профиле, что в launch.
-    stoppingIds.delete(id);
+    // D71: вместе с меткой гасится TTL-таймер.
+    clearStopping(id);
     const accounts = useAccounts.getState();
     const noAccount = accounts.loaded && accounts.list.length === 0;
     // Очистить логи перед новым запуском (в т.ч. ещё не сброшенный буфер)
@@ -596,11 +636,12 @@ export const useInstances = create<InstancesState>((set, get) => ({
     // D64: метка ДО kill — exited от taskkill /F (exit_code=1) не должен
     // поднимать crash-модалку. При неудаче kill метку снимаем: будущий
     // настоящий краш этого инстанса должен быть показан.
-    stoppingIds.add(id);
+    // D71: метка с TTL-таймером — потерянный exited не держит её вечно.
+    markStopping(id);
     try {
       await api.instanceKill(id);
     } catch (e) {
-      stoppingIds.delete(id);
+      clearStopping(id);
       throw e;
     }
     set((s) => {

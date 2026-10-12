@@ -71,7 +71,7 @@ impl AppState {
     /// Движок для группы с регистрацией в реестре. Работа с группой
     /// завершена → `engine_done(group)`, чтобы не держать старый HttpClient.
     pub async fn engine_for(&self, group: &str) -> Arc<DownloadEngine> {
-        if let Some(e) = self.engines.lock().unwrap().get(group) {
+        if let Some(e) = self.engines.lock().unwrap_or_else(|e| e.into_inner()).get(group) {
             return e.clone();
         }
         // F17: лимит скорости живёт на HttpClient (общем) — применим текущие
@@ -84,13 +84,13 @@ impl AppState {
         // тогда берём его, а наш дубль выбрасываем. Раньше check-then-insert
         // оставлял в реестре последний вставленный, а вызыватели одной группы
         // держали разные движки: engine_done первого не снимал загрузки второго.
-        let mut engines = self.engines.lock().unwrap();
+        let mut engines = self.engines.lock().unwrap_or_else(|e| e.into_inner());
         engines.entry(group.to_string()).or_insert_with(|| e).clone()
     }
 
     /// Отменить активную загрузку группы (если движок ещё жив).
     pub fn cancel_engine_group(&self, group: &str) {
-        if let Some(e) = self.engines.lock().unwrap().remove(group) {
+        if let Some(e) = self.engines.lock().unwrap_or_else(|e| e.into_inner()).remove(group) {
             e.cancel_group(group);
         }
     }
@@ -107,12 +107,12 @@ impl AppState {
 
     /// Снять группу с регистрации (работа завершена — успех или ошибка).
     pub fn engine_done(&self, group: &str) {
-        self.engines.lock().unwrap().remove(group);
+        self.engines.lock().unwrap_or_else(|e| e.into_inner()).remove(group);
     }
 
     /// Живой движок группы уже есть? (конкурентная операция идёт — D69)
     pub fn has_engine(&self, group: &str) -> bool {
-        self.engines.lock().unwrap().contains_key(group)
+        self.engines.lock().unwrap_or_else(|e| e.into_inner()).contains_key(group)
     }
 }
 
@@ -155,6 +155,8 @@ pub async fn instance_rename(
     id: String,
     name: String,
 ) -> Result<Instance> {
+    // D71: переименование не должно идти поверх запуска/фоновых операций.
+    refuse_if_busy(&state, &id, "переименование").await?;
     // Дисковые операции инстанса — в блокирующий пул (A27/D14).
     let paths = state.paths.clone();
     tauri::async_runtime::spawn_blocking(move || instances::rename(&paths, &id, &name))
@@ -178,6 +180,7 @@ pub async fn instance_group_set(
 
 #[tauri::command]
 pub async fn instance_duplicate(state: State<'_, AppState>, id: String) -> Result<Instance> {
+    refuse_if_busy(&state, &id, "копирование").await?;
     let paths = state.paths.clone();
     tauri::async_runtime::spawn_blocking(move || instances::duplicate(&paths, &id))
         .await
@@ -186,11 +189,32 @@ pub async fn instance_duplicate(state: State<'_, AppState>, id: String) -> Resul
 
 #[tauri::command]
 pub async fn instance_delete(state: State<'_, AppState>, id: String, wipe: bool) -> Result<OkMsg> {
+    refuse_if_busy(&state, &id, "удаление").await?;
     let paths = state.paths.clone();
     tauri::async_runtime::spawn_blocking(move || instances::delete(&paths, &id, wipe))
         .await
         .map_err(join_err)??;
     Ok(OkMsg { ok: true })
+}
+
+/// D71: rename/delete/duplicate не должны идти поверх запуска (между
+/// «Играть» и записью .lock) или фоновых операций инстанса — иначе стирают
+/// каталог под ногами prepare-цепочки и оставляют фантом без instance.json.
+async fn refuse_if_busy(state: &State<'_, AppState>, id: &str, op: &str) -> Result<()> {
+    instances::valid_id(id)?;
+    if state.launching.lock().await.contains(id) {
+        return Err(LauncherError::InvalidInput(format!(
+            "{op}: инстанс сейчас запускается"
+        )));
+    }
+    for suffix in [":repair", ":packupdate", ":content", ":update", ":optimize"] {
+        if state.has_engine(&format!("instance:{id}{suffix}")) {
+            return Err(LauncherError::InvalidInput(format!(
+                "{op}: по инстансу идёт фоновая операция"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -246,7 +270,14 @@ fn merge_user_settings(disk: &mut Instance, payload: &Instance) {
     disk.java_path = payload.java_path.clone();
     disk.jvm_flags = payload.jvm_flags.clone();
     disk.game_args_extra = payload.game_args_extra.clone();
-    disk.notes = payload.notes.clone();
+    // D71: заметка едет в каждый instance_list/settings_get — без капа
+    // мегабайтная IPC-строка раздувает перечитываемый файл.
+    const MAX_NOTES: usize = 20_000;
+    disk.notes = if payload.notes.chars().count() > MAX_NOTES {
+        payload.notes.chars().take(MAX_NOTES).collect()
+    } else {
+        payload.notes.clone()
+    };
     // F1/F11: быстрый запуск и профиль запуска — тоже пользовательские поля.
     disk.quick_play_world = payload.quick_play_world.clone();
     disk.quick_play_server = payload.quick_play_server.clone();
@@ -261,9 +292,26 @@ pub async fn instance_launch(
     id: String,
     player: String,
 ) -> Result<OkMsg> {
+    // A23: валидация id до любых касаний диска.
+    instances::valid_id(&id)?;
     let inst_dir = instances::instance_dir(&state.paths, &id);
     if instances::running_pid(&inst_dir).is_some() {
         return Err(LauncherError::InvalidInput("инстанс уже запущен".into()));
+    }
+    // D71: запуск поверх идущей операции (ремонт/контент/обновление/
+    // оптимизация) мутировал бы файлы под работающей цепочкой — отказ.
+    for (suffix, what) in [
+        (":repair", "идёт ремонт файлов"),
+        (":packupdate", "идёт обновление модпака"),
+        (":content", "идёт установка контента"),
+        (":update", "идёт обновление модов"),
+        (":optimize", "идёт оптимизация"),
+    ] {
+        if state.has_engine(&format!("instance:{id}{suffix}")) {
+            return Err(LauncherError::InvalidInput(format!(
+                "нельзя запустить: {what}"
+            )));
+        }
     }
     {
         let mut launching = state.launching.lock().await;
@@ -435,6 +483,8 @@ pub async fn instance_launch(
 /// смены версии, чтобы тестироваться без State. `op` — что сейчас пойдёт
 /// («сменой версии»), чтобы в тексте ошибки было понятно, что остановить.
 fn ensure_not_running(paths: &crate::paths::Paths, id: &str, op: &str) -> Result<()> {
+    // A23/D71: валидация id до чтения .lock с диска.
+    instances::valid_id(id)?;
     if instances::running_pid(&instances::instance_dir(paths, id)).is_some() {
         return Err(LauncherError::InvalidInput(format!(
             "инстанс запущен — останови игру перед {op}"
@@ -1017,14 +1067,21 @@ pub async fn instance_optimize(
     state: State<'_, AppState>,
     instance_id: String,
 ) -> Result<Vec<String>> {
+    // A23: валидация id до чтения .lock с диска.
+    instances::valid_id(&instance_id)?;
     // B9: оптимизация трогает файлы (память, Java, опции) занятой игры —
     // на Windows это Sharing Violation; проверяем до загрузок.
     if instances::running_pid(&instances::instance_dir(&state.paths, &instance_id)).is_some() {
         return Err(LauncherError::InstanceRunning(instance_id.clone()));
     }
+    // D71: параллельная оптимизация того же инстанса = две цепочки в одном
+    // файле options.txt.
+    let group = format!("instance:{instance_id}:optimize");
+    if state.has_engine(&group) {
+        return Err(LauncherError::InvalidInput("оптимизация уже идёт".into()));
+    }
     let inst = instances::load(&state.paths, &instance_id)?;
     // Суффикс операции — см. content_install: свой ключ реестра движков.
-    let group = format!("instance:{instance_id}:optimize");
     let engine = state.engine_for(&group).await;
     let http = state.http().await;
     let out = crate::optimize::optimize(&state.paths, http, engine, &inst).await;
@@ -2428,29 +2485,38 @@ pub async fn update_check(state: State<'_, AppState>) -> Result<UpdateInfo> {
 
 /// Избранные проекты каталога (локальный список id Modrinth, порядок добавления).
 #[tauri::command]
-pub fn favorites_list(state: State<'_, AppState>) -> Vec<String> {
-    crate::favorites::list_in(state.paths.root())
+pub async fn favorites_list(state: State<'_, AppState>) -> Result<Vec<String>> {
+    // D71: чтение favorites.json — дисковый IO, не на главном потоке.
+    let root = state.paths.root().to_path_buf();
+    Ok(tauri::async_runtime::spawn_blocking(move || crate::favorites::list_in(&root))
+        .await
+        .unwrap_or_default())
 }
 
 /// Добавить/убрать проект из избранного. Возвращает новое состояние (true = в избранном).
 #[tauri::command]
-pub fn favorites_toggle(state: State<'_, AppState>, project_id: String) -> Result<bool> {
-    crate::favorites::toggle_in(state.paths.root(), &project_id)
+pub async fn favorites_toggle(state: State<'_, AppState>, project_id: String) -> Result<bool> {
+    // D71: RMW favorites.json — не на главном потоке.
+    let root = state.paths.root().to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || crate::favorites::toggle_in(&root, &project_id))
+        .await
+        .map_err(join_err)?
 }
 
 /// Наигранные часы по дням (последние `days` дней, включая нулевые).
 #[tauri::command]
-pub fn playtime_stats(
+pub async fn playtime_stats(
     state: State<'_, AppState>,
     instance_id: String,
     days: u32,
-) -> Vec<crate::playtime::PlaytimeDay> {
-    crate::playtime::stats_in_dir(
-        state.paths.root(),
-        &instance_id,
-        days,
-        &crate::playtime::local_today(),
-    )
+) -> Result<Vec<crate::playtime::PlaytimeDay>> {
+    // D71: чтение playtime.json — дисковый IO, не на главном потоке.
+    let root = state.paths.root().to_path_buf();
+    Ok(tauri::async_runtime::spawn_blocking(move || {
+        crate::playtime::stats_in_dir(&root, &instance_id, days, &crate::playtime::local_today())
+    })
+    .await
+    .unwrap_or_default())
 }
 
 #[tauri::command]
@@ -2511,17 +2577,30 @@ pub async fn server_create(
 
 /// Список серверов (всех или одного инстанса).
 #[tauri::command]
-pub fn server_list(
+pub async fn server_list(
     state: State<'_, AppState>,
     instance_id: Option<String>,
-) -> Vec<crate::servers::ServerInfo> {
-    crate::servers::server_list(&state.paths, instance_id.as_deref())
+) -> Result<Vec<crate::servers::ServerInfo>> {
+    // D71: чтение реестра серверов — не на главном потоке.
+    let paths = state.paths.clone();
+    Ok(tauri::async_runtime::spawn_blocking(move || {
+        crate::servers::server_list(&paths, instance_id.as_deref())
+    })
+    .await
+    .unwrap_or_default())
 }
 
 /// Статус одного сервера (running/pid/eula — на лету).
 #[tauri::command]
-pub fn server_status(state: State<'_, AppState>, id: String) -> Result<crate::servers::ServerInfo> {
-    crate::servers::server_status(&state.paths, &id)
+pub async fn server_status(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<crate::servers::ServerInfo> {
+    // D71: статус читает реестр и .lock с диска — не на главном потоке.
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::servers::server_status(&paths, &id))
+        .await
+        .map_err(join_err)?
 }
 
 /// Удалить сервер (каталог + запись реестра; только остановленный).
@@ -2535,8 +2614,12 @@ pub async fn server_delete(state: State<'_, AppState>, id: String) -> Result<()>
 
 /// Записать принятие EULA (только явное действие пользователя).
 #[tauri::command]
-pub fn server_accept_eula(state: State<'_, AppState>, id: String) -> Result<()> {
-    crate::servers::server_accept_eula(&state.paths, &id)
+pub async fn server_accept_eula(state: State<'_, AppState>, id: String) -> Result<()> {
+    // D71: запись eula.txt — не на главном потоке.
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::servers::server_accept_eula(&paths, &id))
+        .await
+        .map_err(join_err)?
 }
 
 /// Запустить сервер; возвращает pid.

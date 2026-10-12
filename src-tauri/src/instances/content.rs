@@ -228,6 +228,9 @@ pub fn install_local(paths: &Paths, id: &str, path: &str) -> Result<ContentEntry
         sha1,
         url: None,
         enabled: true,
+        // D71: drag & drop — установка САМИМ пользователем: обновление пака
+        // не вправе удалить такой файл как «выбывший из пака».
+        from_pack: false,
     };
     manifest.push(entry.clone());
     save_content_manifest(paths, id, &manifest)?;
@@ -282,10 +285,15 @@ pub fn copy_entry(paths: &Paths, from_id: &str, to_id: &str, file: &str) -> Resu
     Ok(entry)
 }
 
-/// Открыть НОВЫЙ файл архива без усечения существующего: два бэкапа в одну
-/// секунду коллидируют по имени, а `File::create` усёк бы ГОТОВЫЙ архив.
-/// Коллизия (AlreadyExists) разрешается суффиксами `-1`…`-9` перед расширением.
-fn create_archive_file(dest: &std::path::Path) -> Result<(PathBuf, std::fs::File)> {
+/// Выбрать НОВОЕ имя архива без усечения существующего: два бэкапа в одну
+/// секунду коллидируют по имени, а запись в существующее имя усекла бы
+/// ГОТОВЫЙ архив. Коллизия (AlreadyExists) разрешается суффиксами `-1`…`-9`
+/// перед расширением. D71: имя «бронируется» пустым файлом (create_new),
+/// хэндл сразу закрывается — архив пишется вызывающим в соседний `.part` и
+/// переименовывается поверх брони (rename заменяет пустой файл); при сбое
+/// бронь сносит вызывающий. Существующие файлы create_new не открывает —
+/// усечение исключено по построению.
+fn create_archive_file(dest: &std::path::Path) -> Result<PathBuf> {
     let stem = dest
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -306,7 +314,9 @@ fn create_archive_file(dest: &std::path::Path) -> Result<(PathBuf, std::fs::File
             .create_new(true)
             .open(crate::util::fs::long_path(&candidate))
         {
-            Ok(f) => return Ok((candidate, f)),
+            // Бронь захвачена; хэндл закрываем немедленно: писать будем в
+            // `.part`, а Windows не переименует поверх открытого файла.
+            Ok(_claim) => return Ok(candidate),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e.into()),
         }
@@ -340,20 +350,46 @@ pub fn backup(paths: &Paths, inst: &Instance) -> Result<ArchiveResult> {
         stamp
     );
     let dest = paths.backups_dir().join(name);
-    let (dest, file) = create_archive_file(&dest)?;
+    let dest = create_archive_file(&dest)?;
 
-    let mut zip = zip::ZipWriter::new(file);
-    let count = crate::util::zip::write_zip_dir(&src, &mut zip, "instance/", &|rel| {
-        rel == ".lock" || is_skipped_dir(rel, &NOISE_DIRS)
-    })?;
-    zip.finish()
-        .map_err(|e| LauncherError::Zip(format!("finish: {e}")))?;
-    let bytes = std::fs::metadata(crate::util::fs::long_path(&dest))?.len();
-    Ok(ArchiveResult {
-        path: dest.to_string_lossy().into(),
-        files: count,
-        bytes,
-    })
+    // D71: архив пишется в соседний `.part` и переименовывается при успехе;
+    // при ошибке `.part` и пустая бронь имени сносятся — битый/пустой zip под
+    // именем бэкапа больше не попадает в список (паттерн snapshots.rs::create
+    // и worlds::backup_world).
+    let part = crate::util::fs::part_path(&dest);
+    let zipped = (|| -> Result<usize> {
+        let file = std::fs::File::create(crate::util::fs::long_path(&part))?;
+        let mut zip = zip::ZipWriter::new(file);
+        let count = crate::util::zip::write_zip_dir(&src, &mut zip, "instance/", &|rel| {
+            rel == ".lock" || is_skipped_dir(rel, &NOISE_DIRS)
+        })?;
+        zip.finish()
+            .map_err(|e| LauncherError::Zip(format!("finish: {e}")))?;
+        Ok(count)
+    })();
+    match zipped {
+        Ok(count) => {
+            // A26: rename с повторами на случай придержания архива антивирусом.
+            if let Err(e) = crate::util::fs::rename_with_retry(&part, &dest) {
+                // Иначе в списке бэкапов остался бы 0-байтовый «архив»-бронь.
+                crate::util::fs::remove_file_ignore(&part);
+                crate::util::fs::remove_file_ignore(&dest);
+                return Err(e);
+            }
+            let bytes = std::fs::metadata(crate::util::fs::long_path(&dest))?.len();
+            Ok(ArchiveResult {
+                path: dest.to_string_lossy().into(),
+                files: count,
+                bytes,
+            })
+        }
+        Err(e) => {
+            // Недописанный `.part` и бронь не оставляем (best-effort).
+            crate::util::fs::remove_file_ignore(&part);
+            crate::util::fs::remove_file_ignore(&dest);
+            Err(e)
+        }
+    }
 }
 
 /// Является ли `rel` (путь относительно корня инстанса) пропускаемым
@@ -421,7 +457,10 @@ pub fn export_mrpack(paths: &Paths, inst: &Instance) -> Result<ArchiveResult> {
     });
 
     let mc = minecraft_dir(&src);
-    let (dest, file) = create_archive_file(&dest)?;
+    let dest = create_archive_file(&dest)?;
+    // D71: имя уже «забронировано» пустым файлом — открываем его на запись
+    // ( усечение нашей же брони, не чужого архива).
+    let file = std::fs::File::create(crate::util::fs::long_path(&dest))?;
     let mut zip = zip::ZipWriter::new(file);
     let opts: zip::write::SimpleFileOptions = Default::default();
     let index_bytes = serde_json::to_vec_pretty(&index)?;
@@ -592,6 +631,7 @@ mod tests {
             sha1: Some("deadbeef".into()),
             url: url.map(|s| s.into()),
             enabled: true,
+            from_pack: true,
         }
     }
 
@@ -735,17 +775,17 @@ mod tests {
 
     /// Коллизия имени архива: существующий файл НЕ усекается — следующий
     /// кандидат получает суффикс -1 (… до -9), затем честная ошибка.
+    /// D71: функция возвращает только «забронированное» имя (пустой файл).
     #[test]
     fn create_archive_file_suffixes_on_collision() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("inst-123.zip");
-        let (p1, f1) = create_archive_file(&dest).unwrap();
+        let p1 = create_archive_file(&dest).unwrap();
         assert_eq!(p1, dest, "свободное имя берётся как есть");
-        drop(f1);
+        // Броня — пустой файл; наполняем его «готовым архивом».
         std::fs::write(&p1, b"DO-NOT-TRUNCATE").unwrap();
-        let (p2, f2) = create_archive_file(&dest).unwrap();
+        let p2 = create_archive_file(&dest).unwrap();
         assert_eq!(p2, dir.path().join("inst-123-1.zip"), "коллизия → суффикс -1");
-        drop(f2);
         assert_eq!(
             std::fs::read(&p1).unwrap(),
             b"DO-NOT-TRUNCATE",
@@ -754,7 +794,7 @@ mod tests {
         // .mrpack сохраняет своё расширение после суффикса.
         let mrpack = dir.path().join("pack.mrpack");
         std::fs::write(&mrpack, b"x").unwrap();
-        let (p3, _f3) = create_archive_file(&mrpack).unwrap();
+        let p3 = create_archive_file(&mrpack).unwrap();
         assert_eq!(p3, dir.path().join("pack-1.mrpack"));
     }
 
@@ -790,6 +830,7 @@ mod tests {
             url: None,
             kind: crate::instances::ContentKind::Mod,
             enabled: true,
+            from_pack: false,
         };
         std::fs::write(long(&minecraft_dir(&instance_dir(&paths, &inst.id)).join("mods/local.jar")), b"LOC").unwrap();
         save_content_manifest(&paths, &inst.id, &[entry("mods/a.jar", Some("https://example/a.jar")), local]).unwrap();
@@ -956,6 +997,9 @@ mod tests {
         assert!(e.enabled, "копия включена");
         assert_eq!(e.project_id.as_deref(), Some("aaa"), "метаданные сохранены");
         assert_eq!(e.kind, crate::instances::ContentKind::Mod);
+        // D71: from_pack переносится с записью (копия пользовательского
+        // Modrinth-мода не превращается в член пака приёмника).
+        assert!(e.from_pack, "from_pack источника сохранён");
         let mc = minecraft_dir(&instance_dir(&paths, &to.id));
         assert_eq!(
             std::fs::read(long(&mc.join("mods/a.jar"))).unwrap(),
@@ -989,6 +1033,22 @@ mod tests {
             .unwrap();
         let err = copy_entry(&paths, &from.id, &to.id, "mods/a.jar").unwrap_err();
         assert_eq!(err.code(), "instance_running");
+    }
+
+    /// D71: локальная установка (drag & drop) пишет from_pack=false —
+    /// обновление пака не считает файл членом пака и не удаляет его.
+    #[test]
+    fn install_local_records_user_install() {
+        let (_d, paths, inst) = setup();
+        let jar = _d.path().join("my.jar");
+        std::fs::write(&jar, b"JAR").unwrap();
+        let e = install_local(&paths, &inst.id, jar.to_str().unwrap()).unwrap();
+        assert!(!e.from_pack, "локальный мод — не член пака");
+        assert_eq!(e.file, "mods/my.jar");
+        assert_eq!(e.source, crate::instances::ContentSource::Local);
+        let manifest = load_content_manifest(&paths, &inst.id);
+        assert_eq!(manifest.len(), 1);
+        assert!(!manifest[0].from_pack, "манифест хранит fromPack=false");
     }
 
     /// F7: каталог datapacks — полноправный контент (путь проходит валидацию,

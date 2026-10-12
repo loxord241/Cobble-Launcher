@@ -29,14 +29,32 @@ pub struct BackupEntry {
 /// Разобрать имя файла «{instance}-{unix}.zip» → (instance, unix-сек).
 /// None — имя не по формату (не .zip, нет хвоста-числа, пустая часть
 /// имени): список такие молча пропускает, удаление — отклоняет.
-fn parse_backup_name(file_name: &str) -> Option<(String, u64)> {
+/// D71: учитывается суффикс коллизий «-1»…«-9» перед расширением
+/// (content::create_archive_file): «Inst-1728000000-1.zip» — это имя
+/// «Inst», штамп 1728000000 (раньше rsplit_once брал последний сегмент
+/// «1» — имя инстанса искажалось, ротация сортировала такие файлы неверно).
+/// Правило: если ДВА последних сегмента числовые, штамп — предпоследний,
+/// суффикс отбрасывается, именем становится всё до него.
+pub(crate) fn parse_backup_name(file_name: &str) -> Option<(String, u64)> {
     let stem = file_name.strip_suffix(".zip")?;
-    let (instance, stamp) = stem.rsplit_once('-')?;
-    if instance.is_empty() || stamp.is_empty() || !stamp.bytes().all(|b| b.is_ascii_digit()) {
+    let mut parts: Vec<&str> = stem.split('-').collect();
+    let last = *parts.last()?;
+    if parts.len() >= 2 && !last.is_empty() && last.bytes().all(|b| b.is_ascii_digit()) {
+        let prev = parts[parts.len() - 2];
+        if !prev.is_empty() && prev.bytes().all(|b| b.is_ascii_digit()) {
+            parts.pop();
+        }
+    }
+    let stamp = *parts.last()?;
+    if parts.len() < 2 || stamp.is_empty() || !stamp.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let name = parts[..parts.len() - 1].join("-");
+    if name.is_empty() {
         return None;
     }
     // Переполнение (немыслимо длинный «штамп») — тоже «битое имя».
-    Some((instance.to_string(), stamp.parse().ok()?))
+    Some((name, stamp.parse().ok()?))
 }
 
 /// Список всех бэкапов, новые сверху (created_at по убыванию; при равных
@@ -249,6 +267,36 @@ mod tests {
         rotate(&paths, "Alpha", 3);
         assert!(exists(&paths, "Alpha-100.zip"));
         assert!(exists(&paths, "Beta-101.zip"));
+    }
+
+    /// D71: суффикс коллизии «-N» перед расширением не ломает разбор —
+    /// штамп берётся из ПРЕДПОСЛЕДНЕГО числового сегмента, именем становится
+    /// всё, что до него (обычные имена и «битые» — как раньше).
+    #[test]
+    fn parse_backup_name_handles_collision_suffix() {
+        assert_eq!(
+            parse_backup_name("Inst-1728000000-1.zip"),
+            Some(("Inst".into(), 1_728_000_000)),
+            "суффикс -1 отброшен, штамп настоящий"
+        );
+        assert_eq!(
+            parse_backup_name("My Mod-1717000001-9.zip"),
+            Some(("My Mod".into(), 1_717_000_001))
+        );
+        // Обычное имя без суффикса — прежнее поведение.
+        assert_eq!(
+            parse_backup_name("Alpha-1717000000.zip"),
+            Some(("Alpha".into(), 1_717_000_000))
+        );
+        // Не-числовой сегмент перед хвостом: суффикс не похож на коллизию
+        // «-N после штампа» — разбор по-легаси (хвост = штамп), как было.
+        assert_eq!(
+            parse_backup_name("Alpha-notanumber-1.zip"),
+            Some(("Alpha-notanumber".into(), 1))
+        );
+        assert_eq!(parse_backup_name("Alpha-notanumber.zip"), None);
+        assert_eq!(parse_backup_name("-1717000002-1.zip"), None);
+        assert_eq!(parse_backup_name("Alpha-99999999999999999999-1.zip"), None);
     }
 
     /// delete: traversal и «не простые имена» отклоняются; файл вне каталога

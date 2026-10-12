@@ -90,15 +90,32 @@ impl LaunchValues {
 
 pub fn substitute(arg: &str, map: &BTreeMap<String, String>) -> String {
     let mut out = arg.to_string();
+    // D70: значение, содержащее "${", зацикливало замену навечно (ник
+    // офлайн-профиля и jvm_flags не запрещают доллар) — такое значение
+    // не подставляем; кап итераций — страховка от прочих самоссылок.
+    const MAX_SUBSTITUTIONS: usize = 32;
+    let mut rounds = 0usize;
     while let Some(start) = out.find("${") {
+        rounds += 1;
+        if rounds > MAX_SUBSTITUTIONS {
+            tracing::warn!("слишком много подстановок в аргументе, обрываю: {arg}");
+            break;
+        }
         let Some(end_rel) = out[start..].find('}') else {
             break;
         };
         let key = &out[start + 2..start + end_rel];
-        let replacement = map.get(key).cloned().unwrap_or_default();
-        if map.get(key).is_none() {
-            tracing::warn!("неизвестная подстановка ${{{key}}} в аргументе: {arg}");
-        }
+        let replacement = match map.get(key) {
+            Some(v) if !v.contains("${") => v.clone(),
+            Some(_) => {
+                tracing::warn!("значение ${{{key}}} само содержит ${{…}} — подставляю пустоту");
+                String::new()
+            }
+            None => {
+                tracing::warn!("неизвестная подстановка ${{{key}}} в аргументе: {arg}");
+                String::new()
+            }
+        };
         out.replace_range(start..start + end_rel + 1, &replacement);
     }
     out
@@ -273,6 +290,23 @@ mod tests {
         map.insert("b".to_string(), "2".to_string());
         assert_eq!(substitute("${a}-${b}-${a}", &map), "1-2-1");
         assert_eq!(substitute("plain", &map), "plain");
+    }
+
+    /// D70: значение, содержащее "${" (ник офлайн-профиля не запрещает
+    /// доллар), раньше зацикливало подстановку навечно — теперь пустота.
+    #[test]
+    fn substitution_self_referencing_value_terminates() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "auth_player_name".to_string(),
+            "Steve${auth_player_name}".to_string(),
+        );
+        assert_eq!(
+            substitute("${auth_player_name}", &map),
+            "", // самоссылка не подставляется — цикл невозможен
+        );
+        // Незакрытый плейсхолдер — просто литерал.
+        assert_eq!(substitute("${незакрытый", &map), "${незакрытый");
     }
 
     /// A49-регресс: на Windows кодировка файлов JVM обязана быть задана явно

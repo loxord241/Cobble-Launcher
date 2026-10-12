@@ -80,22 +80,35 @@ fn read_pack_meta(zip_path: &std::path::Path) -> (Option<String>, Option<String>
     (read_pack_png(&mut archive), read_description(&mut archive))
 }
 
+/// D71: чтение записи zip с жёстким капом на ФАКТИЧЕСКИ прочитанные байты.
+/// Размеру из заголовка zip верить нельзя (лживый uncompressed-заголовок
+/// превращал read_to_end в OOM на zip-бомбе), поэтому читаем через
+/// `take(limit + 1)` и проверяем фактическую длину (по образцу modmeta.rs).
+/// None — поток не влез в лимит (обрезан) или ошибка чтения.
+fn read_capped<R: std::io::Read>(reader: R, limit: usize) -> Option<Vec<u8>> {
+    let mut data = Vec::new();
+    if reader.take(limit as u64 + 1).read_to_end(&mut data).is_err() || data.len() > limit {
+        return None;
+    }
+    Some(data)
+}
+
 /// Обложка: первый найденный из PNG_CANDIDATES, если он ≤ MAX_PNG_BYTES.
 /// Размер берём из центрального каталога zip — огромную запись даже не
-/// распаковываем (защита от zip-bomb), после чтения проверяем ещё раз.
+/// распаковываем (защита от zip-bomb); после чтения проверяем ещё раз, а
+/// само чтение капнуто take'ом — лживый заголовок («маленький» размер,
+/// огромный распакованный поток) больше не раздувает память (D71).
 fn read_pack_png(archive: &mut zip::ZipArchive<std::fs::File>) -> Option<String> {
     for name in PNG_CANDIDATES {
-        let Ok(mut entry) = archive.by_name(name) else {
+        let Ok(entry) = archive.by_name(name) else {
             continue;
         };
         if entry.size() > MAX_PNG_BYTES as u64 {
             // Обложка есть, но слишком велика — честно остаёмся без превью.
             return None;
         }
-        let mut data = Vec::new();
-        if entry.read_to_end(&mut data).is_err() || data.len() > MAX_PNG_BYTES {
-            return None;
-        }
+        // Слишком крупный/обрезанный поток — None (превью нет).
+        let data = read_capped(entry, MAX_PNG_BYTES)?;
         // Как auth/skins.rs: фиксированный mime по имени pack.png.
         use base64::Engine as _;
         return Some(format!(
@@ -108,13 +121,13 @@ fn read_pack_png(archive: &mut zip::ZipArchive<std::fs::File>) -> Option<String>
 
 /// Описание из pack.mcmeta: `{"pack":{"description": "..." | {"text":"..."}}}`.
 /// Другие формы (массив текстовых компонентов, битый JSON) — None, не ошибка.
+/// Чтение капнуто take'ом: верить размеру из заголовка zip нельзя (D71).
 fn read_description(archive: &mut zip::ZipArchive<std::fs::File>) -> Option<String> {
-    let mut entry = archive.by_name("pack.mcmeta").ok()?;
+    let entry = archive.by_name("pack.mcmeta").ok()?;
     if entry.size() > MAX_MCMETA_BYTES {
         return None;
     }
-    let mut raw = Vec::new();
-    entry.read_to_end(&mut raw).ok()?;
+    let raw = read_capped(entry, MAX_MCMETA_BYTES as usize)?;
     let meta: serde_json::Value = serde_json::from_slice(&raw).ok()?;
     let desc = &meta["pack"]["description"];
     desc.as_str()
@@ -157,6 +170,7 @@ mod tests {
             sha1: None,
             url: None,
             enabled,
+            from_pack: false,
         }
     }
 
@@ -248,6 +262,25 @@ mod tests {
         assert_eq!(arts[1].file, "resourcepacks/ghost.zip");
         assert_eq!(arts[1].png, None);
         assert_eq!(arts[1].description, None);
+    }
+
+    /// D71: усечение в read_capped — ровно лимит читается, лимит+1 байт (и
+    /// «лживый» бесконечный поток) даёт None, а не раздутый Vec: верить
+    /// заголовку zip нельзя, фактическая длина проверяется после take.
+    #[test]
+    fn read_capped_truncates_liar_streams() {
+        let small: &[u8] = b"tiny";
+        assert_eq!(read_capped(small, 10).as_deref(), Some(b"tiny".as_slice()));
+        // Ровно на границе — читается целиком.
+        let exact = vec![b'x'; 10];
+        assert_eq!(read_capped(exact.as_slice(), 10).as_deref(), Some(exact.as_slice()));
+        // На байт больше лимита — None (обрезанный поток наружу не отдаём).
+        let over = vec![b'y'; 11];
+        assert_eq!(read_capped(over.as_slice(), 10), None);
+        // «Лживый» поток: читатель готов отдать много больше лимита —
+        // take останавливает его на лимит+1, памяти не раздувает.
+        let liar = std::io::repeat(b'z');
+        assert_eq!(read_capped(liar, 1000), None, "бесконечный поток обрезан");
     }
 
     /// Описание объектом {"text": "..."} (форма спрайт-компонента).

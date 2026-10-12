@@ -193,6 +193,11 @@ pub fn run() -> tauri::Result<()> {
                 let _ = w.set_focus();
             }
             if let Some(id) = parse_shortcut_args(&args) {
+                // D71: pending пишем ВСЕГДА, а не только при отсутствии окна:
+                // холодный старт + второй клик до монтирования React терял id —
+                // emit уходил в окно, где слушателя ещё нет. Живой сценарий
+                // покрывает emit, смонтированный Shell добирает pending один раз.
+                store_pending_shortcut(id.clone());
                 match app.get_webview_window("main") {
                     Some(w) => {
                         use tauri::Emitter as _;
@@ -331,6 +336,12 @@ pub fn run() -> tauri::Result<()> {
             app.manage(state);
             let state: tauri::State<commands::AppState> = app.state();
             let _ = state.app.set(app.handle().clone());
+            // D70/P1: холодный старт по ярлыку — single-instance-колбэк срабатывает
+            // только во ВТОРОМ процессе, свой argv первичный раньше не читал:
+            // ярлык при закрытом лаунчере просто открывал окно без запуска игры.
+            if let Some(id) = parse_shortcut_args(&std::env::args().collect::<Vec<_>>()) {
+                store_pending_shortcut(id);
+            }
             commands::spawn_event_bridge(app.handle().clone(), state.bus.clone());
             // D68: события серверов (свой канал servers/run.rs) → окно.
             {

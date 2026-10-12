@@ -19,6 +19,21 @@ fn fnv1a(s: &str) -> u32 {
     h
 }
 
+/// D71: разумный верхний предел размера файла панорамы: png титульного
+/// экрана — сотни килобайт, всё, что претендует на большее, — мусор из
+/// битого индекса, в base64-дата-URL его тащить нельзя (32 МБ в IPC).
+const MAX_PANORAMA_BYTES: u64 = 32 * 1024 * 1024;
+
+/// D71: хэш объекта из asset index — прежде чем собирать из него путь
+/// (`objects/<префикс>/<хэш>`), проверяем формат: непустой, ≤128 символов,
+/// только строчные [0-9a-f]. Отсекает traversal («../../evil» не пройдёт —
+/// в наборе нет точек и слэшей) и мусор битого индекса.
+fn valid_object_hash(hash: &str) -> bool {
+    // Нижняя граница 2: из хэша берётся префикс `&hash[..2]` (каталог objects).
+    (2..=128).contains(&hash.len())
+        && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// data-URL панорамы инстанса: Ok(None) = файлов ещё нет (свежий инстанс,
 /// игру не скачивали) — фронт покажет запасной пиксель-пейзаж.
 pub fn panorama_data_url(paths: &Paths, instance_id: &str) -> Result<Option<String>> {
@@ -59,13 +74,31 @@ pub fn panorama_data_url(paths: &Paths, instance_id: &str) -> Result<Option<Stri
         return Ok(None);
     };
 
-    // Битый assets-индекс может отдать короткий или не-ASCII хэш — `get(..2)`
-    // вместо среза: без паники, такой объект честно пропускаем (как missing).
-    let Some(prefix) = hash.get(..2) else {
+    // D71: битый assets-индекс может отдать короткий, не-ASCII или
+    // traversal-хэш — такой объект честно пропускаем (как missing), путь из
+    // непроверенного хэша не собираем вовсе.
+    if !valid_object_hash(hash) {
+        tracing::warn!("панорама: мусорный хэш объекта в индексе {index_id:?} — пропущен");
         return Ok(None);
-    };
+    }
+    let prefix = &hash[..2];
     let object_path = paths.assets_objects().join(prefix).join(hash);
-    let data = match std::fs::read(long_path(&object_path)) {
+    let long = long_path(&object_path);
+    // D71: размер проверяем до чтения — гигантский «объект» из битого индекса
+    // не уезжает в память целиком.
+    let meta = match std::fs::metadata(&long) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(LauncherError::Io(e)),
+    };
+    if meta.len() > MAX_PANORAMA_BYTES {
+        tracing::warn!(
+            "панорама: объект {} больше {MAX_PANORAMA_BYTES} байт — пропущен",
+            object_path.display()
+        );
+        return Ok(None);
+    }
+    let data = match std::fs::read(&long) {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(LauncherError::Io(e)),
@@ -85,5 +118,26 @@ mod tests {
         let faces: std::collections::HashSet<u32> =
             (0..12).map(|i| fnv1a(&format!("inst-{i}")) % 6).collect();
         assert!(faces.len() >= 3, "грани должны различаться, вышло {faces:?}");
+    }
+
+    /// D71: хэш объекта из asset index валидируется до сборки пути:
+    /// настоящий sha1 проходит, traversal/верхний регистр/пустой/слишком
+    /// длинный/односимвольный (нужен префикс из 2) — нет.
+    #[test]
+    fn object_hash_charset_and_length() {
+        assert!(valid_object_hash(&"a".repeat(40)), "настоящий sha1");
+        assert!(valid_object_hash("0f"), "минимальная длина (префикс 2)");
+        for bad in [
+            "",
+            "a",
+            "A".repeat(40).as_str(),        // верхний регистр не в [0-9a-f]
+            "../../evil",                   // traversal: точки и слэши не hex
+            "abc/def",                      // слэш внутри
+            "abc.def",                      // точка внутри
+            "g0000000000000000000000000000000000000000", // не-hex символ
+            &"f".repeat(129),               // длиннее разумного предела
+        ] {
+            assert!(!valid_object_hash(bad), "должен быть отклонён: {bad:?}");
+        }
     }
 }

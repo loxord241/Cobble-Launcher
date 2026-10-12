@@ -53,7 +53,9 @@ export default function InstanceGroupModal({
     const trimmed = group.trim();
     // Граница длины дублируется на клиенте: ядро отклонит (>64), но честнее
     // показать подсказку сразу, не дожидаясь IPC-ошибки.
-    if (trimmed.length > MAX_GROUP_LEN) {
+    // D71: считаем КОДПОИНТЫ (Array.from), как chars() в ядре — «👾» и прочая
+    // суррогатная пара — это 1 символ, а не 2 единицы UTF-16.
+    if (Array.from(trimmed).length > MAX_GROUP_LEN) {
       setError(t("instances.group.tooLong"));
       return;
     }

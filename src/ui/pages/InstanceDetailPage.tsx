@@ -247,7 +247,10 @@ export default function InstanceDetailPage({
     return () => {
       alive = false;
     };
-  }, [inst?.id, inst?.mcVersion, panoEligible, inst]);
+    // D71: `inst` убран из зависимостей — перечитка списка давала новый объект
+    // инстанса и лишний перезапуск (панорама мигала); реальных входов достаточно:
+    // inst?.id, inst?.mcVersion, panoEligible.
+  }, [inst?.id, inst?.mcVersion, panoEligible]);
 
   // Фокус на первый пункт меню при открытии — навигация стрелками/Tab.
   useEffect(() => {

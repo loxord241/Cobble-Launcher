@@ -640,11 +640,32 @@ fn assemble(
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(crate::util::fs::long_path(parent))?;
     }
-    let file = std::fs::File::create(crate::util::fs::long_path(output_path))?;
-    let mut zip = zip::ZipWriter::new(file);
-    let written = crate::util::zip::write_zip_dir(&staging, &mut zip, "", &|_| false)?;
-    zip.finish()
-        .map_err(|e| LauncherError::Zip(format!("finish: {e}")))?;
+    // D71: архив пишется в соседний `.part` и переименовывается при успехе;
+    // при ошибке `.part` сносится. Прежний File::create по целевому пути при
+    // сбое посреди записи оставлял бы битый .mrpack под итоговым именем (а
+    // повторный экспорт поверх существующего файла начинался с усечения).
+    // Паттерн — snapshots.rs::create / worlds::backup_world.
+    let part = crate::util::fs::part_path(output_path);
+    let zipped = (|| -> Result<usize> {
+        let file = std::fs::File::create(crate::util::fs::long_path(&part))?;
+        let mut zip = zip::ZipWriter::new(file);
+        let written = crate::util::zip::write_zip_dir(&staging, &mut zip, "", &|_| false)?;
+        zip.finish()
+            .map_err(|e| LauncherError::Zip(format!("finish: {e}")))?;
+        Ok(written)
+    })();
+    let written = match zipped {
+        Ok(written) => {
+            // A26: rename с повторами (антивирус мог придержать `.part`).
+            crate::util::fs::rename_with_retry(&part, output_path)?;
+            written
+        }
+        Err(e) => {
+            // Недописанный `.part` не оставляем рядом с целевым файлом.
+            crate::util::fs::remove_file_ignore(&part);
+            return Err(e);
+        }
+    };
     tracing::info!(
         "экспорт {}: {} в files[], {} в overrides (записей архива: {written})",
         output_path.display(),
@@ -682,6 +703,7 @@ mod tests {
             sha1: None,
             url: url.map(|u| u.into()),
             enabled: true,
+            from_pack: source == ContentSource::Modrinth,
         }
     }
 

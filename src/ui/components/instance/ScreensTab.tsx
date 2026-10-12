@@ -9,6 +9,7 @@ import { Folder, Image, Trash2 } from "lucide-react";
 import { api } from "../../../api/client";
 import { formatSize } from "../../format";
 import { apiErrorText, t } from "../../../i18n";
+import { askConfirm } from "../../confirm";
 import type { ShotInfo } from "../../../api/types";
 
 export default function ScreensTab({
@@ -40,19 +41,24 @@ export default function ScreensTab({
     void api.instanceScreensOpen(instanceId).catch((e) => setError(apiErrorText(e)));
   };
 
-  const remove = (s: ShotInfo) => {
-    void (async () => {
-      setBusy(true);
-      setError(null);
-      try {
-        await api.screenshotDelete(instanceId, s.name);
-        await load();
-      } catch (e) {
-        setError(apiErrorText(e));
-      } finally {
-        setBusy(false);
-      }
-    })();
+  // D71: удаление — разрушительное действие, подтверждаем askConfirm'ом
+  // (паттерн BackupsSection), а не сразу по клику.
+  const remove = async (s: ShotInfo) => {
+    const ok = await askConfirm(t("screens.delete", { name: s.name }), {
+      danger: true,
+      confirmLabel: t("common.delete"),
+    });
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.screenshotDelete(instanceId, s.name);
+      await load();
+    } catch (e) {
+      setError(apiErrorText(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -101,7 +107,7 @@ export default function ScreensTab({
                     aria-label={t("screens.delete", { name: s.name })}
                     title={t("screens.delete", { name: s.name })}
                     disabled={busy}
-                    onClick={() => remove(s)}
+                    onClick={() => void remove(s)}
                     className="icon-btn shrink-0 text-error opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
                   >
                     <Trash2 size={14} aria-hidden />

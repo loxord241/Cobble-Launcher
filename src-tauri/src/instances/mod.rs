@@ -201,6 +201,22 @@ pub struct ContentEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     pub enabled: bool,
+    /// D71: запись поставлена паком (Modrinth-модпак/.mrpack), а не самим
+    /// пользователем («Добавить моды», drag & drop). true — член пака:
+    /// обновление пака вправе удалить файл, выбывший из новой версии.
+    /// false — пользовательская установка: обновление пака её не трогает,
+    /// даже при совпадающем source (Modrinth-мод, поставленный вручную,
+    /// раньше удалялся как «выбывший из пака»). Легаси-манифесты без поля
+    /// читаются как true — поведение D69 («все source=Modrinth — паковые»)
+    /// сохраняется.
+    #[serde(default = "default_true")]
+    pub from_pack: bool,
+}
+
+/// D71: serde-default `from_pack` для старых манифестов без поля (см.
+/// ContentEntry): отсутствие поля = член пака.
+fn default_true() -> bool {
+    true
 }
 
 pub fn content_manifest_path(paths: &crate::paths::Paths, id: &str) -> PathBuf {
@@ -312,6 +328,15 @@ pub fn update<F: FnOnce(&mut Instance)>(
     let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut inst = load(paths, id)?;
     f(&mut inst);
+    // D71: повторная проверка существования instance.json непосредственно
+    // перед записью (под тем же локом). delete() тоже держит SAVE_LOCK в
+    // разрушающей фазе, но файл мог быть снесён мимо лока (вручную, сбоем
+    // диска): без этой проверки create_dir_all+atomic_write в save_locked
+    // воскресили бы instance.json в полупустом каталоге — «зомби-инстанс»
+    // без minecraft/ появлялся бы в списке.
+    if !instance_file(&instance_dir(paths, id)).exists() {
+        return Err(LauncherError::NotFound(format!("инстанс {id}")));
+    }
     save_locked(paths, &inst)
 }
 
@@ -459,10 +484,13 @@ pub fn rename(paths: &crate::paths::Paths, id: &str, new_name: &str) -> Result<I
             "нельзя переименовать работающий инстанс: сначала остановите его".into(),
         ));
     }
-    let mut inst = load(paths, id)?;
-    inst.name = crate::util::names::sanitize_user_name(new_name, &inst.name);
-    save(paths, &inst)?;
-    Ok(inst)
+    // D71: запись через update() (load → правка → save под SAVE_LOCK одним
+    // куском), а не разрозненные load/save: супервизорный update() между ними
+    // откатывал бы rename вместе со свежей статистикой (launch_count/crash_count).
+    crate::instances::update(paths, id, |inst| {
+        inst.name = crate::util::names::sanitize_user_name(new_name, &inst.name);
+    })?;
+    load(paths, id)
 }
 
 /// Предел длины названия группы (D70): заголовок секции библиотеки — длиннее
@@ -487,22 +515,34 @@ pub fn normalize_group(group: Option<String>) -> Result<Option<String>> {
             "название группы длиннее {MAX_GROUP_LEN} символов"
         )));
     }
+    // D71: управляющие символы ВНУТРИ (NUL, BEL, перевод строки — тот же
+    // критерий, что valid_world_name) и U+202E (RTL-переопределение, которым
+    // можно вывернуть рендер метки и соседнего UI) отклоняются целиком, а не
+    // вычищаются: пользователь должен видеть отказ, а не «магически» изменённый
+    // ввод. Краевые пробельные символы уже сняты trim().
+    if trimmed.chars().any(|c| c.is_control() || c == '\u{202E}') {
+        return Err(LauncherError::InvalidInput(
+            "название группы содержит управляющие символы или U+202E".into(),
+        ));
+    }
     Ok(Some(trimmed.to_string()))
 }
 
 /// D70: задать/убрать группу инстанса (библиотека) — по образцу `rename`:
-/// load → правка → save, наружу обновлённый Instance. Работающий инстанс
-/// НЕ блокируем: группа — метка UI, каталог и файлы игры она не трогает
-/// (в отличие от rename, переименовывающего каталог).
+/// правка и запись одним куском через update() (D71: load→save под SAVE_LOCK,
+/// параллельная супервизорная статистика не откатывается; заодно гонка с
+/// delete закрыта exists-чеком update()). Работающий инстанс НЕ блокируем:
+/// группа — метка UI, каталог и файлы игры она не трогает (в отличие от
+/// rename, переименовывающего каталог).
 pub fn set_group(
     paths: &crate::paths::Paths,
     id: &str,
     group: Option<String>,
 ) -> Result<Instance> {
-    let mut inst = load(paths, id)?;
-    inst.group = normalize_group(group)?;
-    save(paths, &inst)?;
-    Ok(inst)
+    // Нормализация ДО update(): невалидный ввод не доходит до записи.
+    let group = normalize_group(group)?;
+    crate::instances::update(paths, id, |inst| inst.group = group)?;
+    load(paths, id)
 }
 
 /// Контрактное имя для IPC-команды `instance_group_set` (D70): тонкая
@@ -589,6 +629,12 @@ pub fn duplicate(paths: &crate::paths::Paths, id: &str) -> Result<Instance> {
     inst.jvm_flags = src.jvm_flags.clone();
     inst.game_args_extra = src.game_args_extra.clone();
     inst.notes = src.notes.clone();
+    // D71: копия наследует оформление карточки (иконку и арт) — визуально
+    // узнаваема рядом с исходником. modpack/группа/quick_play_* по-прежнему
+    // НЕ наследуются: у копии свой путь обновлений, своя «полка» и свои цели
+    // быстрого запуска.
+    inst.icon = src.icon.clone();
+    inst.art = src.art.clone();
     // D70: группа (group) НЕ наследуется — поля копируются явным перечислением,
     // а Instance::new ставит None; копию пользователь раскладывает по полкам сам.
     let dst_dir = instance_dir(paths, &inst.id);
@@ -636,6 +682,13 @@ pub fn delete(paths: &crate::paths::Paths, id: &str, wipe: bool) -> Result<()> {
         ));
     }
     let mc = minecraft_dir(&dir);
+    // D71: разрушающая фаза — под SAVE_LOCK (тем же мьютексом, что update/
+    // set_group/rename): параллельная правка instance.json либо успевает
+    // целиком до удаления, либо честно падает NotFound на exists-чеке update().
+    // Раньше delete, вклинившийся между load и save, получал поверх себя
+    // create_dir_all+atomic_write — instance.json «воскресал» в полупустом
+    // каталоге и попадал в список как обычный инстанс.
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     for shared in ["libraries", "versions", "bin"] {
         let p = mc.join(shared);
         if p.exists() {
@@ -1491,6 +1544,7 @@ mod tests {
                 sha1: None,
                 url: None,
                 enabled: true,
+                from_pack: false,
             }],
         )
         .unwrap();
@@ -1808,5 +1862,141 @@ mod tests {
         assert_eq!(copy.group, None, "копия создаётся без группы");
         // Инициализация создания (Instance::new) — тоже без группы.
         assert_eq!(Instance::new("fresh", "1.20.1").group, None);
+    }
+
+    /// D71: дубликат наследует иконку и арт карточки, но НЕ modpack,
+    /// группу и цели quick play (у копии свой путь обновлений и свои полки).
+    #[test]
+    fn duplicate_inherits_icon_and_art_only() {
+        let (_d, paths) = test_paths();
+        let mut inst = Instance::new("src", "1.20.1");
+        inst.icon = Some("data:image/png;base64,AAA".into());
+        inst.art = Some("data:image/webp;base64,BBB".into());
+        inst.modpack = Some(ModpackRef {
+            project_id: "p".into(),
+            version_id: "v".into(),
+            version_number: "1.0".into(),
+        });
+        inst.group = Some("Полка".into());
+        inst.quick_play_world = Some("World_1".into());
+        save(&paths, &inst).unwrap();
+
+        let copy = duplicate(&paths, &inst.id).unwrap();
+        assert_eq!(copy.icon.as_deref(), inst.icon.as_deref(), "иконка наследуется");
+        assert_eq!(copy.art.as_deref(), inst.art.as_deref(), "арт наследуется");
+        assert!(copy.modpack.is_none(), "modpack не наследуется");
+        assert_eq!(copy.group, None, "группа не наследуется");
+        assert_eq!(copy.quick_play_world, None, "quick_play_world не наследуется");
+    }
+
+    /// D71: легаси-манифест контента без поля fromPack читается как
+    /// «член пака» (from_pack=true) — поведение обновления пака для старых
+    /// инстансов не меняется; явное fromPack:false (мод, поставленный
+    /// пользователем) читается как пользовательская установка.
+    #[test]
+    fn content_entry_from_pack_serde_defaults() {
+        let legacy: Vec<ContentEntry> = serde_json::from_str(
+            r#"[{"file":"mods/a.jar","source":"modrinth","enabled":true}]"#,
+        )
+        .unwrap();
+        assert!(legacy[0].from_pack, "легаси-запись = член пака");
+
+        let user: Vec<ContentEntry> = serde_json::from_str(
+            r#"[{"file":"mods/b.jar","source":"modrinth","enabled":true,"fromPack":false}]"#,
+        )
+        .unwrap();
+        assert!(!user[0].from_pack, "пользовательская установка сохраняется");
+
+        // Roundtrip: поле пишется и читается обратно.
+        let mut e = ContentEntry {
+            kind: ContentKind::Mod,
+            file: "mods/c.jar".into(),
+            source: ContentSource::Modrinth,
+            project_id: None,
+            version_id: None,
+            sha1: None,
+            url: None,
+            enabled: true,
+            from_pack: false,
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains("\"fromPack\":false"), "{json}");
+        e.from_pack = true;
+        let back: ContentEntry = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+        assert!(back.from_pack);
+    }
+
+    /// D71: update() не воскресает instance.json: если файл исчез между load и
+    /// записью (delete мимо лока, ручная уборка), update честно падает NotFound
+    /// и НЕ создаёт «зомби-инстанс» через create_dir_all+atomic_write.
+    #[test]
+    fn update_does_not_resurrect_deleted_instance() {
+        let (_d, paths) = test_paths();
+        let inst = Instance::new("d71-race", "1.20.1");
+        save(&paths, &inst).unwrap();
+        let dir = instance_dir(&paths, &inst.id);
+
+        // «delete завершился между load и save»: closure выполняется внутри
+        // update() после load и сносит каталог целиком.
+        let gone = dir.clone();
+        let err = update(&paths, &inst.id, move |_| {
+            std::fs::remove_dir_all(long_path(&gone)).unwrap();
+        })
+        .unwrap_err();
+        assert_eq!(err.code(), "not_found", "{err}");
+        assert!(
+            !dir.join("instance.json").exists(),
+            "instance.json не должен воскреснуть"
+        );
+        assert!(!dir.exists(), "каталог-зомби не пересоздаётся");
+    }
+
+    /// D71: delete держит SAVE_LOCK в разрушающей фазе — параллельные update/
+    /// set_group/rename ждут его, а не вклиниваются между проверками и удалением.
+    #[test]
+    fn delete_waits_for_save_lock() {
+        let (_d, paths) = test_paths();
+        let inst = Instance::new("d71-del", "1.20.1");
+        save(&paths, &inst).unwrap();
+
+        let guard = SAVE_LOCK.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let t_paths = paths.clone();
+        let t_id = inst.id.clone();
+        let handle = std::thread::spawn(move || {
+            let res = delete(&t_paths, &t_id, true);
+            let _ = tx.send(res.is_ok());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
+            "delete обязан ждать SAVE_LOCK"
+        );
+        drop(guard);
+        handle.join().unwrap();
+        assert!(
+            !instance_dir(&paths, &inst.id).exists(),
+            "после снятия лока delete доводит работу до конца"
+        );
+    }
+
+    /// D71: normalize_group отклоняет управляющие символы внутри и U+202E
+    /// (RTL-переопределение); нормальные имена, включая кириллицу, проходят.
+    #[test]
+    fn normalize_group_rejects_control_and_rtl_override() {
+        for bad in [
+            "полка\u{0}x",
+            "a\u{7}b",
+            "две\u{1B}строки",
+            "\u{202E}evil",
+            "привет\u{202E}мир",
+        ] {
+            let err = normalize_group(Some(bad.to_string())).unwrap_err();
+            assert_eq!(err.code(), "invalid_input", "{bad:?} отклонён");
+        }
+        // Нормальные имена не задеты; краевой \n снят trim'ом (не отказ).
+        assert_eq!(
+            normalize_group(Some("  Крафт\n".into())).unwrap().as_deref(),
+            Some("Крафт")
+        );
     }
 }

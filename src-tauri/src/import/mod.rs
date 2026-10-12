@@ -431,6 +431,16 @@ fn import_archive_blocking(
             let mut inst = Instance::new(name_override.unwrap_or(&src.name), &src.mc_version);
             inst.loader = src.loader.clone();
             inst.loader_version = src.loader_version.clone();
+            // D70/P0: version_id склеивается в путь `versions/<id>.json` при
+            // запуске — чужой instance.json мог подсунуть `../` и увести
+            // чтение версии (и её mainClass) за пределы инстанса.
+            if let Some(vid) = &src.version_id {
+                if !crate::loaders::is_safe_version_id(vid) {
+                    return Err(LauncherError::InvalidInput(format!(
+                        "некорректный version_id в импортируемом инстансе: {vid}"
+                    )));
+                }
+            }
             inst.version_id = src.version_id.clone();
             crate::instances::save(paths, &inst)?;
 

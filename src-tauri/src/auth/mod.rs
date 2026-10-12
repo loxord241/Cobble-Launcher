@@ -97,6 +97,15 @@ fn accounts_lock() -> std::sync::MutexGuard<'static, ()> {
 pub fn add(paths: &crate::paths::Paths, account: Account) -> Result<Account> {
     let _lock = accounts_lock();
     let mut list = list(paths);
+    // D71: перелогин существующего аккаунта создаёт НОВЫЙ случайный
+    // refresh-ref — старый keyring-токен осиротел бы навсегда (накопление
+    // всё ещё валидных секретов в Credential Manager). Сменился ref —
+    // старое значение стираем до перезаписи записи.
+    if let Some(old) = list.iter().find(|a| a.id == account.id) {
+        if old.refresh_ref != account.refresh_ref {
+            delete_refresh_of(old);
+        }
+    }
     list.retain(|a| a.id != account.id);
     list.push(account.clone());
     save(paths, &list)?;
@@ -199,6 +208,27 @@ pub fn keyring_delete(ref_name: &str) -> Result<()> {
     entry
         .delete_credential()
         .map_err(|e| LauncherError::Internal(format!("keyring delete: {e}")))
+}
+
+/// D71: старый keyring-ref из записи аккаунта (поле `refreshRef` в
+/// accounts.json). Для оркестратора: перед перелогином существующего
+/// аккаунта — узнать, чей токен в keyring. None — токена нет (офлайн или
+/// запись без ref), удалять/перечитывать нечего.
+pub fn refresh_ref_of(acc: &Account) -> Option<String> {
+    acc.refresh_ref.clone()
+}
+
+/// D71: удалить refresh-токен аккаунта из keyring (для оркестратора: перед
+/// перелогином существующего аккаунта старый токен обязан уйти, иначе в
+/// Credential Manager копятся висячие записи). NotFound (токен не
+/// сохранялся) — штатный случай: warn и дальше; прочие ошибки тоже не
+/// роняют перелогин, но честно пишутся в журнал.
+pub fn delete_refresh_of(acc: &Account) {
+    if let Some(rr) = refresh_ref_of(acc) {
+        if let Err(e) = keyring_delete(&rr) {
+            tracing::warn!("accounts: токен {rr} не удалён из keyring: {e}");
+        }
+    }
 }
 
 /// Итог для запуска игры: логин, uuid, access_token, user_type.
@@ -384,6 +414,27 @@ mod tests {
         assert_eq!(got, "M.CSECRET_REFRESH_TOKEN_VALUE");
         keyring_delete(name).unwrap();
         assert!(keyring_get(name).is_err());
+    }
+
+    /// D71: извлечение keyring-ref из записи — контракт для оркестратора
+    /// (перелогин существующего аккаунта: refresh_ref_of → delete_refresh_of).
+    #[test]
+    fn refresh_ref_of_extracts_ref() {
+        let msa = Account {
+            id: "m1".into(),
+            kind: AccountKind::Msa,
+            name: "Steve".into(),
+            uuid: "u1".into(),
+            refresh_ref: Some("msa-refresh-old".into()),
+            authlib_server: None,
+        };
+        assert_eq!(
+            refresh_ref_of(&msa).as_deref(),
+            Some("msa-refresh-old"),
+            "старый ref отдаётся как есть"
+        );
+        // Офлайн без ref — удалять нечего.
+        assert_eq!(refresh_ref_of(&offline_acc("o1", "Alex")), None);
     }
 
     #[test]

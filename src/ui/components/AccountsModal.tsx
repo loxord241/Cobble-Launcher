@@ -42,8 +42,8 @@ interface MsaDeviceCodeStart {
   user_code: string;
   verification_uri: string;
   device_code: string;
-  interval_secs: number;
-  expires_in_secs: number;
+  interval: number;
+  expires_in: number;
 }
 
 /** Активная сессия device-code входа. Дедлайн храним абсолютным (unix-ms):
@@ -197,7 +197,7 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
     return () => window.clearInterval(iv);
   }, [msaCode]);
 
-  // Опрос готовности: шаг interval_secs из ответа ядра. Перекрывающиеся тики
+  // Опрос готовности: шаг interval из ответа ядра. Перекрывающиеся тики
   // (медленный IPC) пропускаем; успех/ошибка/истечение/размонтирование —
   // cleanup гасит интервал, утечек нет.
   useEffect(() => {
@@ -251,8 +251,8 @@ export default function AccountsModal({ onClose }: { onClose: () => void }) {
     setMsaCodeError(null);
     try {
       const r: MsaDeviceCodeStart = await api.accountAddMsaStart();
-      const intervalSecs = Math.max(1, r.interval_secs);
-      const expiresSecs = Math.max(1, r.expires_in_secs);
+      const intervalSecs = Math.max(1, r.interval);
+      const expiresSecs = Math.max(1, r.expires_in);
       setMsaCode({
         deviceCode: r.device_code,
         userCode: r.user_code,

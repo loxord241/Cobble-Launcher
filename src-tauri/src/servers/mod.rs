@@ -115,7 +115,7 @@ impl Default for ServerRecord {
             online_mode: true,
             world: None,
             created_at: 0,
-                java_major: 0,
+            java_major: 0,
         }
     }
 }

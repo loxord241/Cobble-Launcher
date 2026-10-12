@@ -222,22 +222,26 @@ fn plan_files(index: &MrpackIndex) -> Result<Vec<PlannedFile>> {
     Ok(out)
 }
 
-/// Записи старого манифеста, поставленные старым паком (source=Modrinth) и
-/// выбывшие из новой версии — кандидаты на удаление. Пользовательские файлы
-/// (Local) и совпавшие с новым паком пути сюда не попадают.
+/// Записи старого манифеста, поставленные старым паком (D71: `from_pack`,
+/// а не source — Modrinth-мод, поставленный пользователем через «Добавить
+/// моды», пишет from_pack=false и удалению не подлежит) и выбывшие из новой
+/// версии — кандидаты на удаление. Совпавшие с новым паком пути сюда не
+/// попадают. Легаси-записи без поля читаются как паковые (serde default
+/// true) — поведение D69 сохранено.
 fn removed_pack_entries(old: &[ContentEntry], planned: &[PlannedFile]) -> Vec<ContentEntry> {
     old.iter()
-        .filter(|e| e.source == ContentSource::Modrinth)
+        .filter(|e| e.from_pack)
         .filter(|e| !planned.iter().any(|p| p.file == e.file))
         .cloned()
         .collect()
 }
 
-/// Пользовательский контент (не из пака): переносится в новый манифест как
-/// есть — обновление пака не имеет права трогать чужие файлы.
+/// Пользовательский контент (не из пака: Local, CurseForge и любые записи
+/// с from_pack=false): переносится в новый манифест как есть — обновление
+/// пака не имеет права трогать чужие файлы.
 fn preserved_user_entries(old: &[ContentEntry], planned: &[PlannedFile]) -> Vec<ContentEntry> {
     old.iter()
-        .filter(|e| e.source != ContentSource::Modrinth)
+        .filter(|e| !e.from_pack)
         .filter(|e| !planned.iter().any(|p| p.file == e.file))
         .cloned()
         .collect()
@@ -254,6 +258,19 @@ fn file_matches_sha1(dest: &Path, want: &str) -> bool {
     crate::util::fs::sha1_file(&crate::util::fs::long_path(dest))
         .map(|actual| actual.eq_ignore_ascii_case(want))
         .unwrap_or(false)
+}
+
+/// D71: rel-путь из overrides распаковывается, только если НИ ОДИН компонент
+/// пути (по `/`) не равен «saves» без учёта регистра. Прежний фильтр
+/// (`starts_with("saves/") || contains("/saves/")`) был регистрозависим:
+/// на Windows `Saves/...` из чужого архива резолвился в РЕАЛЬНЫЕ миры
+/// пользователя, а «голое» имя компонента `SAVES` (файл без слэша) вовсе
+/// проходило. Компонентное сравнение отсекает и `mods/Saves/x`; при этом
+/// `savegames/x` и `saveslike.jar` (подстрока, но не компонент) проходят.
+fn touches_saves(rel: &str) -> bool {
+    rel.replace('\\', "/")
+        .split('/')
+        .any(|c| c.eq_ignore_ascii_case("saves"))
 }
 
 /// Задачи загрузки для файлов пака. Уже лежащий файл с сошедшимся sha1
@@ -415,13 +432,13 @@ pub async fn apply(
 
     // 4. Манифест нового пака + валидация загрузчика ДО всяких мутаций:
     // неизвестный загрузчик/битый манифест не должны стоить пользователю
-    // удалённых файлов. Снимок старого манифеста здесь — только эвристика
-    // скачивания (вкл/выкл, пропуск совпавших хэшей); сам дифф D70
-    // пересчитывается внутри критической секции ПОД ЛОКОМ (шаг 6).
+    // удалённых файлов. Снимок старого манифеста НЕ делается заранее (D71):
+    // эвристика скачивания (вкл/выкл, пропуск совпавших хэшей) берёт СВЕЖУЮ
+    // перечитку под локом в момент построения задач (шаг 5), а сам дифф —
+    // внутри критической секции (шаг 6–8).
     let index = crate::modrinth::mrpack::open_mrpack(&tmp_path)?;
     let loader = crate::modrinth::mrpack::resolve_loader(&index.dependencies)?;
     let planned = plan_files(&index)?;
-    let old_manifest = crate::instances::load_content_manifest(paths, instance_id);
 
     // Бэкап инстанса целиком (zip в backups/) — честная защита: дальше идут
     // массовые удаления/перезаписи. Теперь ПОСЛЕ сетевых проверок и разбора
@@ -451,14 +468,30 @@ pub async fn apply(
     // сотням файлов пака не должен морозить async-рантайм (A20/D14).
     let mc_dir =
         crate::instances::minecraft_dir(&crate::instances::instance_dir(paths, instance_id));
+    // D71: dest задач строится по СВЕЖЕМУ манифесту, перечитанному под
+    // per-instance локом в момент построения задач (а не по снимку, снятому
+    // до скачивания .mrpack): toggle/remove, завершившиеся за это время,
+    // больше не игнорируются — задача выключенной записи сразу пишется в
+    // `.disabled`-имя, и на диске не появляется дубль. ОСТАТОЧНОЕ ОКНО
+    // (документировано осознанно): переключение контента ПОСЛЕ построения
+    // задач, но до фактической записи файла движком, всё ещё может положить
+    // файл в «старое» имя — движок скачивания недоступен для такой проверки
+    // из этого слоя. Манифест-финал это не ломает: шаг 6–8 перечитывает
+    // состояние под тем же локом и переносит вкл/выкл из него.
     let tasks = {
         let t_planned = planned.clone();
-        let t_old = old_manifest.clone();
+        let t_paths = paths.clone();
+        let t_id = instance_id.to_string();
         let t_dir = mc_dir.clone();
         let t_group = group.clone();
-        tokio::task::spawn_blocking(move || build_tasks(&t_planned, &t_old, &t_dir, &t_group))
-            .await
-            .map_err(|e| LauncherError::Io(std::io::Error::other(format!("дифф пака: {e}"))))?
+        tokio::task::spawn_blocking(move || {
+            let lock = content_manifest_lock(&t_id);
+            let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+            let fresh = crate::instances::load_content_manifest(&t_paths, &t_id);
+            build_tasks(&t_planned, &fresh, &t_dir, &t_group)
+        })
+        .await
+        .map_err(|e| LauncherError::Io(std::io::Error::other(format!("дифф пака: {e}"))))?
     };
     if !tasks.is_empty() {
         progress(format!("файлов модпака: {}…", tasks.len()));
@@ -529,18 +562,21 @@ pub async fn apply(
             // 7. Overrides нового пака поверх (перезапись — семантика обновления
             // пака). saves/ из overrides не распаковываем никогда: пользовательские
             // миры не пачкаются даже чужим архивом (zip-slip закрывает сам
-            // экстрактор).
+            // экстрактор). D71: совпадение — по компонентам пути и без учёта
+            // регистра (см. touches_saves): `Saves/…` на Windows это те же миры.
             let pack = std::fs::File::open(crate::util::fs::long_path(&c_tmp))?;
             let extracted = crate::util::zip::extract_zip_stripping(
                 pack,
                 &c_dir,
                 "overrides/",
-                |rel| !rel.starts_with("saves/") && !rel.contains("/saves/"),
+                |rel| !touches_saves(rel),
                 |_| {},
             )
             .map(|v| v.len())?;
 
             // 8. Новый манифест: файлы пака (с прежним вкл/выкл) + пользовательское.
+            // D71: записи пака маркируются from_pack=true — следующий diff
+            // отличит их от пользовательских установок (from_pack=false).
             let manifest: Vec<ContentEntry> = c_planned
                 .iter()
                 .filter_map(|p| {
@@ -553,6 +589,7 @@ pub async fn apply(
                         sha1: p.sha1.clone(),
                         url: Some(p.url.clone()),
                         enabled: old_enabled_for(&fresh, &p.file).unwrap_or(true),
+                        from_pack: true,
                     })
                 })
                 .chain(preserved_user_entries(&fresh, &c_planned))
@@ -657,6 +694,7 @@ mod tests {
         sha1: Option<&str>,
         source: ContentSource,
         enabled: bool,
+        from_pack: bool,
     ) -> ContentEntry {
         ContentEntry {
             kind: ContentKind::Mod,
@@ -667,6 +705,7 @@ mod tests {
             sha1: sha1.map(String::from),
             url: None,
             enabled,
+            from_pack,
         }
     }
 
@@ -857,6 +896,7 @@ mod tests {
                 Some("aa"),
                 ContentSource::Modrinth,
                 true,
+                true,
             ),
             entry(
                 "mods/gone.jar",
@@ -864,6 +904,7 @@ mod tests {
                 Some("v2"),
                 Some("bb"),
                 ContentSource::Modrinth,
+                true,
                 true,
             ),
             entry(
@@ -873,6 +914,7 @@ mod tests {
                 None,
                 ContentSource::Local,
                 true,
+                false,
             ),
             entry(
                 "mods/user2.jar",
@@ -880,6 +922,7 @@ mod tests {
                 Some("v9"),
                 Some("ff"),
                 ContentSource::Local,
+                false,
                 false,
             ),
         ];
@@ -897,6 +940,80 @@ mod tests {
             vec!["mods/user.jar", "mods/user2.jar"],
             "пользовательские файлы не трогаем (включая выключенные)"
         );
+    }
+
+    /// D71: решение «пак или пользователь» принимается по from_pack, а не по
+    /// source: (а) Modrinth-мод, поставленный пользователем через «Добавить
+    /// моды» (from_pack=false), обновление пака СОХРАНЯЕТ, даже если новой
+    /// версии пака он не касается; (б) выбывший член пака (from_pack=true,
+    /// включая легаси-записи без поля — serde default true) УДАЛЯЕТСЯ.
+    #[test]
+    fn diff_respects_from_pack_not_source() {
+        let old = vec![
+            // Член пака, выбывший из новой версии — кандидат на удаление.
+            entry(
+                "mods/gone.jar",
+                Some("p2"),
+                Some("v2"),
+                Some("bb"),
+                ContentSource::Modrinth,
+                true,
+                true,
+            ),
+            // Тот же source (Modrinth), но ставил пользователь — сохраняется.
+            entry(
+                "mods/user-modrinth.jar",
+                Some("p3"),
+                Some("v3"),
+                Some("cc"),
+                ContentSource::Modrinth,
+                true,
+                false,
+            ),
+        ];
+        let planned = vec![];
+
+        let removed = removed_pack_entries(&old, &planned);
+        assert_eq!(
+            removed.iter().map(|e| e.file.as_str()).collect::<Vec<_>>(),
+            vec!["mods/gone.jar"],
+            "выбывший член пака (from_pack=true) удаляется"
+        );
+        let kept = preserved_user_entries(&old, &planned);
+        assert_eq!(
+            kept.iter().map(|e| e.file.as_str()).collect::<Vec<_>>(),
+            vec!["mods/user-modrinth.jar"],
+            "пользовательский Modrinth-мод (from_pack=false) сохраняется"
+        );
+    }
+
+    /// D71: ни один компонент пути overrides не может быть «saves» без учёта
+    /// регистра (Windows резолвит `Saves/…` в реальные миры), при этом
+    /// одноимённые ПОДСТРОКИ в других именах проходить обязаны.
+    #[test]
+    fn touches_saves_is_case_insensitive_per_component() {
+        for bad in [
+            "Saves/world/level.dat",
+            "SAVES",
+            "saves",
+            "saves/",
+            "saves/w/level.dat",
+            "mods/Saves/x",
+            "config/SAVES/tweak.txt",
+            "a/b/SaveS/c",
+            "config\\SAVES\\x", // обратные слэши нормализуются
+        ] {
+            assert!(touches_saves(bad), "{bad:?} обязан быть отклонён");
+        }
+        for ok in [
+            "savegames/x",
+            "mods/saveslike.jar",
+            "config/options.txt",
+            "saveskeeper/world",
+            "shaderpacks/pack.zip",
+        ] {
+            assert!(!touches_saves(ok), "{ok:?} обязан проходить");
+        }
     }
 
     /// .disabled — «тот же файл»: выключенный файл пака с сошедшимся хэшем
@@ -926,6 +1043,7 @@ mod tests {
                 Some(&sha_same),
                 ContentSource::Modrinth,
                 true,
+                true,
             ),
             entry(
                 "mods/dis.jar",
@@ -934,6 +1052,7 @@ mod tests {
                 Some(&sha_same),
                 ContentSource::Modrinth,
                 false,
+                true,
             ),
             entry(
                 "mods/bump.jar",
@@ -942,6 +1061,7 @@ mod tests {
                 Some("old-sha"),
                 ContentSource::Modrinth,
                 false,
+                true,
             ),
             entry(
                 "mods/fresh.jar",
@@ -949,6 +1069,7 @@ mod tests {
                 Some("v"),
                 Some("old-sha"),
                 ContentSource::Modrinth,
+                true,
                 true,
             ),
         ];
@@ -1186,8 +1307,9 @@ mod tests {
         let paths = test_paths(&dir);
 
         // Старый инстанс «после установки пака 1.0.0»: выбывающий gone,
-        // пользовательский keep, неменяющиеся same/dis (один выключен),
-        // обновляющийся bump.
+        // пользовательский keep, НЕ-паковый Modrinth-мод keepmr (D71: поставлен
+        // через «Добавить моды», from_pack=false), неменяющиеся same/dis
+        // (один выключен), обновляющийся bump.
         let mut inst = Instance::new("Пак", "1.20.1");
         inst.modpack = Some(ModpackRef {
             project_id: "pack-proj".into(),
@@ -1199,6 +1321,7 @@ mod tests {
         std::fs::create_dir_all(mc.join("mods")).unwrap();
         std::fs::write(mc.join("mods").join("gone.jar"), b"gone").unwrap();
         std::fs::write(mc.join("mods").join("keep.jar"), b"user").unwrap();
+        std::fs::write(mc.join("mods").join("keepmr.jar"), b"user-modrinth").unwrap();
         std::fs::write(mc.join("mods").join("same.jar"), SAME_BYTES).unwrap();
         std::fs::write(mc.join("mods").join("dis.jar.disabled"), SAME_BYTES).unwrap();
         std::fs::write(mc.join("mods").join("bump.jar"), BUMP_OLD).unwrap();
@@ -1213,6 +1336,7 @@ mod tests {
                     Some("gg"),
                     ContentSource::Modrinth,
                     true,
+                    true,
                 ),
                 entry(
                     "mods/keep.jar",
@@ -1221,6 +1345,16 @@ mod tests {
                     None,
                     ContentSource::Local,
                     true,
+                    false,
+                ),
+                entry(
+                    "mods/keepmr.jar",
+                    Some("p5"),
+                    Some("u5"),
+                    Some("mm"),
+                    ContentSource::Modrinth,
+                    true,
+                    false,
                 ),
                 entry(
                     "mods/same.jar",
@@ -1228,6 +1362,7 @@ mod tests {
                     Some("u1"),
                     Some(&sha_same),
                     ContentSource::Modrinth,
+                    true,
                     true,
                 ),
                 entry(
@@ -1237,6 +1372,7 @@ mod tests {
                     Some(&sha_same),
                     ContentSource::Modrinth,
                     false,
+                    true,
                 ),
                 entry(
                     "mods/bump.jar",
@@ -1244,6 +1380,7 @@ mod tests {
                     Some("u1"),
                     Some("bb"),
                     ContentSource::Modrinth,
+                    true,
                     true,
                 ),
             ],
@@ -1305,6 +1442,11 @@ mod tests {
             "пользовательский файл не тронут"
         );
         assert_eq!(
+            std::fs::read(mc.join("mods").join("keepmr.jar")).unwrap(),
+            b"user-modrinth",
+            "D71: Modrinth-мод пользователя (from_pack=false) не тронут"
+        );
+        assert_eq!(
             std::fs::read(mc.join("mods").join("same.jar")).unwrap(),
             SAME_BYTES,
             "совпавший файл не перекачивался"
@@ -1349,7 +1491,8 @@ mod tests {
             "saves из overrides не появляется"
         );
 
-        // Манифест: 4 файла пака + пользовательский, gone исчез.
+        // Манифест: 4 файла пака + пользовательские (Local и Modrinth-мод
+        // from_pack=false), gone исчез.
         let manifest = crate::instances::load_content_manifest(&paths, &inst.id);
         let mut files: Vec<&str> = manifest.iter().map(|e| e.file.as_str()).collect();
         files.sort();
@@ -1359,6 +1502,7 @@ mod tests {
                 "mods/bump.jar",
                 "mods/dis.jar",
                 "mods/keep.jar",
+                "mods/keepmr.jar",
                 "mods/new.jar",
                 "mods/same.jar"
             ],
@@ -1370,6 +1514,15 @@ mod tests {
             ContentSource::Local,
             "пользовательская запись сохранена"
         );
+        // D71: не-паковый Modrinth-мод остался в манифесте как пользовательский,
+        // записи пака промаркированы from_pack=true.
+        let keepmr = manifest.iter().find(|e| e.file == "mods/keepmr.jar").unwrap();
+        assert_eq!(keepmr.source, ContentSource::Modrinth);
+        assert!(!keepmr.from_pack, "fromPack=false перенесён в новый манифест");
+        for f in ["mods/bump.jar", "mods/same.jar", "mods/new.jar", "mods/dis.jar"] {
+            let e = manifest.iter().find(|e| e.file == f).unwrap();
+            assert!(e.from_pack, "член пака {f} промаркирован from_pack=true");
+        }
         let dis = manifest.iter().find(|e| e.file == "mods/dis.jar").unwrap();
         assert!(
             !dis.enabled,
