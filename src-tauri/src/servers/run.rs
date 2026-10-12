@@ -106,10 +106,20 @@ pub fn server_start(
         )));
     }
 
-    // 4. Порт свободен (пробный bind; порт 0 не проверить — bind всегда удаётся).
-    if port_in_use(port) {
+    // 4. Порт свободен (пробный bind; порт 0 не проверить — bind всегда
+    //    удаётся). D72: реальный порт java берёт из server.properties —
+    //    пробуем занятость по НЕМУ; расхождение с реестром не блокирует
+    //    старт, но честно предупреждает (реестр могли менять мимо файла).
+    let effective_port = crate::servers::worlds::read_server_port(&spec.dir).unwrap_or(port);
+    if effective_port != port {
+        tracing::warn!(
+            "сервер {}: порт {effective_port} из server.properties расходится с реестром ({port}) — проверяю занятость по properties",
+            spec.id
+        );
+    }
+    if port_in_use(effective_port) {
         return Err(LauncherError::InvalidInput(format!(
-            "порт {port} занят — освободите его или смените порт сервера"
+            "порт {effective_port} занят — освободите его или смените порт сервера"
         )));
     }
 
@@ -117,10 +127,28 @@ pub fn server_start(
     // Приёмка 0.2.10: для снапшотов 26.x эвристика fallback_major занижала
     // (21 вместо 25) — супервизор запускал старую Java и сервер падал с
     // UnsupportedClassVersionError. Мажор берём из записи (version JSON).
+    // D72: в реестре 0 (на create манифест был недоступен) — пересчитываем
+    // по манифесту/version JSON как на create и записываем в реестр: запись
+    // лечится один раз, последующие старты идут как обычно.
     let need_major = if spec.java_major > 0 {
         spec.java_major
     } else {
-        crate::instances::run::fallback_major(&spec.mc_version)
+        let settings = crate::settings::Settings::load(&paths.settings_file()).unwrap_or_default();
+        match crate::net::http::HttpClient::new(settings.proxy_url.as_deref()) {
+            Ok(http) => {
+                // Офлайн-режим настроек уважаем: fetch_manifest вернёт
+                // OfflineMode, required_java_major честно уйдёт в эвристику.
+                http.set_offline(settings.work_offline);
+                recalc_java_major(paths, &http, &spec.id, &spec.mc_version)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "сервер {}: клиент для пересчёта java_major не создан ({e}) — эвристика без записи в реестр",
+                    spec.id
+                );
+                crate::instances::run::fallback_major(&spec.mc_version)
+            }
+        }
     };
     let java = resolve_java(paths, need_major)?;
     let argv = build_command(&java, &spec)?;
@@ -451,6 +479,27 @@ fn port_in_use(port: u16) -> bool {
 }
 
 // ---------- java (v1: только системная/рантаймы лаунчера) ----------
+
+/// D72: пересчитать java_major по манифесту/version JSON (тот же путь, что
+/// на create — install::required_java_major) и записать в реестр, чтобы
+/// запись с java_major == 0 лечилась на первом старте, а не при каждом.
+/// Блокирующий block_on допустим: server_start всегда зовётся из
+/// spawn_blocking-контекста команд; возвращает пересчитанный мажор.
+fn recalc_java_major(
+    paths: &crate::paths::Paths,
+    http: &crate::net::http::HttpClient,
+    id: &str,
+    mc: &str,
+) -> u32 {
+    let major = tauri::async_runtime::block_on(crate::servers::install::required_java_major(
+        paths, http, mc,
+    ));
+    match crate::servers::save_java_major(paths, id, major) {
+        Ok(()) => tracing::info!("сервер {id}: java_major пересчитан и записан в реестр ({major})"),
+        Err(e) => tracing::warn!("сервер {id}: java_major {major} не записан в реестр: {e}"),
+    }
+    major
+}
 
 /// Java для сервера: PATH, Program Files, ~/.jdks, рантаймы лаунчера и
 /// пользовательские пути из настроек; major-минимум — из версии MC.
@@ -1167,6 +1216,69 @@ mod tests {
         let err = server_start(&paths, &bus, spec("busy-port", dir), port).unwrap_err();
         let text = err.to_string();
         assert!(text.contains("порт") && text.contains("занят"), "{text}");
+    }
+
+    /// D72: проба занятости идёт по порту из server.properties (реальному
+    /// для java), а не по реестру: занятый properties-порт отклоняет старт
+    /// с ЕГО номером в ошибке, даже если в реестре непробуемый порт 0.
+    #[test]
+    fn start_probes_port_from_properties_not_registry() {
+        let listener = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let (_d, paths) = test_paths();
+        let id = "props-port";
+        let dir = server_dir(&paths, id);
+        std::fs::create_dir_all(crate::util::fs::long_path(&dir)).unwrap();
+        std::fs::write(dir.join("eula.txt"), b"eula=true\n").unwrap();
+        std::fs::write(
+            dir.join("server.properties"),
+            format!("server-port={port}\n").as_bytes(),
+        )
+        .unwrap();
+
+        let bus = crate::events::EventBus::new(16);
+        // Реестр говорит порт 0 (bind всегда удаётся) — отказ возможен
+        // только если проба шла по properties-порту.
+        let err = server_start(&paths, &bus, spec(id, dir), 0).unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("занят") && text.contains(&port.to_string()),
+            "ожидался отказ по properties-порту {port}: {text}"
+        );
+    }
+
+    /// D72: java_major=0 в реестре лечится на старте — пересчёт (офлайн:
+    /// эвристика fallback_major, для 1.20.x это 21) и запись в реестр.
+    #[test]
+    fn recalc_java_major_updates_registry() {
+        let (_d, paths) = test_paths();
+        let id = "recalc-major";
+        let dir = server_dir(&paths, id);
+        std::fs::create_dir_all(crate::util::fs::long_path(&dir)).unwrap();
+        // Минимальная запись реестра (serde default добирает остальное) —
+        // java_major: 0, как у сервера, созданного без доступа к манифесту.
+        crate::util::fs::atomic_write(
+            &paths.root().join("servers.json"),
+            format!(r#"{{"{id}":{{"id":"{id}"}}}}"#).as_bytes(),
+        )
+        .unwrap();
+
+        let http = crate::net::http::HttpClient::new(None).unwrap();
+        http.set_offline(true);
+        let major = recalc_java_major(&paths, &http, id, "1.20.1");
+        assert_eq!(major, crate::instances::run::fallback_major("1.20.1"));
+        assert!(major > 0, "пересчёт обязан дать ненулевой мажор");
+        let info = crate::servers::server_status(&paths, id).unwrap();
+        assert_eq!(info.java_major, major, "пересчёт записан в реестр");
+
+        // Чужой id — честный NotFound (запись не создаётся с нуля).
+        assert_eq!(
+            crate::servers::save_java_major(&paths, "ghost", major)
+                .unwrap_err()
+                .code(),
+            "not_found"
+        );
     }
 
     /// Уже запущен: живой лок (свой PID) блокирует второй старт до java-спавна.

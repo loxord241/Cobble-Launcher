@@ -7,6 +7,7 @@
 
 use crate::errors::{LauncherError, Result};
 use crate::paths::Paths;
+use std::path::Path;
 
 /// API mclo.gs: вынесен в константу — офлайн-тест не ходит в сеть.
 const MCLOGS_API: &str = "https://api.mclo.gs/1/log";
@@ -207,13 +208,27 @@ fn gz_tail_with_cap(path: &std::path::Path, max_bytes: u64, total_cap: u64) -> R
     })
 }
 
-/// Отправить СОДЕРЖИМОЕ на mclo.gs (санитизация снаружи — вызывающий
-/// передаёт готовый текст). Возвращает короткую ссылку на лог.
+/// Отправить СОДЕРЖИМОЕ на mclo.gs. Возвращает короткую ссылку на лог.
 pub async fn upload(client: &crate::net::http::HttpClient, content: &str) -> Result<String> {
+    upload_with_root(client, content, &crate::paths::Paths::default_root()).await
+}
+
+/// D72: боевой вариант — корень данных передаёт вызывающий (commands знает
+/// фактический Paths, в т.ч. кастомный --data-dir CLI).
+pub async fn upload_with_root(
+    client: &crate::net::http::HttpClient,
+    content: &str,
+    data_root: &std::path::Path,
+) -> Result<String> {
     // F16: офлайн-гейт до любых сетевых вызовов.
     if client.offline() {
         return Err(LauncherError::OfflineMode("mclo.gs".into()));
     }
+    // D72: mclo.gs — ПУБЛИЧНЫЙ paste, личные пути в него уезжать не должны:
+    // корень данных → [DATA], домашний каталог → C:\Users\[USER]. Ник
+    // игрока не маскируется: это публичное имя в игре, нужно для диагностики.
+    let content = sanitize_log_for_public(content, data_root);
+    let content = content.as_str();
     // Предохранитель на случай молчащего сервера (общий таймаут у HttpClient
     // снят, аудит 2026-10-06).
     let resp = tokio::time::timeout(
@@ -272,6 +287,36 @@ fn parse_response(body: &str) -> Result<String> {
     parsed
         .url
         .ok_or_else(|| LauncherError::network("mclo.gs: в ответе нет ссылки"))
+}
+
+// ---------- D72: маскировка личных путей перед публичной отправкой ----------
+
+/// Маскировка личных путей в логе перед отправкой на публичный paste
+/// (mclo.gs), D72:
+///   (а) абсолютный корень данных лаунчера (`%LOCALAPPDATA%\mc-launcher-v2`,
+///       кэш-пути — подкаталоги корня) → `[DATA]`;
+///   (б) домашний каталог пользователя (`C:\Users\<имя>\`) → `C:\Users\[USER]`;
+///   (в) ник игрока НЕ маскируется — это публичное игровое имя, нужное для
+///       диагностики крашей.
+///
+/// Замена работает для обеих ориентаций слэшей и без учёта регистра
+/// (Windows-пути), `\\?\`-форма длинных путей тоже накрывается — механика
+/// в `util::redact::mask_path_prefix`.
+pub fn sanitize_log_for_public(text: &str, data_root: &Path) -> String {
+    sanitize_with(text, data_root, dirs::home_dir().as_deref())
+}
+
+/// Чистая версия с явным домашним каталогом (параметр — для тестов: боевой
+/// вызов берёт `dirs::home_dir`, тест не должен зависеть от машины).
+fn sanitize_with(text: &str, data_root: &Path, home: Option<&Path>) -> String {
+    // Порядок не важен: маски не пересекаются (корень данных — поддерево
+    // внутри домашнего каталога или отдельный диск).
+    let mut out =
+        crate::util::redact::mask_path_prefix(text, data_root, "[DATA]");
+    if let Some(home) = home {
+        out = crate::util::redact::mask_path_prefix(&out, home, r"C:\Users\[USER]");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -568,6 +613,58 @@ mod tests {
         let text = read_archived(&paths, "inst1", "big.log", 1024).unwrap();
         assert!(text.len() <= 1024, "хвост не больше cap");
         assert!(text.ends_with('x'), "хвост содержит конец данных");
+    }
+
+    // ---------- sanitize_log_for_public (D72) ----------
+
+    /// Корень данных лаунчера маскируется в обеих ориентациях слэшей и в
+    /// `\\?\`-форме; кэш-пути (подкаталоги корня) накрываются той же маской.
+    #[test]
+    fn sanitize_masks_data_root_forward_back_and_long_paths() {
+        let root = Path::new(r"C:\Data\mc-launcher-v2");
+        let log = "java.io.IOException: c:/data/mc-launcher-v2/cache/manifests/xyz.json (Access denied)\n\
+                   at [..] \\\\?\\C:\\Data\\mc-launcher-v2\\cache\\assets\\idx\n";
+        let out = sanitize_with(log, root, Some(Path::new(r"C:\Users\Игнатий")));
+        assert!(!out.contains("mc-launcher-v2"), "корень должен быть замаскирован: {out}");
+        assert!(out.contains("[DATA]/cache/manifests/xyz.json"), "{out}");
+        assert!(out.contains(r"\\?\[DATA]\cache\assets\idx"), "{out}");
+    }
+
+    /// Домашний каталог с кириллическим именем → `C:\Users\[USER]`; соседний
+    /// каталог с общим префиксом имени не задевается.
+    #[test]
+    fn sanitize_masks_windows_user_including_cyrillic() {
+        let home = Path::new(r"C:\Users\Игнатий");
+        let log = r"args: -Xmx2048M C:\Users\Игнатий\.jdks\temurin-21\bin\java.exe, сосед C:\Users\Игнатий2\левый";
+        let out = sanitize_with(log, Path::new(r"D:\launcher"), Some(home));
+        assert!(out.contains(r"C:\Users\[USER]\.jdks\temurin-21"), "{out}");
+        assert!(
+            out.contains(r"C:\Users\Игнатий2\левый"),
+            "чужой каталог не задет: {out}"
+        );
+    }
+
+    /// Ник игрока (публичное имя в игре) не маскируется — нужен для диагностики
+    /// крашей; при этом путь профиля пользователя рядом с ником маскируется.
+    #[test]
+    fn sanitize_keeps_player_nick() {
+        let home = Path::new(r"C:\Users\Игнатий");
+        let log = "[main/INFO]: Setting user: Steve_Alex\n\
+                   [main/ERROR]: dir: C:\\Users\\Игнатий\\AppData\\Roaming\\.minecraft\\crash-reports";
+        let out = sanitize_with(log, Path::new(r"D:\launcher"), Some(home));
+        assert!(out.contains("Setting user: Steve_Alex"), "ник сохранён: {out}");
+        assert!(out.contains(r"C:\Users\[USER]\AppData\Roaming"), "{out}");
+    }
+
+    /// Без домашнего каталога (None) и без вхождений путей текст проходит
+    /// санитизацию без изменений.
+    #[test]
+    fn sanitize_without_matches_is_noop() {
+        let log = "[main/INFO]: обычный текст лога без путей";
+        assert_eq!(
+            sanitize_with(log, Path::new(r"C:\Data\mc-launcher-v2"), None),
+            log
+        );
     }
 
     // ---------- upload / parse_response ----------

@@ -911,7 +911,10 @@ export default function SettingsPage({ onOnboardingReset }: { onOnboardingReset:
                                 <span className="min-w-0 truncate">{inst.name}</span>
                                 {meta && <span className="chip-mono shrink-0">{meta}</span>}
                                 <span className="ml-auto shrink-0 text-xs text-text-muted">
-                                  {t("foreign.size.approx", { size: formatSize(inst.sizeBytes) })}
+                                  {/* D72: скан упёрся в лимит файлов — честное «не меньше». */}
+                                  {inst.sizeCapped
+                                    ? `≥ ${formatSize(inst.sizeBytes)}`
+                                    : t("foreign.size.approx", { size: formatSize(inst.sizeBytes) })}
                                 </span>
                               </label>
                               {status && (

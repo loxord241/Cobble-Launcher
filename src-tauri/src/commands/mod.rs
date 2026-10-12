@@ -1821,7 +1821,9 @@ pub async fn log_share_mclogs(
     .map_err(join_err)??;
     let redacted = crate::util::redact::redact(&text);
     let http = state.http().await;
-    let url = crate::mclogs::upload(&http, &redacted).await?;
+    // D72: фактический корень данных (в т.ч. кастомный) — для маскировки
+    // путей перед публичным paste.
+    let url = crate::mclogs::upload_with_root(&http, &redacted, state.paths.root()).await?;
     Ok(ShareResult { url })
 }
 
@@ -2552,6 +2554,7 @@ pub async fn foreign_import(
 
 /// Создать сервер из инстанса (серверное ПО + сервер-моды + мир + конфиги).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn server_create(
     state: State<'_, AppState>,
     instance_id: String,
@@ -2560,6 +2563,8 @@ pub async fn server_create(
     port: u16,
     ram_mb: u32,
     online_mode: bool,
+    // D72: «игроки из локальной сети» — false/None → server-ip=127.0.0.1.
+    lan: Option<bool>,
 ) -> Result<crate::servers::ServerCreateResult> {
     let http = state.http().await;
     crate::servers::server_create(
@@ -2571,6 +2576,7 @@ pub async fn server_create(
         port,
         ram_mb,
         online_mode,
+        lan.unwrap_or(false),
     )
     .await
 }

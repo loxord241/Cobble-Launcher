@@ -26,6 +26,11 @@ pub struct ForeignInstance {
     pub loader_version: Option<String>,
     /// Приблизительный размер инстанса (для «≈1.2 ГБ» в UI).
     pub size_bytes: u64,
+    /// D72: скан упёрся в потолок файлов ([`MAX_SCAN_FILES`]) — объём посчитан
+    /// НЕ полностью, реальный размер больше `size_bytes`. Фронт может показать
+    /// вместо точной оценки «≥200 000 файлов» (поле `sizeCapped`); прежде
+    /// потолок срабатывал молча, и оценка выдавала неполное за полную.
+    pub size_capped: bool,
 }
 
 /// Найденный чужой лаунчер: вид, путь установки, его инстансы.
@@ -138,7 +143,15 @@ fn dir_name(dir: &Path) -> String {
 /// не должно виснуть скан; после капа размер считается неполным).
 const MAX_SCAN_FILES: usize = 200_000;
 
-fn dir_size(dir: &Path) -> u64 {
+/// D72: (размер, упёрся ли обход в потолок [`MAX_SCAN_FILES`]). После потолка
+/// объём неполный — второй элемент честно говорит об этом (см. `size_capped`
+/// в [`ForeignInstance`]); прежде потолок срабатывал молча.
+fn dir_size(dir: &Path) -> (u64, bool) {
+    dir_size_with_cap(dir, MAX_SCAN_FILES)
+}
+
+/// Рабочая версия с явным потолком (параметр — для тестов).
+fn dir_size_with_cap(dir: &Path, max_files: usize) -> (u64, bool) {
     let mut total = 0u64;
     let mut seen = 0usize;
     let mut stack = vec![dir.to_path_buf()];
@@ -148,8 +161,8 @@ fn dir_size(dir: &Path) -> u64 {
         };
         for e in entries.flatten() {
             seen += 1;
-            if seen > MAX_SCAN_FILES {
-                return total;
+            if seen > max_files {
+                return (total, true);
             }
             let Ok(ft) = e.file_type() else { continue };
             // Символ-ссылки/junction не обходим: цикл в чужом каталоге не должен
@@ -164,7 +177,7 @@ fn dir_size(dir: &Path) -> u64 {
             }
         }
     }
-    total
+    (total, false)
 }
 
 /// PrisMLauncher/PolyMC: instance.cfg (ini, `name=`) + mmc-pack.json (uid/версии).
@@ -177,13 +190,15 @@ fn prism_instance(dir: &Path) -> ForeignInstance {
     let (mc, loader) = read_json(&dir.join("mmc-pack.json"))
         .map(|v| mmc_versions(&v))
         .unwrap_or((None, None));
+    let (size_bytes, size_capped) = dir_size(dir);
     ForeignInstance {
         name: name.unwrap_or_else(|| dir_name(dir)),
         dir: dir.to_string_lossy().into_owned(),
         mc_version: mc,
         loader: loader.as_ref().map(|(k, _)| k.clone()),
         loader_version: loader.map(|(_, v)| v),
-        size_bytes: dir_size(dir),
+        size_bytes,
+        size_capped,
     }
 }
 
@@ -206,13 +221,15 @@ fn atl_instance(dir: &Path) -> ForeignInstance {
             .and_then(|m| jstr(m, &["version"]))
             .filter(|v| v.starts_with("1."));
     }
+    let (size_bytes, size_capped) = dir_size(dir);
     ForeignInstance {
         name,
         dir: dir.to_string_lossy().into_owned(),
         mc_version: mc,
         loader: loader.as_ref().map(|(k, _)| k.clone()),
         loader_version: loader.map(|(_, v)| v),
-        size_bytes: dir_size(dir),
+        size_bytes,
+        size_capped,
     }
 }
 
@@ -257,13 +274,15 @@ fn gd_instance(dir: &Path) -> ForeignInstance {
         mc = mc.or(mc2);
         loader = loader.or(loader2);
     }
+    let (size_bytes, size_capped) = dir_size(dir);
     ForeignInstance {
         name,
         dir: dir.to_string_lossy().into_owned(),
         mc_version: mc,
         loader: loader.as_ref().map(|(k, _)| k.clone()),
         loader_version: loader.map(|(_, v)| v),
-        size_bytes: dir_size(dir),
+        size_bytes,
+        size_capped,
     }
 }
 
@@ -293,7 +312,7 @@ fn vanilla_source(root: &Path) -> ForeignSource {
         }
     }
     pairs.sort();
-    let root_size = dir_size(root);
+    let (root_size, root_capped) = dir_size(root);
     let mut instances = Vec::new();
     for (name, vid) in &pairs {
         // Кастомный профиль = свой каталог версии + распознанный загрузчик
@@ -311,6 +330,7 @@ fn vanilla_source(root: &Path) -> ForeignSource {
             loader: Some(kind),
             loader_version: Some(ver),
             size_bytes: root_size,
+            size_capped: root_capped,
         });
     }
     if instances.is_empty() && (profiles.is_some() || root.join("versions").is_dir()) {
@@ -335,6 +355,7 @@ fn vanilla_source(root: &Path) -> ForeignSource {
             loader: loader.as_ref().map(|(k, _)| k.clone()),
             loader_version: loader.map(|(_, v)| v),
             size_bytes: root_size,
+            size_capped: root_capped,
         });
     }
     ForeignSource {
@@ -601,6 +622,30 @@ const SKIP_TOP_FILES: &[&str] = &[
 /// цикл или мусор, обрываем.
 const MAX_COPY_DEPTH: u32 = 32;
 
+/// D72: кап СУММАРНОГО объёма копирования чужого инстанса — тот же предел,
+/// что у распаковки архивов (`util::zip::MAX_TOTAL_UNCOMPRESSED`, 8 ГБ).
+/// Превышение — честная ошибка с полным откатом импорта (rollback_on_err),
+/// а не бесконечная копия гигантского чужого каталога.
+const MAX_COPY_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// D72: пределы копирования (структура — чтобы держать copy_recursive в
+/// разумном числе аргументов; тесты подставляют свои значения).
+#[derive(Debug, Clone, Copy)]
+struct CopyLimits {
+    depth: u32,
+    total_bytes: u64,
+}
+
+/// D72: счётчики прохода копирования: суммарный объём (решает кап) и объекты,
+/// пропущенные по глубине (для явного warn вместо прежнего молчаливого).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CopyStats {
+    copied_bytes: u64,
+    skipped_by_depth: u64,
+    /// Последний пропущенный по глубине путь — пример в warn-логе.
+    deepest_skip: Option<String>,
+}
+
 /// Импортировать инстанс чужого лаунчера: скопировать игровое содержимое в наш
 /// каталог инстансов, создать наш Instance (+ content-manifest из Local-записей,
 /// загрузчик ставится как в import_archive — той же транзакцией с откатом A29).
@@ -679,21 +724,55 @@ pub async fn import_foreign_instance(
 /// Скопировать игровое дерево чужого инстанса в наш `minecraft/`, попутно
 /// собрав content-записи (mods/resourcepacks/shaderpacks).
 fn copy_game_tree(src: &Path, dst: &Path) -> Result<Vec<ContentEntry>> {
-    std::fs::create_dir_all(lp(dst))?;
-    let mut entries = Vec::new();
-    copy_recursive(src, dst, "", 0, &mut entries)?;
+    let (entries, stats) = copy_game_tree_with_limits(
+        src,
+        dst,
+        CopyLimits {
+            depth: MAX_COPY_DEPTH,
+            total_bytes: MAX_COPY_TOTAL_BYTES,
+        },
+    )?;
+    // D72: объекты, не попавшие в копию из-за глубины, больше не молчат:
+    // один warn на весь импорт с числом и примером пути.
+    if stats.skipped_by_depth > 0 {
+        tracing::warn!(
+            "импорт: {} объект(ов) глубже {} уровней пропущены (последний: {})",
+            stats.skipped_by_depth,
+            MAX_COPY_DEPTH,
+            stats.deepest_skip.as_deref().unwrap_or("?")
+        );
+    }
     Ok(entries)
 }
 
+/// Рабочая версия с явными пределами (параметр — для тестов капа/глубины).
+fn copy_game_tree_with_limits(
+    src: &Path,
+    dst: &Path,
+    limits: CopyLimits,
+) -> Result<(Vec<ContentEntry>, CopyStats)> {
+    std::fs::create_dir_all(lp(dst))?;
+    let mut entries = Vec::new();
+    let mut stats = CopyStats::default();
+    copy_recursive(src, dst, "", 0, &mut entries, &mut stats, limits)?;
+    Ok((entries, stats))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn copy_recursive(
     src: &Path,
     dst: &Path,
     rel: &str,
     depth: u32,
     entries: &mut Vec<ContentEntry>,
+    stats: &mut CopyStats,
+    limits: CopyLimits,
 ) -> Result<()> {
-    if depth > MAX_COPY_DEPTH {
-        tracing::warn!("импорт: глубже {MAX_COPY_DEPTH} уровней не копирую: {}", src.display());
+    if depth > limits.depth {
+        // D72: пропуск по глубине считается (см. warn в copy_game_tree),
+        // а не теряется молча.
+        stats.skipped_by_depth += 1;
+        stats.deepest_skip = Some(src.display().to_string());
         return Ok(());
     }
     let Ok(rd) = std::fs::read_dir(lp(src)) else {
@@ -728,12 +807,34 @@ fn copy_recursive(
         let child_dst = dst.join(&name);
         if ft.is_dir() {
             std::fs::create_dir_all(lp(&child_dst))?;
-            copy_recursive(&e.path(), &child_dst, &child_rel, depth + 1, entries)?;
+            copy_recursive(
+                &e.path(),
+                &child_dst,
+                &child_rel,
+                depth + 1,
+                entries,
+                stats,
+                limits,
+            )?;
         } else {
             if let Some(parent) = lp(&child_dst).parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::copy(lp(&e.path()), lp(&child_dst))?;
+            // D72: кап суммарного объёма проверяется ДО копирования —
+            // превышение рвёт импорт честной ошибкой (откат инстанса делает
+            // rollback_on_err вызывающего), а не копирует до бесконечности.
+            let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+            if stats.copied_bytes.saturating_add(size) > limits.total_bytes {
+                return Err(LauncherError::InvalidInput(format!(
+                    "импорт: суммарный объём копирования превысил лимит {} ГБ (скопировано {} байт, файл {} — {} байт)",
+                    limits.total_bytes / (1024 * 1024 * 1024),
+                    stats.copied_bytes,
+                    e.path().display(),
+                    size
+                )));
+            }
+            let copied = std::fs::copy(lp(&e.path()), lp(&child_dst))?;
+            stats.copied_bytes += copied;
             if let Some(entry) = content_entry(&child_rel) {
                 entries.push(entry);
             }
@@ -852,6 +953,7 @@ mod tests {
         assert_eq!(i.loader.as_deref(), Some("fabric"));
         assert_eq!(i.loader_version.as_deref(), Some("0.15.11"));
         assert!(i.size_bytes >= 3, "размер считается по файлам");
+        assert!(!i.size_capped, "маленький каталог — потолок не сработал");
         assert!(i.dir.ends_with("fabulous"));
     }
 
@@ -996,7 +1098,108 @@ mod tests {
         assert!(found.is_empty());
     }
 
+    /// D72: флаг потолка скана честно сообщается наружу (sizeCapped) —
+    /// после потолка размер неполный, UI может показать «≥200k файлов».
+    #[test]
+    fn dir_size_reports_cap_hit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tree");
+        w(&dir.join("a.txt"), b"1");
+        w(&dir.join("b.txt"), b"2");
+        w(&dir.join("c.txt"), b"3");
+        let (total, capped) = dir_size_with_cap(&dir, 2);
+        assert!(capped, "3 файла > потолка 2");
+        assert_eq!(total, 2, "посчитаны только уложившиеся в потолок");
+        let (total_all, capped_all) = dir_size_with_cap(&dir, MAX_SCAN_FILES);
+        assert!(!capped_all, "маленькое дерево — потолок не сработал");
+        assert_eq!(total_all, 3);
+    }
+
     // ---------- импорт ----------
+
+    /// D72: превышение суммарного капа копирования — честная InvalidInput
+    /// с текстом про лимит (полный откат делает rollback_on_err вызывающего).
+    #[test]
+    fn copy_over_total_cap_is_honest_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        w(&src.join("mods").join("a.jar"), b"AAA"); // 3 байта
+        w(&src.join("mods").join("b.jar"), b"BBBBBB"); // 6 байт, вместе > 8
+        let dst = tmp.path().join("dst");
+        let err = copy_game_tree_with_limits(
+            &src,
+            &dst,
+            CopyLimits {
+                depth: MAX_COPY_DEPTH,
+                total_bytes: 8,
+            },
+        )
+        .expect_err("кап 8 байт превышен вторым файлом");
+        assert!(
+            matches!(err, LauncherError::InvalidInput(ref m) if m.contains("лимит")),
+            "{err:?}"
+        );
+    }
+
+    /// D72: влезающий в кап объём копируется без ошибок, счётчик заполнен.
+    #[test]
+    fn copy_within_cap_is_ok_and_counts_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        w(&src.join("mods").join("a.jar"), b"AAA");
+        let dst = tmp.path().join("dst");
+        let (entries, stats) = copy_game_tree_with_limits(
+            &src,
+            &dst,
+            CopyLimits {
+                depth: MAX_COPY_DEPTH,
+                total_bytes: MAX_COPY_TOTAL_BYTES,
+            },
+        )
+        .unwrap();
+        assert_eq!(stats.copied_bytes, 3);
+        assert!(stats.skipped_by_depth == 0 && stats.deepest_skip.is_none(), "{stats:?}");
+        assert_eq!(entries.len(), 1, "a.jar — content-запись");
+    }
+
+    /// D72: объекты глубже потолка не копируются и СЧИТАЮТСЯ (прежде —
+    /// молчаливый warn на каждый уровень), файл-пример остаётся за бортом.
+    #[test]
+    fn copy_beyond_depth_cap_counts_skips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let mut deep = src.clone();
+        for i in 0..(MAX_COPY_DEPTH + 2) {
+            deep = deep.join(format!("lvl{i}"));
+        }
+        w(&deep.join("deep.txt"), b"D");
+        w(&src.join("top.txt"), b"T");
+        let dst = tmp.path().join("dst");
+        let (_, stats) = copy_game_tree_with_limits(
+            &src,
+            &dst,
+            CopyLimits {
+                depth: MAX_COPY_DEPTH,
+                total_bytes: MAX_COPY_TOTAL_BYTES,
+            },
+        )
+        .unwrap();
+        assert_eq!(stats.skipped_by_depth, 1, "{stats:?}");
+        assert!(
+            // Пропуск фиксируется на первом каталоге ЗА потолком: lvl{32} на
+            // глубине 33 (lvl{i} обрабатывается на глубине i+1).
+            stats
+                .deepest_skip
+                .as_deref()
+                .is_some_and(|p| p.ends_with(&format!("lvl{MAX_COPY_DEPTH}"))),
+            "{stats:?}"
+        );
+        assert!(dst.join("top.txt").exists(), "верхний уровень скопирован");
+        assert!(
+            !dst.join("lvl0").join(format!("lvl{MAX_COPY_DEPTH}")).exists(),
+            "глубже потолка не копируется"
+        );
+    }
 
     fn test_paths(dir: &tempfile::TempDir) -> crate::paths::Paths {
         let paths = crate::paths::Paths::new(dir.path().join("launcher"));

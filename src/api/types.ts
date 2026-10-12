@@ -412,6 +412,8 @@ export interface ServerInfo {
   port: number;
   ramMb: number;
   onlineMode: boolean;
+  /** D72: Java-мажор, выбранный при создании (0 = ещё не вычислен). */
+  javaMajor: number;
   eulaAccepted: boolean;
   world: string | null;
   createdAt: number;
@@ -425,6 +427,9 @@ export interface ServerCreateResult {
   modsServer: number;
   modsClientSkipped: number;
   modsUnchecked: number;
+  /** D72: сколько коллизий имён разрешилось суффиксами при создании
+   * (в ядре поле живёт в ServerCreateResult, не в ServerInfo). */
+  collisions: number;
   skippedProjects: string[];
 }
 
@@ -444,6 +449,8 @@ export interface ForeignInstance {
   loader: string | null;
   loaderVersion: string | null;
   sizeBytes: number;
+  /** D72: скан упёрся в лимит файлов — размер занижен, реально больше. */
+  sizeCapped?: boolean;
 }
 
 /** D67: найденный лаунчер (kind: prism | gdlauncher | atlauncher | vanilla). */

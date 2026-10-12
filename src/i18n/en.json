@@ -551,6 +551,8 @@
   "servers.tab": "Servers",
   "servers.create": "Create server from instance",
   "servers.create.hint": "Inherits the instance version and loader",
+  "serverCreate.lan": "Allow players from the local network",
+  "serverCreate.lan.hint": "Off — the server is visible only on this computer",
   "servers.name": "Server name",
   "servers.instance": "Source instance",
   "servers.world": "World (copy from instance)",

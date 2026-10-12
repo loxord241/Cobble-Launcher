@@ -1,9 +1,12 @@
 //! Установка серверного ПО Minecraft в каталог (vanilla / Fabric / Forge /
 //! NeoForge). Vanilla — `server.jar` из version JSON Mojang через доверенный
-//! движок загрузок (sha1+size из манифеста обязательны); Fabric — бутстрап с
-//! официального meta (сам доустанавливается при первом старте сервера);
-//! Forge/NeoForge — официальный installer с maven (sha1-сайдкар) и headless
-//! `--installServer`. Откат каталога при ошибке — забота вызывающего.
+//! движок загрузок (sha1+size из манифеста обязательны); Fabric — ванильный
+//! `server.jar` тем же доверенным движком заранее (D72) плюс бутстрап с
+//! официального meta с sha1-сайдкаром (сам доустанавливается при первом
+//! старте сервера); Forge/NeoForge — официальный installer с maven
+//! (sha1-сайдкар) и headless `--installServer`. Откат каталога при ошибке —
+//! забота вызывающего. Возврат — проверенный sha1 ванильного server.jar
+//! (D72: сохраняется в реестр для офлайн-reuse).
 
 use crate::errors::{LauncherError, Result};
 use crate::events::EventBus;
@@ -24,6 +27,11 @@ const DOWNLOAD_GROUP: &str = "server-install";
 /// лоадера). `loader`: None (или "vanilla") | "fabric" | "forge" |
 /// "neoforge"; "quilt" — честный InvalidInput (серверов Quilt не делаем).
 /// `progress` — человеческие статусы по ходу установки.
+///
+/// D72: возвращает sha1 ванильного `server.jar` (из `downloads.server.sha1`
+/// version JSON, проверен движком при скачивании) — вызывающий сохраняет его
+/// в реестр сервера для офлайн-reuse. None — Forge/NeoForge (server.jar не
+/// участвует) либо sha1 неизвестен (офлайн-reuse файла из старой установки).
 pub async fn install_server_software(
     paths: &Paths,
     http: &HttpClient,
@@ -32,7 +40,7 @@ pub async fn install_server_software(
     loader: Option<&str>,
     loader_version: Option<&str>,
     progress: &(dyn Fn(String) + Send + Sync),
-) -> Result<()> {
+) -> Result<Option<String>> {
     let kind = resolve_kind(mc_version, loader, loader_version)?;
     std::fs::create_dir_all(crate::util::fs::long_path(dir))?;
 
@@ -46,14 +54,14 @@ pub async fn install_server_software(
     if let Some(rel) = &pre_lib {
         if loader_installed(dir, rel) {
             progress(format!("{} уже установлен", kind.label()));
-            return Ok(());
+            return Ok(None);
         }
     }
 
     match &kind {
         ServerKind::Vanilla => install_vanilla(paths, http, dir, mc_version, progress).await,
         ServerKind::Fabric(lv) => {
-            install_fabric(http, dir, mc_version, lv, progress).await
+            install_fabric(paths, http, dir, mc_version, lv, progress).await
         }
         ServerKind::Forge(lv) => {
             install_loader_server(
@@ -65,7 +73,8 @@ pub async fn install_server_software(
                 InstallerKind::Forge,
                 progress,
             )
-            .await
+            .await?;
+            Ok(None)
         }
         ServerKind::NeoForge(lv) => {
             install_loader_server(
@@ -77,7 +86,8 @@ pub async fn install_server_software(
                 InstallerKind::NeoForge,
                 progress,
             )
-            .await
+            .await?;
+            Ok(None)
         }
     }
 }
@@ -186,7 +196,11 @@ pub async fn reinstall_server_software(
 
     // Штатная установка: маркеров после сноса нет — ставится заново
     // (vanilla получит sha1 из манифеста, Fabric — свежий бутстрап).
-    install_server_software(paths, http, dir, mc_version, loader, loader_version, progress).await
+    // D72: sha1 ванильного server.jar реестр уже хранит с момента создания;
+    // версия та же — значение остаётся верным, переустановка его не меняет.
+    let _ = install_server_software(paths, http, dir, mc_version, loader, loader_version, progress)
+        .await?;
+    Ok(())
 }
 
 /// Что переустановка сносит перед новой установкой — относительные пути
@@ -198,8 +212,11 @@ pub async fn reinstall_server_software(
 fn reinstall_targets(kind: &ServerKind) -> Vec<PathBuf> {
     match kind {
         ServerKind::Vanilla => vec![PathBuf::from("server.jar")],
+        // D72: вместе с бутстрапом сносится и его .sha1-сайдкар, чтобы рядом
+        // не остался хэш чужого файла; server.jar (ванильная база) сохраняется.
         ServerKind::Fabric(_) => vec![
             PathBuf::from("fabric-server-launch.jar"),
+            PathBuf::from("fabric-server-launch.jar.sha1"),
             PathBuf::from("libraries"),
         ],
         ServerKind::Forge(_) => vec![PathBuf::from("libraries")
@@ -513,14 +530,42 @@ async fn fetch_server_download(
     Ok(head.downloads.server)
 }
 
+/// D72: сверка файла с sha1, сохранённым при создании (офлайн-reuse без сети).
+/// `None` — сверять нечем (старый реестр без поля или не-vanilla): прежнее
+/// толерантное поведение. Несовпадение — честный отказ: битый файл нельзя
+/// «просто использовать», нужна сеть на перекачку.
+fn verify_saved_server_jar(dest: &Path, saved_sha1: Option<&str>) -> Result<()> {
+    let Some(expected) = saved_sha1 else {
+        return Ok(());
+    };
+    let actual = crate::util::fs::sha1_file(&crate::util::fs::long_path(dest)).map_err(|e| {
+        LauncherError::Internal(format!(
+            "не удалось прочитать {} для сверки sha1: {e}",
+            dest.display()
+        ))
+    })?;
+    if actual.eq_ignore_ascii_case(expected) {
+        return Ok(());
+    }
+    Err(LauncherError::InvalidInput(format!(
+        "server.jar повреждён (sha1 не совпал с сохранённым при создании) — включите сеть, чтобы перекачать его: {}",
+        dest.display()
+    )))
+}
+
 /// Vanilla: manifest → version JSON → server.jar в `dir/server.jar`.
+/// Возвращает проверенный sha1 файла (см. install_server_software).
+///
+/// `downloads.server` из version JSON. JSON качается заново: кэш манифестов
+/// хранит разобранный VersionJson без поля server (модели запуска игры оно
+/// не нужно), sha1 самого JSON сверяется с манифестом (спека §6.2).
 async fn install_vanilla(
     paths: &Paths,
     http: &HttpClient,
     dir: &Path,
     mc: &str,
     progress: &(dyn Fn(String) + Send + Sync),
-) -> Result<()> {
+) -> Result<Option<String>> {
     progress("Получаю манифест версий".into());
     let manifest = crate::mojang::manifest::fetch_manifest(http, &paths.manifests_cache()).await?;
     let entry = crate::mojang::manifest::resolve_entry(&manifest, mc)?;
@@ -533,13 +578,16 @@ async fn install_vanilla(
                 "для версии {mc} нет официального сервера"
             )));
         }
-        // P2-ревизии: офлайн с уже скачанным (значит, проверенным при загрузке)
-        // server.jar — принимаем файл, не требуем сеть ради манифеста.
+        // P2-ревизии: офлайн с уже скачанным server.jar — принимаем файл.
+        // D72: не «принимаем на слово», а сверяем с sha1, сохранённым в
+        // реестр при создании; расхождение — честный отказ (файл повреждён,
+        // включите сеть), совпадение — файл проверен офлайн.
         Err(e @ LauncherError::OfflineMode(_)) if file_fresh(&dest, None) => {
-            tracing::warn!("офлайн: использую уже скачанный server.jar ({})", dest.display());
+            let saved = crate::servers::server_jar_sha1_for_dir(paths, dir);
+            verify_saved_server_jar(&dest, saved.as_deref())?;
             let _ = e;
             progress("server.jar уже скачан".into());
-            return Ok(());
+            return Ok(saved);
         }
         Err(e) => return Err(e),
     };
@@ -548,7 +596,6 @@ async fn install_vanilla(
             "у server.jar нет sha1 в манифесте — скачивание запрещено (спека §3)".into(),
         )
     })?;
-    let dest = dir.join("server.jar");
     // P2-ревизии: совпавшего размера мало (битый сектор) — на fast-path
     // сверяем и sha1; хэш всё равно обязателен, чтение 47 МБ ~секунда.
     if file_fresh(&dest, server.size)
@@ -556,12 +603,12 @@ async fn install_vanilla(
             .is_ok_and(|h| h.eq_ignore_ascii_case(&sha1))
     {
         progress("server.jar уже скачан".into());
-        return Ok(());
+        return Ok(Some(sha1));
     }
     progress("Качаю server.jar".into());
     download_via_engine(http, &server.url, &dest, &sha1, server.size).await?;
     progress("server.jar готов".into());
-    Ok(())
+    Ok(Some(sha1))
 }
 
 /// Одно файловое скачивание доверенным движком: очередь, ретраи с backoff,
@@ -609,23 +656,59 @@ async fn download_via_engine(
 
 // ---------------------------------------------------------------- fabric
 
-/// Fabric: один файл-бутстрап `fabric-server-launch.jar` с официального
-/// meta.fabricmc.net. Отдельного `.sha1` у эндпоинта нет — источник тот же
-/// официальный, что и профили клиента (loaders/fabric.rs); целостность
-/// гарантирует HTTPS, размер проверяем > 0. Ничего больше не ставим:
-/// бутстрап сам докачает ванильный сервер и библиотеки при первом старте.
+/// Fabric: ванильный `server.jar` ЗАРАНЕЕ доверенным движком (D72:
+/// `downloads.server.url`+sha1 из version JSON — тот же путь, что у vanilla)
+/// плюс один файл-бутстрап `fabric-server-launch.jar` с официального
+/// meta.fabricmc.net. ServerLauncher качает ваниль в `server.jar` только если
+/// файла нет — готовый проверенный jar подхватывается, и бутстрап при первом
+/// старте сервера не качает сам. Целостность бутстрапа: отдельного `.sha1` у
+/// эндпоинта нет — при скачивании вычисляем sha1 и сохраняем в
+/// `fabric-server-launch.jar.sha1`; reuse сверяет с ним (расхождение —
+/// перекачка), отсутствие сайдкара у старой установки лечится на месте из
+/// текущего файла. Возвращает sha1 ванильного server.jar (может быть None —
+/// офлайн-reuse старой установки без записи в реестре).
 async fn install_fabric(
+    paths: &Paths,
     http: &HttpClient,
     dir: &Path,
     mc: &str,
     lv: &str,
     progress: &(dyn Fn(String) + Send + Sync),
-) -> Result<()> {
+) -> Result<Option<String>> {
+    // D72: ванильная база заранее — без неё бутстрап качал бы сервер сам
+    // (и офлайн-создание Fabric было бы ложью: «установлен», а старт падает).
+    let server_jar_sha1 = install_vanilla(paths, http, dir, mc, progress).await?;
+
     let dest = dir.join("fabric-server-launch.jar");
+    let sidecar = dir.join("fabric-server-launch.jar.sha1");
     if file_fresh(&dest, None) {
-        progress("Бутстрап Fabric уже скачан".into());
-        progress("Fabric доустановится при первом запуске".into());
-        return Ok(());
+        let expected = std::fs::read_to_string(crate::util::fs::long_path(&sidecar))
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+        let actual = crate::util::fs::sha1_file(&crate::util::fs::long_path(&dest)).ok();
+        match (expected, actual) {
+            // Сайдкар есть и совпал — готовый бутстрап принимаем.
+            (Some(exp), Some(h)) if h.eq_ignore_ascii_case(&exp) => {
+                progress("Бутстрап Fabric уже скачан".into());
+                progress("Fabric доустановится при первом запуске".into());
+                return Ok(server_jar_sha1);
+            }
+            // Расхождение — файл побит, перекачиваем (ветка скачивания ниже).
+            (Some(_), Some(_)) => {
+                tracing::warn!("кэш бутстрапа Fabric расходится с .sha1 — перекачиваю");
+            }
+            // Сайдкара нет (старая установка) — лечим из текущего файла, чтобы
+            // будущие reuse уже сверялись.
+            (None, Some(h)) => {
+                crate::util::fs::atomic_write(&sidecar, h.to_lowercase().as_bytes())?;
+                progress("Бутстрап Fabric уже скачан".into());
+                progress("Fabric доустановится при первом запуске".into());
+                return Ok(server_jar_sha1);
+            }
+            // Файл нечитаем — перекачиваем.
+            (_, None) => {}
+        }
     }
     progress("Качаю бутстрап Fabric".into());
     let url = fabric_server_url(mc, lv);
@@ -644,8 +727,13 @@ async fn install_fabric(
         return Err(LauncherError::network("пустой ответ для бутстрапа Fabric"));
     }
     crate::util::fs::atomic_write(&dest, &bytes)?;
+    // D72: sha1 скачанного бутстрапа — в сайдкар для будущих reuse-сверок.
+    crate::util::fs::atomic_write(
+        &sidecar,
+        crate::util::fs::sha1_bytes(&bytes).as_bytes(),
+    )?;
     progress("Fabric доустановится при первом запуске".into());
-    Ok(())
+    Ok(server_jar_sha1)
 }
 
 // ------------------------------------------------------- forge / neoforge
@@ -1011,6 +1099,135 @@ mod tests {
         assert!(!file_fresh(&empty, None), "нулевой размер — перезакачка");
     }
 
+    /// D72: сверка файла с сохранённым sha1 (офлайн-reuse): нет сохранённого —
+    /// толерантный пропуск; совпал (регистр не важен) — ок; расходится —
+    /// честный отказ с советом включить сеть; файл исчез — тоже отказ.
+    #[test]
+    fn verify_saved_server_jar_gates_offline_reuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("server.jar");
+        std::fs::write(&p, b"payload").unwrap();
+        let good = crate::util::fs::sha1_file(&crate::util::fs::long_path(&p)).unwrap();
+
+        assert!(verify_saved_server_jar(&p, None).is_ok(), "сверять нечем — пропуск");
+        assert!(
+            verify_saved_server_jar(&p, Some(&good.to_uppercase())).is_ok(),
+            "совпадение без учёта регистра"
+        );
+        let err = verify_saved_server_jar(&p, Some(&"a".repeat(40))).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("повреждён") && text.contains("сеть"), "{text}");
+
+        std::fs::remove_file(&p).unwrap();
+        assert!(verify_saved_server_jar(&p, Some(&good)).is_err(), "файл исчез — отказ");
+    }
+
+    /// D72 (тесты): манифест в кэше — fetch_manifest в офлайне использует
+    /// кэш как fallback, значит install_vanilla доходит до офлайн-ветки
+    /// reuse, не трогая сеть.
+    fn seed_manifest_cache(paths: &Paths) {
+        let manifest = r#"{"latest":{"release":"1.20.1","snapshot":"1.20.1"},"versions":[{"id":"1.20.1","type":"release","url":"https://piston-meta.mojang.com/v1/packages/x/1.20.1.json","time":"2023","releaseTime":"2023","sha1":"ffff","complianceLevel":1}]}"#;
+        std::fs::create_dir_all(crate::util::fs::long_path(&paths.manifests_cache())).unwrap();
+        std::fs::write(
+            crate::util::fs::long_path(&paths.manifests_cache().join("version_manifest_v2.json")),
+            manifest,
+        )
+        .unwrap();
+    }
+
+    /// D72 (тесты): реестр одной минимальной записью с сохранённым
+    /// serverJarSha1 (недостающие поля добираются из Default).
+    fn seed_registry_sha1(paths: &Paths, id: &str, sha1: &str) {
+        let text = format!(r#"{{"{id}":{{"id":"{id}","serverJarSha1":"{sha1}"}}}}"#);
+        std::fs::write(paths.root().join("servers.json"), text).unwrap();
+    }
+
+    /// D72: офлайн-reuse ванили сверяет файл с sha1 из реестра. Расхождение —
+    /// честный отказ «повреждён, включите сеть»; совпадение — файл принят,
+    /// сохранённый sha1 возвращён наверх (для записи в реестр).
+    #[tokio::test]
+    async fn vanilla_offline_reuse_verifies_saved_sha1() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        seed_manifest_cache(&paths);
+        let http = HttpClient::new(None).unwrap();
+        http.set_offline(true);
+
+        let id = "srv-sha1";
+        let sdir = crate::servers::servers_root(&paths).join(id);
+        std::fs::create_dir_all(crate::util::fs::long_path(&sdir)).unwrap();
+        let jar = sdir.join("server.jar");
+        std::fs::write(crate::util::fs::long_path(&jar), b"broken payload").unwrap();
+
+        // Реестр знает ДРУГОЙ sha1 — офлайн-reuse обязан отказать.
+        seed_registry_sha1(&paths, id, &"a".repeat(40));
+        let err = install_vanilla(&paths, &http, &sdir, "1.20.1", &|_: String| {})
+            .await
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("повреждён") && text.contains("сеть"), "{text}");
+
+        // Файл совпадает с сохранённым sha1 — принимается офлайн.
+        let real = crate::util::fs::sha1_bytes(b"broken payload");
+        seed_registry_sha1(&paths, id, &real);
+        let sha = install_vanilla(&paths, &http, &sdir, "1.20.1", &|_: String| {})
+            .await
+            .unwrap();
+        assert_eq!(sha.as_deref(), Some(real.as_str()));
+    }
+
+    /// D72: reuse бутстрапа Fabric сверяется с .sha1-сайдкаром; у старой
+    /// установки без сайдкара он лечится на месте из текущего файла. Всё
+    /// офлайн: ваниль подсовывается готовым server.jar (reuse без записи).
+    #[tokio::test]
+    async fn fabric_bootstrap_reuse_verifies_sidecar() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        seed_manifest_cache(&paths);
+        let http = HttpClient::new(None).unwrap();
+        http.set_offline(true);
+
+        let sdir = d.path().join("srv-fabric");
+        std::fs::create_dir_all(crate::util::fs::long_path(&sdir)).unwrap();
+        // Ваниль уже скачана (офлайн-reuse без записи в реестре — None).
+        std::fs::write(crate::util::fs::long_path(&sdir.join("server.jar")), b"vanilla").unwrap();
+        // Бутстрап без сайдкара — лечится: сайдкар появляется с его sha1.
+        std::fs::write(
+            crate::util::fs::long_path(&sdir.join("fabric-server-launch.jar")),
+            b"bootstrap",
+        )
+        .unwrap();
+        let boot_sha = crate::util::fs::sha1_bytes(b"bootstrap");
+        let sha = install_fabric(&paths, &http, &sdir, "1.20.1", "0.15.11", &|_: String| {})
+            .await
+            .unwrap();
+        assert_eq!(sha, None, "ваниль из офлайн-reuse без реестра — None");
+        let sidecar = std::fs::read_to_string(crate::util::fs::long_path(
+            &sdir.join("fabric-server-launch.jar.sha1"),
+        ))
+        .unwrap();
+        assert_eq!(sidecar.trim(), boot_sha, "сайдкар написан из файла");
+
+        // Совпадающий сайдкар — reuse принимается без сети.
+        let sha = install_fabric(&paths, &http, &sdir, "1.20.1", "0.15.11", &|_: String| {})
+            .await
+            .unwrap();
+        assert_eq!(sha, None);
+
+        // Расхождение — перекачка, а офлайн она честно отклоняется.
+        std::fs::write(
+            crate::util::fs::long_path(&sdir.join("fabric-server-launch.jar.sha1")),
+            "b".repeat(40),
+        )
+        .unwrap();
+        let err = install_fabric(&paths, &http, &sdir, "1.20.1", "0.15.11", &|_: String| {})
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LauncherError::OfflineMode(_)), "{err:?}");
+    }
+
     // ------------------------------------------------- маркер установленности
 
     #[test]
@@ -1051,10 +1268,13 @@ mod tests {
             reinstall_targets(&ServerKind::Vanilla),
             vec![PathBuf::from("server.jar")]
         );
+        // D72: вместе с бутстрапом сносится его .sha1-сайдкар; ванильная
+        // база server.jar сохраняется (переустановка Fabric её не трогает).
         assert_eq!(
             reinstall_targets(&ServerKind::Fabric("0.15.11".into())),
             vec![
                 PathBuf::from("fabric-server-launch.jar"),
+                PathBuf::from("fabric-server-launch.jar.sha1"),
                 PathBuf::from("libraries"),
             ]
         );

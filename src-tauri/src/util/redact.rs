@@ -3,6 +3,7 @@
 //! на `[REDACTED]`.
 
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 /// Реестр секретов отдельным типом, а не голым static — тесты работают с
@@ -46,6 +47,44 @@ pub fn redact(text: &str) -> String {
     registry().lock().unwrap().redact(text)
 }
 
+/// D72: заменить в тексте все вхождения префикса пути `prefix` на `mask`.
+/// Служит маскировке личных путей перед отправкой логов на публичные
+/// paste-сервисы (mclo.gs, см. `mclogs::sanitize_log_for_public`).
+///
+/// Особенности Windows-путей учтены: регистр не важен (`(?i)`), ориентация
+/// слэшей не важна (разделитель в паттерне — `[/\\]`), `\\?\`-префикс длинных
+/// путей не мешает (совпадение ищется в любом месте строки). Граница
+/// совпадения: за префиксом обязаны идти НЕ буква/цифра (разделитель, пробел,
+/// кавычка) или конец текста — иначе `C:\Users\Vasya` замаскировал бы и чужой
+/// `C:\Users\Vasya2`. Lookahead крейт `regex` не поддерживает, поэтому
+/// граничный символ захватывается группой и возвращается на место через `$1`;
+/// маска вставляется литерально (`$` в ней экранируется как `$$`).
+pub fn mask_path_prefix(text: &str, prefix: &Path, mask: &str) -> String {
+    let raw = crate::util::fs::normalize_for_compare(prefix)
+        .to_string_lossy()
+        .replace('/', "\\");
+    // Сегменты пути; пустые (хвостов-/начальный разделитель) отбрасываем:
+    // префиксы из paths/home_dir не заканчиваются разделителем, а «голое C:»
+    // в паттерне замаскировало бы лишнее.
+    let segments: Vec<String> = raw
+        .split('\\')
+        .filter(|s| !s.is_empty())
+        .map(regex::escape)
+        .collect();
+    if segments.is_empty() {
+        return text.to_string();
+    }
+    let body = segments.join(r"[/\\]");
+    let pattern = format!(r"(?i){}([^\p{{L}}\p{{N}}]|$)", body);
+    let Ok(re) = regex::Regex::new(&pattern) else {
+        // Регекс из escape-сегментов не может не собраться; на всякий случай —
+        // текст без маскировки, а не паника.
+        return text.to_string();
+    };
+    let replacement = format!("{}$1", mask.replace('$', "$$"));
+    re.replace_all(text, replacement.as_str()).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +123,68 @@ mod tests {
         assert_eq!(
             redact("token=A43-GLOBAL-REGISTRY-SECRET-4471"),
             "token=[REDACTED]"
+        );
+    }
+
+    // ---------- D72: mask_path_prefix ----------
+
+    /// Оба направления слэшей и оба регистра маскируются; разделитель после
+    /// префикса сохраняется в исходном виде (граничный символ возвращается
+    /// на место через $1).
+    #[test]
+    fn mask_prefix_matches_both_slash_directions_and_case() {
+        let root = Path::new(r"C:\Data\mc-launcher-v2");
+        let text = "game_dir: c:/data/MC-LAUNCHER-v2/cache/x.log, и c:\\data\\mc-launcher-v2\\instances";
+        let masked = crate::util::redact::mask_path_prefix(text, root, "[DATA]");
+        assert_eq!(
+            masked,
+            "game_dir: [DATA]/cache/x.log, и [DATA]\\instances",
+            "регистр и слэши не мешают, граница сохранена"
+        );
+    }
+
+    /// Кириллица в пути (реальный кейс: имя пользователя Windows) маскируется.
+    #[test]
+    fn mask_prefix_handles_cyrillic_path() {
+        let home = Path::new(r"C:\Users\ИгнатийПетров");
+        let text = "java: C:\\Users\\ИгнатийПетров\\.jdks\\temurin-21\\bin\\java.exe";
+        let masked = crate::util::redact::mask_path_prefix(text, home, r"C:\Users\[USER]");
+        assert_eq!(
+            masked,
+            r"java: C:\Users\[USER]\.jdks\temurin-21\bin\java.exe"
+        );
+    }
+
+    /// Граница совпадения: соседний каталог с общим префиксом имени не
+    /// задевается; вхождение в начале строки и перед пробелом — да.
+    #[test]
+    fn mask_prefix_respects_path_boundary() {
+        let home = Path::new(r"C:\Users\Vasya");
+        let masked = crate::util::redact::mask_path_prefix(
+            r"C:\Users\Vasya2\чужой C:\Users\Vasya\log.txt",
+            home,
+            "[USER]",
+        );
+        assert!(
+            masked.contains(r"C:\Users\Vasya2\чужой"),
+            "чужой каталог не задет: {masked}"
+        );
+        assert!(masked.contains(r"[USER]\log.txt"), "{masked}");
+    }
+
+    /// `\\?\`-префикс длинного пути не мешает совпадению (совпадение ищется
+    /// в любом месте строки, префикс остаётся перед маской).
+    #[test]
+    fn mask_prefix_inside_long_path_form() {
+        let root = Path::new(r"C:\Data\mc-launcher-v2");
+        let masked = crate::util::redact::mask_path_prefix(
+            r"error: \\?\C:\Data\mc-launcher-v2\cache\big.bin too large",
+            root,
+            "[DATA]",
+        );
+        assert_eq!(
+            masked,
+            r"error: \\?\[DATA]\cache\big.bin too large"
         );
     }
 }

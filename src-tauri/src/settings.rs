@@ -163,6 +163,19 @@ impl Settings {
                 return Ok(Self::default());
             }
         };
+        // D72: forward-compat — файл, записанный БОЛЕЕ новой версией лаунчера,
+        // не понижается молча (прежний migrate трогал только версии меньше
+        // текущей, а новая версия после первого же save молча записывалась
+        // поверх чужими полями-незнакомцами). Та же схема, что для битого
+        // JSON: карантин (данные не теряются) + дефолт + честный warn.
+        if settings.schema_version > SCHEMA_VERSION {
+            let reason = format!(
+                "настройки записаны более новой версией лаунчера ({} > {}), обновите приложение",
+                settings.schema_version, SCHEMA_VERSION
+            );
+            quarantine_broken(&long, &reason);
+            return Ok(Self::default());
+        }
         settings.migrate();
         Ok(settings)
     }
@@ -297,6 +310,30 @@ mod tests {
         assert_eq!(s.theme, Theme::Light);
         assert_eq!(s.schema_version, SCHEMA_VERSION);
         assert_eq!(s.download_parallelism, 16);
+    }
+
+    /// D72: файл более новой схемы НЕ понижается молча — карантин (настройки
+    /// не теряются) + дефолт + warn, как для битого JSON.
+    #[test]
+    fn newer_schema_is_quarantined_with_default_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(
+            &p,
+            br#"{"schemaVersion": 99, "theme": "light", "futureField": true}"#,
+        )
+        .unwrap();
+        let s = Settings::load(&p).unwrap();
+        assert_eq!(s.schema_version, SCHEMA_VERSION, "наружу — дефолт текущей схемы");
+        assert_eq!(s.theme, Theme::Dark, "поля новой схемы не подмешиваются");
+        // Настройки не потеряны: файл уехал в карантин, а не перезаписан.
+        let bad = dir.path().join("settings.json.bad");
+        assert!(bad.exists(), "файл новой схемы сохранён в карантин");
+        let kept = std::fs::read_to_string(&bad).unwrap();
+        assert!(kept.contains("\"schemaVersion\": 99"), "{kept}");
+        assert!(!p.exists(), "оригинал переименован, не оставлен на месте");
+        // Дефолт можно сохранить — путь запуска не заблокирован.
+        s.save(&p).unwrap();
     }
 
     #[test]

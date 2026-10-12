@@ -99,6 +99,12 @@ struct ServerRecord {
     /// эвристика занижает — приёмка ловила UnsupportedClassVersionError).
     #[serde(default)]
     java_major: u32,
+    /// D72: sha1 ванильного server.jar из `downloads.server.sha1` version JSON
+    /// на момент создания (проверен движком при скачивании). Офлайн-reuse
+    /// (install_vanilla) сверяет файл с ним; None — поле не заполнялось
+    /// (старый реестр, Forge/NeoForge) — сверка толерантно пропускается.
+    #[serde(default)]
+    server_jar_sha1: Option<String>,
 }
 
 impl Default for ServerRecord {
@@ -116,6 +122,7 @@ impl Default for ServerRecord {
             world: None,
             created_at: 0,
             java_major: 0,
+            server_jar_sha1: None,
         }
     }
 }
@@ -314,12 +321,18 @@ struct CreateParams<'a> {
     port: u16,
     ram_mb: u32,
     online_mode: bool,
+    /// D72: false — server-ip=127.0.0.1 (localhost), true — все интерфейсы.
+    lan: bool,
 }
 
 /// Создать выделенный сервер из инстанса: установить серверное ПО (наследует
 /// версию и загрузчик инстанса), скопировать моды с фильтром клиент-модов,
 /// опционально мир, записать server.properties/eula.txt и реестр. Любая
 /// ошибка после создания каталога откатывает каталог целиком.
+///
+/// D72: `lan=false` — сервер привязывается к localhost (`server-ip=127.0.0.1`
+/// в шаблоне server.properties), `lan=true` — слушает все интерфейсы (пустой
+/// `server-ip=`).
 #[allow(clippy::too_many_arguments)]
 pub async fn server_create(
     paths: &Paths,
@@ -330,6 +343,7 @@ pub async fn server_create(
     port: u16,
     ram_mb: u32,
     online_mode: bool,
+    lan: bool,
 ) -> Result<ServerCreateResult> {
     // 1. Инстанс и входные данные. Ошибки валидации — ДО создания каталога.
     let inst = crate::instances::load(paths, instance_id)?;
@@ -378,6 +392,7 @@ pub async fn server_create(
         port,
         ram_mb,
         online_mode,
+        lan,
     };
     match create_inner(paths, http, &inst, &mc_version, params).await {
         Ok(res) => Ok(res),
@@ -421,8 +436,10 @@ async fn create_inner(
     let java_major = install::required_java_major(paths, http, mc_version).await;
     // 3. Серверное ПО (vanilla/fabric/forge/neoforge) — модуль install;
     // тяжёлое блокирует сам инсталлятор, прогресс играет в журнал.
+    // D72: забираем проверенный sha1 ванильного server.jar — в реестр для
+    // будущих офлайн-проверок файла.
     let progress = |msg: String| tracing::info!(target: "servers::create", "{msg}");
-    install::install_server_software(
+    let server_jar_sha1 = install::install_server_software(
         paths,
         http,
         p.dir,
@@ -446,8 +463,16 @@ async fn create_inner(
             .map_err(|e| LauncherError::internal(format!("копирование мира: {e}")))??;
     }
 
-    // 6. server.properties (level-name = world) и заглушка eula.txt.
-    worlds::write_properties(p.dir, p.port, p.online_mode, worlds::WORLD_DIR_NAME, p.name)?;
+    // 6. server.properties (level-name = world; D72: server-ip по lan) и
+    //    заглушка eula.txt.
+    worlds::write_properties(
+        p.dir,
+        p.port,
+        p.online_mode,
+        p.lan,
+        worlds::WORLD_DIR_NAME,
+        p.name,
+    )?;
     worlds::write_eula_stub(p.dir)?;
 
     // 7. Реестр: id уникализирован заранее, коллизии здесь не бывает.
@@ -464,6 +489,7 @@ async fn create_inner(
         world: p.world.map(str::to_string),
         created_at: crate::instances::now_secs(),
         java_major,
+        server_jar_sha1,
     };
     {
         let _guard = SERVERS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -555,6 +581,28 @@ pub fn server_accept_eula(paths: &Paths, id: &str) -> Result<()> {
     worlds::write_eula(&server_dir(paths, id), true)
 }
 
+/// D72: сохранённый при создании sha1 server.jar для каталога сервера
+/// (id — имя каталога, как в reinstall). None — записи нет, id некорректен
+/// или поле пустое (старый реестр).
+pub(crate) fn server_jar_sha1_for_dir(paths: &Paths, dir: &Path) -> Option<String> {
+    let id = dir.file_name()?.to_string_lossy().into_owned();
+    valid_server_id(&id).ok()?;
+    load_registry(paths).get(&id)?.server_jar_sha1.clone()
+}
+
+/// D72: записать в реестр пересчитанный на старте java_major (server_start
+/// лечит записи, созданные без доступа к манифесту — java_major: 0).
+pub(crate) fn save_java_major(paths: &Paths, id: &str, major: u32) -> Result<()> {
+    valid_server_id(id)?;
+    let _guard = SERVERS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut reg = load_registry(paths);
+    let rec = reg
+        .get_mut(id)
+        .ok_or_else(|| LauncherError::NotFound(format!("сервер {id}")))?;
+    rec.java_major = major;
+    save_registry(paths, &reg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +629,7 @@ mod tests {
             world: Some("Новый мир".into()),
             created_at: 1700000000,
             java_major: 21,
+            server_jar_sha1: Some("a".repeat(40)),
         }
     }
 
@@ -601,10 +650,69 @@ mod tests {
         assert_eq!(r.ram_mb, 2048);
         assert!(!r.online_mode);
         assert_eq!(r.world.as_deref(), Some("Новый мир"));
+        // D72: sha1 server.jar переживает round-trip.
+        assert_eq!(r.server_jar_sha1.as_deref(), Some(&"a".repeat(40)[..]));
         // BTreeMap: порядок ключей в файле стабильный.
         let first = serde_json::to_value(&loaded).unwrap();
         let keys: Vec<&String> = first.as_object().unwrap().keys().collect();
         assert_eq!(keys, [&"srv-aaa", &"srv-bbb"]);
+    }
+
+    /// D72: серверы.json без новых полей читается — server_jar_sha1 и
+    /// java_major добираются из Default (эволюция схемы без карантина).
+    #[test]
+    fn old_registry_without_new_fields_loads() {
+        let (_d, paths) = setup();
+        let text = r#"{"srv-old":{"id":"srv-old"}}"#;
+        std::fs::write(registry_path(&paths), text).unwrap();
+        let loaded = load_registry(&paths);
+        let r = &loaded["srv-old"];
+        assert_eq!(r.server_jar_sha1, None, "нет поля — None");
+        assert_eq!(r.java_major, 0);
+        assert_eq!(r.port, 25565, "остальное — из Default");
+    }
+
+    /// D72: save_java_major пишет пересчёт в реестр; чужой id — NotFound.
+    #[test]
+    fn save_java_major_updates_registry() {
+        let (_d, paths) = setup();
+        {
+            let _guard = SERVERS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut reg = Registry::new();
+            reg.insert("srv-jm".into(), record("srv-jm", "i"));
+            save_registry(&paths, &reg).unwrap();
+        }
+        save_java_major(&paths, "srv-jm", 25).unwrap();
+        assert_eq!(load_registry(&paths)["srv-jm"].java_major, 25);
+        assert_eq!(
+            save_java_major(&paths, "ghost", 21).unwrap_err().code(),
+            "not_found"
+        );
+        assert_eq!(
+            save_java_major(&paths, "../evil", 21).unwrap_err().code(),
+            "invalid_input"
+        );
+    }
+
+    /// D72: sha1 из реестра читается по имени каталога сервера; кривой id и
+    /// отсутствие записи — None.
+    #[test]
+    fn server_jar_sha1_for_dir_reads_registry() {
+        let (_d, paths) = setup();
+        {
+            let _guard = SERVERS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut reg = Registry::new();
+            reg.insert("srv-sha".into(), record("srv-sha", "i"));
+            save_registry(&paths, &reg).unwrap();
+        }
+        let dir = server_dir(&paths, "srv-sha");
+        assert_eq!(
+            server_jar_sha1_for_dir(&paths, &dir).as_deref(),
+            Some(&"a".repeat(40)[..])
+        );
+        assert_eq!(server_jar_sha1_for_dir(&paths, &server_dir(&paths, "ghost")), None);
+        // «..» не имеет file_name — барьер против подмены id каталогом.
+        assert_eq!(server_jar_sha1_for_dir(&paths, Path::new("..")), None);
     }
 
     #[test]
@@ -716,7 +824,7 @@ mod tests {
         let http = HttpClient::new(None).unwrap();
 
         // Инстанса нет.
-        let err = server_create(&paths, &http, "ghost", "s", None, 25565, 2048, true)
+        let err = server_create(&paths, &http, "ghost", "s", None, 25565, 2048, true, false)
             .await
             .unwrap_err();
         assert_eq!(err.code(), "not_found");
@@ -724,7 +832,7 @@ mod tests {
         // Инстанс с пустой версией.
         let inst = crate::instances::Instance::new("Тест", "");
         crate::instances::save(&paths, &inst).unwrap();
-        let err = server_create(&paths, &http, &inst.id, "s", None, 25565, 2048, true)
+        let err = server_create(&paths, &http, &inst.id, "s", None, 25565, 2048, true, false)
             .await
             .unwrap_err();
         assert_eq!(err.code(), "invalid_input", "пустая mc_version");
@@ -737,7 +845,7 @@ mod tests {
             std::process::id().to_string(),
         )
         .unwrap();
-        let err = server_create(&paths, &http, &inst.id, "s", None, 25565, 2048, true)
+        let err = server_create(&paths, &http, &inst.id, "s", None, 25565, 2048, true, false)
             .await
             .unwrap_err();
         assert_eq!(err.code(), "instance_running");
@@ -745,13 +853,13 @@ mod tests {
 
         // Порт 0 и RAM вне диапазона.
         for (port, ram) in [(0, 2048), (25565, 100), (25565, 40000)] {
-            let err = server_create(&paths, &http, &inst.id, "s", None, port, ram, true)
+            let err = server_create(&paths, &http, &inst.id, "s", None, port, ram, true, false)
                 .await
                 .unwrap_err();
             assert_eq!(err.code(), "invalid_input", "port={port}, ram={ram}");
         }
         // Мир не существует — ранний отказ.
-        let err = server_create(&paths, &http, &inst.id, "s", Some("ghost"), 25565, 2048, true)
+        let err = server_create(&paths, &http, &inst.id, "s", Some("ghost"), 25565, 2048, true, false)
             .await
             .unwrap_err();
         assert_eq!(err.code(), "not_found");

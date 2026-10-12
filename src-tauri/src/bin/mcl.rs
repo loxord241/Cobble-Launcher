@@ -142,8 +142,9 @@ enum Cmd {
     AuthMsaWeb,
     /// Дописать MSA-вход после авторизации в браузере
     AuthMsaPoll {
+        /// Явный device_code; без него читается файл состояния от auth-msa-start
         #[arg(long)]
-        device_code: String,
+        device_code: Option<String>,
     },
     /// Список аккаунтов
     AuthList,
@@ -323,10 +324,17 @@ async fn run(cli: Cli) -> Result<()> {
                 )
             })?;
             let start = mc_launcher_v2_lib::auth::msa::device_code_start(&client, &client_id).await?;
+            // D72: device_code — это credential: в stdout (который часто
+            // попадает в скрипты, чаты и скриншоты) его больше не печатаем.
+            // Он сохраняется во временный файл состояния, откуда его читает
+            // auth-msa-poll; наружу уходят только user_code и подсказка.
+            save_device_code_state(&start)?;
             println!("1) Откройте: {}", start.verification_url);
             println!("2) Введите код: {}", start.user_code);
-            println!("device_code: {}", start.device_code);
-            println!("3) Затем: mcl auth-msa-poll --device-code <значение_device_code>");
+            println!(
+                "3) Затем: mcl auth-msa-poll  (device_code сохранён в {})",
+                device_code_state_path().display()
+            );
             Ok(())
         }
         Cmd::AuthMsaPoll { device_code } => {
@@ -334,7 +342,31 @@ async fn run(cli: Cli) -> Result<()> {
             let client_id = settings.azure_client_id.clone().ok_or_else(|| {
                 LauncherError::InvalidInput("нет azureClientId в settings.json".into())
             })?;
-            for _ in 0..30 {
+            // D72: без явного --device-code читаем файл состояния от
+            // auth-msa-start (там же interval/expires_in из ответа /devicecode);
+            // явный аргумент по-прежнему работает, но без него известны только
+            // дефолты RFC 8628 (5 с / 900 с).
+            let (device_code, interval, expires_in) = match device_code {
+                Some(dc) => (dc, DEFAULT_POLL_INTERVAL_SECS, DEFAULT_EXPIRES_IN_SECS),
+                None => {
+                    let st = load_device_code_state()?;
+                    (st.device_code, st.interval, st.expires_in)
+                }
+            };
+            // D72: прежде было фиксировано 3 с и ровно 30 итераций (~90 с) —
+            // код Microsoft живёт 900 с. Теперь интервал — из ответа
+            // /devicecode (не меньше 1 с), общая длительность — expires_in.
+            // slow_down обрабатывается в ядре device_code_poll (пауза +5 с
+            // по RFC 8628 §3.5 живёт там же, D64).
+            let interval = interval.max(1);
+            let deadline = Instant::now() + Duration::from_secs(expires_in);
+            loop {
+                if Instant::now() >= deadline {
+                    eprintln!(
+                        "авторизация не завершена: код истёк (жили {expires_in} с) — начните заново с mcl auth-msa-start"
+                    );
+                    std::process::exit(2);
+                }
                 match mc_launcher_v2_lib::auth::msa::device_code_poll(&client, &client_id, &device_code).await? {
                     Some(session) => {
                         let ref_name = format!("msa-refresh-{}", uuid::Uuid::new_v4());
@@ -352,15 +384,18 @@ async fn run(cli: Cli) -> Result<()> {
                         };
                         println!("Вход выполнен: {} ({})", session.player_name, session.uuid);
                         mc_launcher_v2_lib::auth::add(&paths, acc)?;
+                        // D72: вход завершён — одноразовый файл состояния с device_code
+                        // больше не нужен (device_code — credential).
+                        if let Err(e) = std::fs::remove_file(device_code_state_path()) {
+                            if e.kind() != std::io::ErrorKind::NotFound {
+                                eprintln!("файл состояния не удалён: {e}");
+                            }
+                        }
                         return Ok(());
                     }
-                    None => tokio::time::sleep(std::time::Duration::from_secs(3)).await,
+                    None => tokio::time::sleep(Duration::from_secs(interval)).await,
                 }
             }
-            // D62: 30 итераций (~90 с) без завершения — это провал, а не успех:
-            // exit 0 обманывал скрипты-обёртки, проверяющие код возврата.
-            eprintln!("авторизация не завершена — повторите poll");
-            std::process::exit(2);
         }
         Cmd::AuthMsaWeb => {
             let client = std::sync::Arc::new(make_client(&settings)?);
@@ -748,6 +783,83 @@ fn make_client(settings: &Settings) -> Result<HttpClient> {
     let client = HttpClient::new(settings.proxy_url.as_deref())?;
     client.set_offline(settings.work_offline);
     Ok(client)
+}
+
+// ---------- D72: файл состояния device-code (auth-msa-start/poll) ----------
+
+/// D72: интервал опроса по умолчанию (RFC 8628 §3.2) — используется, когда
+/// poll вызван с явным --device-code и файлу состояния взяться неоткуда.
+const DEFAULT_POLL_INTERVAL_SECS: u64 = 5;
+/// D72: время жизни device_code по умолчанию (RFC 8628 §3.2 / практика MSA).
+const DEFAULT_EXPIRES_IN_SECS: u64 = 900;
+
+/// D72: состояние device-code flow между `mcl auth-msa-start` и
+/// `mcl auth-msa-poll`. device_code — credential и живёт ТОЛЬКО в этом файле
+/// (в stdout с D72 не печатается); interval/expires_in — из ответа
+/// /devicecode, poll обязан их уважать (прежде: фиксированные 3 с и 30 итераций).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct DeviceCodeState {
+    device_code: String,
+    user_code: String,
+    /// Секунд между опросами (поле interval ответа /devicecode).
+    interval: u64,
+    /// Время жизни кода в секундах (поле expires_in ответа /devicecode).
+    expires_in: u64,
+}
+
+/// Файл состояния во временном каталоге пользователя: `%TEMP%\mc-launcher-v2-device-code.json`.
+fn device_code_state_path() -> PathBuf {
+    std::env::temp_dir().join("mc-launcher-v2-device-code.json")
+}
+
+/// Сохранить состояние device-code. D72: 0600 — «насколько возможно»: на Unix
+/// права ставятся при создании; на Windows std не умеет ACL — приватность
+/// обеспечивает сам %TEMP% (каталог только для текущего пользователя), файл
+/// удаляется после успешного poll (см. ветку AuthMsaPoll).
+fn save_device_code_state(start: &mc_launcher_v2_lib::auth::msa::DeviceCodeStart) -> Result<()> {
+    let state = DeviceCodeState {
+        device_code: start.device_code.clone(),
+        user_code: start.user_code.clone(),
+        interval: start.interval,
+        expires_in: start.expires_in,
+    };
+    let data = serde_json::to_vec_pretty(&state)
+        .map_err(|e| LauncherError::Internal(format!("device-code state: {e}")))?;
+    let path = device_code_state_path();
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        f.write_all(&data)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&path, data)?;
+    }
+    Ok(())
+}
+
+/// Прочитать состояние device-code от auth-msa-start.
+fn load_device_code_state() -> Result<DeviceCodeState> {
+    let path = device_code_state_path();
+    let data = std::fs::read(&path).map_err(|_| {
+        LauncherError::InvalidInput(format!(
+            "нет файла состояния {} — сначала выполните mcl auth-msa-start (или передайте --device-code)",
+            path.display()
+        ))
+    })?;
+    serde_json::from_slice(&data).map_err(|e| {
+        LauncherError::InvalidInput(format!(
+            "битый файл состояния {}: выполните mcl auth-msa-start заново ({e})",
+            path.display()
+        ))
+    })
 }
 
 /// D62: простая эвристика для ЧЕЛОВЕЧЕСКОГО показа команды (не для исполнения):

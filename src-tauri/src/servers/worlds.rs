@@ -119,12 +119,15 @@ pub fn escape_properties_value(value: &str) -> String {
 }
 
 /// Шаблон `server.properties` при создании сервера: только важное + разумные
-/// дефолты. Существующий файл НЕ перезаписывается (create — единственный
-/// писатель; повторный вызов идемпотентен).
+/// дефолты. `lan=false` — сервер привязан к localhost (`server-ip=127.0.0.1`),
+/// `lan=true` — слушает все интерфейсы (пустой `server-ip=`, D72). Существующий
+/// файл НЕ перезаписывается (create — единственный писатель; повторный вызов
+/// идемпотентен).
 pub fn write_properties(
     server_dir: &Path,
     port: u16,
     online_mode: bool,
+    lan: bool,
     level_name: &str,
     motd: &str,
 ) -> Result<()> {
@@ -134,9 +137,12 @@ pub fn write_properties(
         return Ok(());
     }
     let motd = escape_properties_value(motd);
+    // D72: пустой server-ip в Minecraft означает «все интерфейсы».
+    let server_ip = if lan { "" } else { "127.0.0.1" };
     let text = format!(
         "# server.properties — создано Cobble Launcher при создании сервера\n\
          server-port={port}\n\
+         server-ip={server_ip}\n\
          online-mode={online_mode}\n\
          level-name={}\n\
          motd={motd}\n\
@@ -147,6 +153,22 @@ pub fn write_properties(
         escape_properties_value(level_name)
     );
     atomic_write(&path, text.as_bytes())
+}
+
+/// D72: порт сервера из server.properties — последняя строка `server-port=`
+/// (парсер — тот же толерантный к пробелам паттерн, что у read_eula_accepted:
+/// Java Properties берёт последнее значение ключа). None — файла нет, строки
+/// нет или значение не число.
+pub fn read_server_port(server_dir: &Path) -> Option<u16> {
+    let data =
+        std::fs::read_to_string(long_path(&server_dir.join("server.properties"))).ok()?;
+    data.lines().rev().find_map(|line| {
+        let (key, value) = line.trim().split_once('=')?;
+        key.trim()
+            .eq_ignore_ascii_case("server-port")
+            .then_some(value.trim())
+            .and_then(|v| v.parse::<u16>().ok())
+    })
 }
 
 /// Прочитать eula.txt как список строк (файла нет → None).
@@ -306,9 +328,11 @@ mod tests {
     #[test]
     fn properties_template_and_motd_escaping() {
         let d = tempfile::tempdir().unwrap();
-        write_properties(d.path(), 25565, false, "world", "Привет: мир = §cTest\nстрока2").unwrap();
+        write_properties(d.path(), 25565, false, false, "world", "Привет: мир = §cTest\nстрока2")
+            .unwrap();
         let text = std::fs::read_to_string(d.path().join("server.properties")).unwrap();
         assert!(text.contains("server-port=25565"), "{text}");
+        assert!(text.contains("server-ip=127.0.0.1"), "{text}");
         assert!(text.contains("online-mode=false"), "{text}");
         assert!(text.contains("level-name=world"), "{text}");
         assert!(text.contains("max-players=20"), "{text}");
@@ -329,9 +353,59 @@ mod tests {
         assert!(!motd_line.contains('\u{a7}'), "секций цвета нет");
 
         // Повторная запись существующего файла — no-op (контент не меняется).
-        write_properties(d.path(), 1234, true, "other", "other").unwrap();
+        write_properties(d.path(), 1234, true, false, "other", "other").unwrap();
         let again = std::fs::read_to_string(d.path().join("server.properties")).unwrap();
         assert!(again.contains("server-port=25565"), "файл не перезаписан");
+    }
+
+    /// D72: server-ip в шаблоне по флагу lan — false держит сервер на
+    /// localhost, true (пустой server-ip) открывает все интерфейсы.
+    #[test]
+    fn properties_server_ip_follows_lan_flag() {
+        let d = tempfile::tempdir().unwrap();
+        write_properties(d.path(), 25565, true, false, "world", "m").unwrap();
+        let text = std::fs::read_to_string(d.path().join("server.properties")).unwrap();
+        assert!(
+            text.lines().any(|l| l == "server-ip=127.0.0.1"),
+            "не-lan: только localhost: {text}"
+        );
+
+        let d2 = tempfile::tempdir().unwrap();
+        write_properties(d2.path(), 25565, true, true, "world", "m").unwrap();
+        let text2 = std::fs::read_to_string(d2.path().join("server.properties")).unwrap();
+        assert!(
+            text2.lines().any(|l| l == "server-ip="),
+            "lan: пустой server-ip = все интерфейсы: {text2}"
+        );
+        assert!(
+            !text2.lines().any(|l| l == "server-ip=127.0.0.1"),
+            "lan-шаблон не должен держать localhost: {text2}"
+        );
+    }
+
+    /// D72: чтение порта из server.properties — берётся последнее значение
+    /// ключа, пробелы вокруг значения допустимы, комментарии/мусор — мимо.
+    #[test]
+    fn read_server_port_takes_last_value() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(read_server_port(d.path()), None, "файла нет — None");
+
+        std::fs::write(
+            d.path().join("server.properties"),
+            b"#server-port=1\nserver-port=25565\nmotd=x\n",
+        )
+        .unwrap();
+        assert_eq!(read_server_port(d.path()), Some(25565), "последнее значение");
+
+        std::fs::write(
+            d.path().join("server.properties"),
+            b"server-port = 25600\n",
+        )
+        .unwrap();
+        assert_eq!(read_server_port(d.path()), Some(25600), "пробелы вокруг =");
+
+        std::fs::write(d.path().join("server.properties"), b"server-port=duh\n").unwrap();
+        assert_eq!(read_server_port(d.path()), None, "не число — None");
     }
 
     #[test]

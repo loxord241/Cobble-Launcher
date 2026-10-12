@@ -81,8 +81,26 @@ pub async fn download_installer(
                 tracing::warn!("кэш installer {version} расходится с .sha1 — перекачиваю");
             }
             None => {
-                tracing::warn!(".sha1 для installer {version} недоступен — использую кэш без сверки");
-                return Ok(dest);
+                // D72: maven недоступен — сверяем с сайдкаром, оставшимся от
+                // последнего верифицированного скачивания; нет и его —
+                // честный отказ вместо «кэш без сверки».
+                let sidecar = crate::util::fs::long_path(&dest.with_extension("jar.sha1"));
+                if let Ok(saved) = std::fs::read_to_string(&sidecar) {
+                    let saved = saved.trim();
+                    let actual = crate::util::fs::sha1_file(&dest_long).unwrap_or_default();
+                    if actual == saved {
+                        return Ok(dest);
+                    }
+                    return Err(LauncherError::HashMismatch {
+                        path: dest.display().to_string(),
+                        expected: saved.to_string(),
+                        actual,
+                    });
+                }
+                return Err(LauncherError::network(format!(
+                    ".sha1 для installer {version} недоступен, у кэша нет сайдкара — \
+                     перекачайте через «Переустановить» при рабочей сети"
+                )));
             }
         }
     }
@@ -121,6 +139,9 @@ pub async fn download_installer(
     }
     std::fs::create_dir_all(crate::util::fs::long_path(dest.parent().unwrap()))?;
     crate::util::fs::atomic_write(&dest, &bytes)?;
+    // D72: сайдкар sha1 от последнего верифицированного скачивания — кэш
+    // можно проверить даже когда maven с .sha1 недоступен.
+    crate::util::fs::atomic_write(&dest.with_extension("jar.sha1"), expected.as_bytes())?;
     Ok(dest)
 }
 

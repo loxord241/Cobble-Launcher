@@ -1,4 +1,5 @@
 // Диалог «Сервер из инстанса» (D68): имя, мир-копия, порт, RAM, online-mode.
+// D72: + чекбокс LAN («разрешить игроков из локальной сети», по умолчанию ВЫКЛ).
 // Создание качает файлы сервера (минуты) — busy на весь вызов: кнопки и
 // закрытие (✕/подложка/Esc) заблокированы, отмена невозможна. Успех → сводка
 // по модам + «Готово»; ошибка → apiErrorText в модалке, можно закрыть.
@@ -38,6 +39,10 @@ export default function ServerCreateDialog({
   const [portText, setPortText] = useState(String(PORT_DEFAULT));
   const [ramMb, setRamMb] = useState(RAM_DEFAULT);
   const [onlineMode, setOnlineMode] = useState(true);
+  // D72: «разрешить игроков из локальной сети». По умолчанию ВЫКЛ — безопасный
+  // дефолт: без галочки ядро пропишет server-ip=127.0.0.1 (сервер виден только
+  // на этом компьютере), с галочкой — на всех интерфейсах.
+  const [lan, setLan] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ServerCreateResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +96,7 @@ export default function ServerCreateDialog({
         port,
         ramMb,
         onlineMode,
+        lan, // D72: последний аргумент — разрешить игроков из локальной сети.
       );
       setResult(res);
       // Список серверов перечитывается сразу — модалка ещё показывает сводку.
@@ -245,6 +251,22 @@ export default function ServerCreateDialog({
               />
               {t("servers.onlineMode")}
             </label>
+
+            {/* D72: чекбокс LAN в стиле чекбокса online-mode; подсказка мелким
+                текстом поясняет безопасный дефолт (выключено → только localhost). */}
+            <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-text hover:text-text">
+              <input
+                type="checkbox"
+                checked={lan}
+                onChange={(e) => setLan(e.target.checked)}
+                disabled={busy}
+                className="accent-accent"
+              />
+              {t("serverCreate.lan")}
+            </label>
+            <p className="ml-6 mt-0.5 text-xs text-text-muted">
+              {t("serverCreate.lan.hint")}
+            </p>
 
             {error && (
               <div className="mt-3 text-sm text-error" role="alert">

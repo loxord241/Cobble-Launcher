@@ -551,6 +551,8 @@
   "servers.tab": "Serwery",
   "servers.create": "Utwórz serwer z instancji",
   "servers.create.hint": "Dziedziczy wersję i loader instancji",
+  "serverCreate.lan": "Zezwól graczom z sieci lokalnej",
+  "serverCreate.lan.hint": "Wyłączone — serwer widoczny tylko na tym komputerze",
   "servers.name": "Nazwa serwera",
   "servers.instance": "Instancja źródłowa",
   "servers.world": "Świat (kopia z instancji)",

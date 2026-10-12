@@ -94,8 +94,10 @@ export const api = {
   playtimeStats: (instanceId: string, days: number) =>
     invoke<PlaytimeDay[]>("playtime_stats", { instanceId, days }),
   /** D68: выделенные серверы («Сервер из инстанса»). */
-  serverCreate: (instanceId: string, name: string, world: string | null, port: number, ramMb: number, onlineMode: boolean) =>
-    invoke<ServerCreateResult>("server_create", { instanceId, name, world, port, ramMb, onlineMode }),
+  // D72: lan — «разрешить игроков из локальной сети» (false/None →
+  // server-ip=127.0.0.1, true → все интерфейсы); ядро примет lan: Option<bool>.
+  serverCreate: (instanceId: string, name: string, world: string | null, port: number, ramMb: number, onlineMode: boolean, lan: boolean) =>
+    invoke<ServerCreateResult>("server_create", { instanceId, name, world, port, ramMb, onlineMode, lan }),
   serverList: (instanceId?: string) => invoke<ServerInfo[]>("server_list", { instanceId }),
   serverStatus: (id: string) => invoke<ServerInfo>("server_status", { id }),
   serverDelete: (id: string) => invoke<void>("server_delete", { id }),

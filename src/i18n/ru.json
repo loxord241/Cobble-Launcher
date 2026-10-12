@@ -551,6 +551,8 @@
   "servers.tab": "Серверы",
   "servers.create": "Создать сервер из инстанса",
   "servers.create.hint": "Наследует версию и загрузчик инстанса",
+  "serverCreate.lan": "Разрешить игроков из локальной сети",
+  "serverCreate.lan.hint": "Выключено — сервер виден только на этом компьютере",
   "servers.name": "Имя сервера",
   "servers.instance": "Инстанс-источник",
   "servers.world": "Мир (копия из инстанса)",
