@@ -1,0 +1,16 @@
+{
+  "objects": {
+    "minecraft/sounds/random/click.ogg": {
+      "hash": "9f6b0b3c3c0f7a5b3f1d1c0f7a5b3f1d1c0f7a5b",
+      "size": 3784
+    },
+    "pack.mcmeta": {
+      "hash": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+      "size": 97
+    },
+    "minecraft/lang/en_us.lang": {
+      "hash": "0123456789abcdef0123456789abcdef01234567",
+      "size": 123456
+    }
+  }
+}

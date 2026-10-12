@@ -1,0 +1,42 @@
+name: Deploy site
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+# D64: все actions запинены по полным SHA (образец пинов — release.yml).
+# SHA сняты с канонических мажорных тегов через api.github.com
+# (refs/tags/...): checkout = v4.2.2, configure-pages = v5.0.0,
+# deploy-pages = v4.0.5, upload-artifact = v4.6.2.
+# D66: upload-pages-artifact (v3–v5) не пробрасывает overwrite в upload-artifact —
+# rerun джоба дублировал артефакт "github-pages", и deploy-pages падал
+# («Multiple artifacts … count is 2»); поэтому archive+upload сделаны inline
+# с overwrite: true (безопасный rerun).
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+      - name: Archive site
+        run: >
+          tar --dereference --hard-dereference --directory site
+          -cvf "$RUNNER_TEMP/artifact.tar" --exclude=.git --exclude=.github .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: github-pages
+          path: ${{ runner.temp }}/artifact.tar
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+      - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+        id: deployment

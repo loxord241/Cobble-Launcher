@@ -1,0 +1,300 @@
+//! Единый тип ошибки ядра. Сериализуется в UI как `{code, message, hint?}`
+//! (спека §4.1, §4.3). Никаких unwrap/expect в продуктовых путях.
+
+use serde::Serialize;
+
+/// Плоский payload ошибки для UI/IPC.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorPayload {
+    pub code: String,
+    pub message: String,
+    /// LOC#2 (аудит 2026-10-03): код подсказки вместо вшитого текста —
+    /// перевод живёт в src/i18n/errors.json (секция "hints"), иначе en/uk/pl
+    /// получали русские советы.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint_code: Option<&'static str>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LauncherError {
+    #[error("сеть: {0}")]
+    Network(String),
+
+    /// Не-2xx от HTTP API со структурным статусом и URL: вызывающий отличает
+    /// «проект удалён/скрыт» (404/410) от реальной сетевой проблемы, не парся
+    /// текст. Для фронта неотличим от Network: тот же code "network", то же
+    /// сообщение «HTTP {status} для {url}», хинта нет.
+    #[error("HTTP {status} для {url}")]
+    HttpStatus { status: u16, url: String },
+
+    #[error("хэш не совпал для {path}: ожидался {expected}, получен {actual}")]
+    HashMismatch {
+        path: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("не найдено: {0}")]
+    NotFound(String),
+
+    #[error("некорректный ввод: {0}")]
+    InvalidInput(String),
+
+    #[error("путь вне целевого каталога (zip-slip): {0}")]
+    ZipSlip(String),
+
+    #[error("Java не найдена: {0}")]
+    JavaNotFound(String),
+
+    #[error("версия не найдена: {0}")]
+    VersionNotFound(String),
+
+    #[error("операция отменена")]
+    Cancelled,
+
+    #[error("таймаут: {0}")]
+    Timeout(String),
+
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("{0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("HTTP: {0}")]
+    Http(#[from] reqwest::Error),
+
+    #[error("zip: {0}")]
+    Zip(String),
+
+    #[error("инстанс запущен: {0}")]
+    InstanceRunning(String),
+
+    #[error("режим „работать офлайн“: сеть отключена ({0})")]
+    OfflineMode(String),
+
+    #[error("внутренняя ошибка: {0}")]
+    Internal(String),
+}
+
+pub type Result<T> = std::result::Result<T, LauncherError>;
+
+
+/// ENV-15: ищет «certificate» по всей цепочке source(). Display у reqwest
+/// показывает только верхний уровень, а слово про сертификат лежит глубже
+/// (rustls/schannel), поэтому текст проверяем по цепочке источников.
+fn mentions_certificate(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(err);
+    while let Some(e) = current {
+        if e.to_string().to_lowercase().contains("certificate") {
+            return true;
+        }
+        current = e.source();
+    }
+    false
+}
+
+/// Сериализуется как payload — так ошибки автоматически проходят через
+/// #[tauri::command] в UI (спека §4.1: `{code, message, hint}`).
+impl serde::Serialize for LauncherError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        self.payload().serialize(serializer)
+    }
+}
+
+impl LauncherError {
+    /// Код ошибки для i18n-маппинга в UI (спека §8: `i18n/errors.json`).
+    pub fn code(&self) -> &'static str {
+        match self {
+            LauncherError::Network(_) => "network",
+            LauncherError::HttpStatus { .. } => "network",
+            LauncherError::HashMismatch { .. } => "hash_mismatch",
+            LauncherError::NotFound(_) => "not_found",
+            LauncherError::InvalidInput(_) => "invalid_input",
+            LauncherError::ZipSlip(_) => "zip_slip",
+            LauncherError::JavaNotFound(_) => "java_not_found",
+            LauncherError::VersionNotFound(_) => "version_not_found",
+            LauncherError::Cancelled => "cancelled",
+            LauncherError::Timeout(_) => "timeout",
+            LauncherError::Io(_) => "io",
+            LauncherError::Json(_) => "json",
+            LauncherError::Http(_) => "http",
+            LauncherError::Zip(_) => "zip",
+            LauncherError::InstanceRunning(_) => "instance_running",
+            LauncherError::OfflineMode(_) => "offline_mode",
+            LauncherError::Internal(_) => "internal",
+        }
+    }
+
+    /// Код подсказки человеку (переводится на фронте, errors.json → "hints").
+    pub fn hint_code(&self) -> Option<&'static str> {
+        match self {
+            LauncherError::HashMismatch { .. } => Some("hash_retry"),
+            LauncherError::JavaNotFound(_) => Some("java_settings"),
+            // ENV-15: сертификатная ошибка (сбитое время, captive-портал) без
+            // адресного совета неразличима с обычным обрывом сети.
+            LauncherError::Http(err) => mentions_certificate(err).then_some("cert_time"),
+            LauncherError::Network(msg) => msg
+                .to_lowercase()
+                .contains("certificate")
+                .then_some("cert_time"),
+            LauncherError::InstanceRunning(_) => Some("instance_running"),
+            LauncherError::OfflineMode(_) => Some("offline_toggle"),
+            _ => None,
+        }
+    }
+
+    pub fn payload(&self) -> ErrorPayload {
+        // Network: Display добавляет префикс «сеть: », а UI кладёт свою
+        // локализованную обёртку («Проблема с сетью…») — в payload идёт
+        // голая причина, иначе в сообщении тройное дублирование.
+        let message = match self {
+            LauncherError::Network(msg) => msg.clone(),
+            _ => self.to_string(),
+        };
+        ErrorPayload {
+            code: self.code().into(),
+            message,
+            hint_code: self.hint_code(),
+        }
+    }
+
+    pub fn internal(msg: impl Into<String>) -> Self {
+        LauncherError::Internal(msg.into())
+    }
+
+    pub fn network(msg: impl Into<String>) -> Self {
+        LauncherError::Network(msg.into())
+    }
+
+    /// Хвост ENV-15: сеть с контекстом исходной ошибки. Display у reqwest не
+    /// содержит слово «certificate» (оно глубже в source()), а hint у
+    /// Network(String) ищет только по тексту — раньше места вида
+    /// `network(format!("{prefix}: {e}"))` теряли подсказку про дату/время.
+    /// Здесь слово вытягивается из цепочки источника явно.
+    pub fn network_err<E: std::error::Error + 'static>(prefix: &str, e: &E) -> Self {
+        let mut msg = format!("{prefix}: {e}");
+        if mentions_certificate(e) && !msg.to_lowercase().contains("certificate") {
+            msg.push_str(" (certificate verification failed)");
+        }
+        LauncherError::Network(msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payload_has_code_message_hint() {
+        let e = LauncherError::HashMismatch {
+            path: "x.jar".into(),
+            expected: "aaa".into(),
+            actual: "bbb".into(),
+        };
+        let p = serde_json::to_value(e.payload()).unwrap();
+        assert_eq!(p["code"], "hash_mismatch");
+        assert!(p["message"].as_str().unwrap().contains("x.jar"));
+        assert_eq!(p["hintCode"], "hash_retry");
+    }
+
+    /// Network: в payload голая причина без префикса «сеть: » (его добавляет
+    /// Display для логов) и без хинта — UI локализует обёртку сам.
+    #[test]
+    fn network_payload_is_raw_reason() {
+        let e = LauncherError::network("login_with_xbox: HTTP 403");
+        let p = serde_json::to_value(e.payload()).unwrap();
+        assert_eq!(p["code"], "network");
+        assert_eq!(p["message"], "login_with_xbox: HTTP 403");
+        assert!(p["hint"].is_null(), "хинт сети теперь на стороне i18n");
+        // Display для логов сохраняет префикс.
+        assert!(e.to_string().starts_with("сеть: "));
+    }
+
+    /// HttpStatus: для фронта неотличим от прежнего Network — code "network",
+    /// прежний формат текста «HTTP {status} для {url}», хинта нет. Фронт и
+    /// i18n не меняются; статус нужен только вызывающему внутри ядра.
+    #[test]
+    fn http_status_payload_is_backward_compatible() {
+        let e = LauncherError::HttpStatus {
+            status: 404,
+            url: "https://api.modrinth.com/v2/project/gone/version".into(),
+        };
+        let p = serde_json::to_value(e.payload()).unwrap();
+        assert_eq!(p["code"], "network");
+        assert_eq!(
+            p["message"],
+            "HTTP 404 для https://api.modrinth.com/v2/project/gone/version"
+        );
+        assert!(p["hintCode"].is_null());
+        // Статус структурно доступен вызывающему (404/410 — «проект удалён»).
+        assert!(matches!(e, LauncherError::HttpStatus { status: 404 | 410, .. }));
+    }
+
+    /// ENV-15: подменная цепочка ошибок — верхний уровень без слова
+    /// «certificate», источник с ним (как rustls под hyper под reqwest:
+    /// Display reqwest цепочку не разворачивает).
+    #[derive(Debug)]
+    struct CertSource;
+    impl std::fmt::Display for CertSource {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "invalid peer certificate: UnknownIssuer")
+        }
+    }
+    impl std::error::Error for CertSource {}
+
+    #[derive(Debug)]
+    struct PlainSource;
+    impl std::fmt::Display for PlainSource {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "connection refused")
+        }
+    }
+    impl std::error::Error for PlainSource {}
+
+    #[derive(Debug)]
+    struct TopLevel(Box<dyn std::error::Error + 'static>);
+    impl std::fmt::Display for TopLevel {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "error sending request for url (https://example.com)")
+        }
+    }
+    impl std::error::Error for TopLevel {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(self.0.as_ref())
+        }
+    }
+
+    /// ENV-15: «certificate» находится в source-цепочке, чистая цепочка — нет.
+    #[test]
+    fn certificate_found_in_source_chain() {
+        assert!(mentions_certificate(&TopLevel(Box::new(CertSource))));
+        assert!(!mentions_certificate(&TopLevel(Box::new(PlainSource))));
+    }
+
+    /// ENV-15/LOC#2: Network с сертификатной причиной несёт код cert_time
+    /// (текст локализует фронт), остальные сетевые тексты — без хинта.
+    #[test]
+    fn network_certificate_error_gets_time_hint() {
+        let e = LauncherError::network("tls handshake: certificate verify failed");
+        let p = serde_json::to_value(e.payload()).unwrap();
+        assert_eq!(p["code"], "network");
+        assert_eq!(p["hintCode"], "cert_time");
+
+        let plain = LauncherError::network("connection refused");
+        assert!(plain.payload().hint_code.is_none());
+    }
+
+    /// Хвост ENV-15: network_err вытягивает слово «certificate» из source-
+    /// цепочки в текст — hint у Network(String) ищет только по сообщению.
+    #[test]
+    fn network_err_preserves_certificate_from_chain() {
+        let e = LauncherError::network_err("ely.by refresh", &TopLevel(Box::new(CertSource)));
+        assert!(e.to_string().contains("certificate"));
+        assert_eq!(e.payload().hint_code, Some("cert_time"));
+
+        let plain = LauncherError::network_err("x", &PlainSource);
+        assert!(plain.payload().hint_code.is_none());
+    }
+}

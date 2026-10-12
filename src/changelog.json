@@ -1,0 +1,33 @@
+{
+  "0.2.12": {
+    "date": "2026-10-12",
+    "ru": [
+      "Папки для инстансов в библиотеке — группируйте игровые сборки.",
+      "Обновление модпака больше не удаляет моды, которые вы ставили сами из каталога.",
+      "Ярлык на рабочем столе запускает игру даже при закрытом лаунчере; офлайн-запуск ванильных сборок починен.",
+      "Серверы: чекбокс «игроки из локальной сети» (по умолчанию сервер виден только вам), все загрузки проверяются хэшами, повторный «Стоп» не обрывает сохранение мира.",
+      "Стабильность: более 60 исправлений по итогам полного аудита — гонки, память, валидация путей, приватность выгрузки логов."
+    ],
+    "en": [
+      "Folders for instances in the library — group your game builds.",
+      "Updating a modpack no longer deletes mods you installed yourself from the catalog.",
+      "The desktop shortcut launches the game even when the launcher is closed; offline launch of vanilla instances is fixed.",
+      "Servers: a \"LAN players\" checkbox (by default the server is visible only to you), every download is hash-verified, a second Stop can no longer interrupt world saving.",
+      "Stability: 60+ fixes from a full audit — races, memory, path validation, and log-sharing privacy."
+    ],
+    "uk": [
+      "Теки для інстансів у бібліотеці — групуйте свої ігрові збірки.",
+      "Оновлення модпаку більше не видаляє моди, які ви встановлювали самі з каталогу.",
+      "Ярлик на робочому столі запускає гру навіть коли лаунчер закритий; офлайн-запуск ванільних збірок виправлено.",
+      "Сервери: галочка «гравці з локальної мережі» (за замовчуванням сервер видимий лише вам), усі завантаження перевіряються хешами, повторний «Стоп» не перериває збереження світу.",
+      "Стабільність: понад 60 виправлень за підсумками повного аудиту — гонки, пам’ять, валідація шляхів, приватність вивантаження логів."
+    ],
+    "pl": [
+      "Foldery dla instancji w bibliotece — grupuj swoje paczki gry.",
+      "Aktualizacja modpacka nie usuwa już modów dodanych samodzielnie z katalogu.",
+      "Skrót na pulpicie uruchamia grę nawet przy zamkniętym launcherze; naprawiono offline’owe uruchamianie czystych instalacji.",
+      "Serwery: pole „gracze z sieci lokalnej” (domyślnie serwer widoczny tylko dla ciebie), każde pobieranie weryfikowane hashem, powtórny „Stop” nie przerywa zapisu świata.",
+      "Stabilność: ponad 60 poprawek po pełnym audycie — wyścigi, pamięć, walidacja ścieżek, prywatność udostępniania logów."
+    ]
+  }
+}
