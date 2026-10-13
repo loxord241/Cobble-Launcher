@@ -29,6 +29,11 @@ pub struct AppState {
     /// Активные движки загрузок по группе (`instance:<id>`): instance_kill
     /// отменяет РЕАЛЬНЫЙ движок группы, а не свежесозданный no-op (D1).
     pub engines: std::sync::Mutex<std::collections::HashMap<String, Arc<DownloadEngine>>>,
+    /// Взаимное исключение восстановления инстанса из бэкапа (D73-ревизия):
+    /// insert==false → второй restore того же инстанса получает отказ, а не
+    /// параллельный rename-своп. Отдельно от engines: engine_for атомарен,
+    /// но не эксклюзивен (два вызова получают ОДИН движок и оба идут).
+    pub restore_locks: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl AppState {
@@ -53,6 +58,7 @@ impl AppState {
             http: RwLock::new(http),
             launching: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
             engines: std::sync::Mutex::new(std::collections::HashMap::new()),
+            restore_locks: std::sync::Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -207,7 +213,7 @@ async fn refuse_if_busy(state: &State<'_, AppState>, id: &str, op: &str) -> Resu
             "{op}: инстанс сейчас запускается"
         )));
     }
-    for suffix in [":repair", ":packupdate", ":content", ":update", ":optimize"] {
+    for suffix in [":repair", ":packupdate", ":content", ":update", ":optimize", ":restore"] {
         if state.has_engine(&format!("instance:{id}{suffix}")) {
             return Err(LauncherError::InvalidInput(format!(
                 "{op}: по инстансу идёт фоновая операция"
@@ -834,12 +840,34 @@ pub async fn backup_restore(state: State<'_, AppState>, file: String) -> Result<
     .await
     .map_err(join_err)??;
     refuse_if_busy(&state, &target_id, "восстановление из бэкапа").await?;
+    // D73-ревизия: эксклюзивный лок на инстанс — второй restore получает
+    // честный отказ, а не параллельный rename-своп. Плюс регистрация движком
+    // instance:{id}:restore — чтобы delete/rename/repair отказом видели
+    // идущее восстановление через refuse_if_busy.
+    let acquired = {
+        let mut locks = state.restore_locks.lock().unwrap_or_else(|e| e.into_inner());
+        locks.insert(target_id.clone())
+    };
+    if !acquired {
+        return Err(LauncherError::InvalidInput(
+            "восстановление из бэкапа: по инстансу уже идёт восстановление".into(),
+        ));
+    }
+    let group = format!("instance:{target_id}:restore");
+    let _engine = state.engine_for(&group).await;
+    let keep = state.settings.read().await.backup_keep;
     let paths = state.paths.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::instances::backups::restore(&paths, &file)
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        crate::instances::backups::restore(&paths, &file, keep)
     })
     .await
-    .map_err(join_err)?
+    .map_err(join_err);
+    {
+        let mut locks = state.restore_locks.lock().unwrap_or_else(|e| e.into_inner());
+        locks.remove(&target_id);
+    }
+    state.engine_done(&group);
+    out?
 }
 
 /// Установить иконку инстанса из локального файла (PNG/JPEG/WebP ≤ 300 КБ).

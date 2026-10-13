@@ -65,13 +65,13 @@ export default function WhatsNewModal() {
     let cancelled = false;
     getVersion()
       .then((v) => {
-        // Пустая версия (сбой getVersion) — не показываем вовсе.
+        // Пустая версия (сбой getVersion) — не показываем вовсе; маркер
+        // переживёт до следующего запуска (у свежего профиля seen всё ещё
+        // нет — решение будет принято заново).
         if (cancelled || !v) return;
-        const seen = readSeen();
-        if (seen === v) return; // эту версию уже показывали
-        if (itemsFor(v).length === 0) return; // записи в changelog нет
-        // Маркер свежей установки гасим сразу при чтении: независимо от того,
-        // смонтировались мы в этой сессии или после перезапуска.
+        // Маркер свежей установки гасим СРАЗУ после чтения, до любых ранних
+        // выходов: иначе при пустой записи changelog он зависал навсегда и
+        // глотал окно СЛЕДУЮЩЕЙ версии (D73-ревизия).
         let fresh = false;
         try {
           fresh = localStorage.getItem(FRESH_KEY) === "1";
@@ -79,6 +79,9 @@ export default function WhatsNewModal() {
         } catch {
           /* приватный режим — считаем профиль обновившимся */
         }
+        const seen = readSeen();
+        if (seen === v) return; // эту версию уже показывали
+        if (itemsFor(v).length === 0) return; // записи в changelog нет
         if (seen === null) {
           if (fresh) {
             // Свежая установка: окно не нужно — всё и так новое.

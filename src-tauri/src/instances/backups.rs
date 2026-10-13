@@ -36,13 +36,15 @@ pub struct BackupEntry {
 /// (content::create_archive_file): «Inst-1728000000-1.zip» — это имя
 /// «Inst», штамп 1728000000 (раньше rsplit_once брал последний сегмент
 /// «1» — имя инстанса искажалось, ротация сортировала такие файлы неверно).
-/// Правило: если ДВА последних сегмента числовые, штамп — предпоследний,
-/// суффикс отбрасывается, именем становится всё до него.
+/// D73-ревизия: суффикс коллизии строго ОДНА цифра (столько генерирует
+/// create_archive_file). Раньше «Мод-1-1000.zip» читалось как («Мод»,
+/// штамп=2): настоящий инстанс «Мод-1» терял владельца, а штамп «1000»
+/// считался суффиксом — ротация «Мод» удаляла ЧУЖИЕ бэкапы живого «Мод-1».
 pub(crate) fn parse_backup_name(file_name: &str) -> Option<(String, u64)> {
     let stem = file_name.strip_suffix(".zip")?;
     let mut parts: Vec<&str> = stem.split('-').collect();
     let last = *parts.last()?;
-    if parts.len() >= 2 && !last.is_empty() && last.bytes().all(|b| b.is_ascii_digit()) {
+    if parts.len() >= 2 && last.len() == 1 && last.bytes().all(|b| b.is_ascii_digit()) {
         let prev = parts[parts.len() - 2];
         if !prev.is_empty() && prev.bytes().all(|b| b.is_ascii_digit()) {
             parts.pop();
@@ -176,7 +178,9 @@ pub fn archived_instance_id(paths: &Paths, file: &str) -> Result<String> {
 
 /// Хвосты прошлых попыток восстановления (`tmp/restore-*`): без `old/` —
 /// мусор, убираем; с `old/` — след НЕСРАБОТАВШЕГО отката, там пользовательские
-/// данные, не трогаем (жалко байт, но потерять мир — хуже).
+/// данные, не трогаем (жалко байт, но потерять мир — хуже). Свежие папки
+/// (изменялись за последние 10 минут) не трогаем: это рабочая папка
+/// ПАРАЛЛЕЛЬНО идущего восстановления, а не хвост.
 fn cleanup_stale_restore_dirs(paths: &Paths) {
     let tmp = paths.root().join("tmp");
     let Ok(entries) = std::fs::read_dir(crate::util::fs::long_path(&tmp)) else {
@@ -194,6 +198,17 @@ fn cleanup_stale_restore_dirs(paths: &Paths) {
             tracing::warn!("tmp/{name} хранит несработавший откат восстановления — не трогаем");
             continue;
         }
+        // Грейс на живой параллельный restore: часы могут врать — трактуем
+        // сбой чтения времени как «папка свежая» и не трогаем.
+        let fresh = std::fs::metadata(crate::util::fs::long_path(&p))
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs() < 600)
+            .unwrap_or(true);
+        if fresh {
+            continue;
+        }
         let _ = std::fs::remove_dir_all(crate::util::fs::long_path(&p));
     }
 }
@@ -204,9 +219,9 @@ fn cleanup_stale_restore_dirs(paths: &Paths) {
 /// каталога через rename, не распаковка поверх — иначе слились бы старые и
 /// новые файлы); если инстанса нет — он создаётся заново (вернуть удалённый).
 /// Перед заменой существующего читаемого состояния делается обычный бэкап
-/// (content::backup) — операция обратима через тот же список бэкапов.
-/// Работающий инстанс — отказ InstanceRunning и до, и внутри замены.
-pub fn restore(paths: &Paths, file: &str) -> Result<crate::instances::Instance> {
+/// (content::backup, сразу с ротацией keep) — операция обратима через тот же
+/// список. Работающий инстанс — отказ InstanceRunning и до, и внутри замены.
+pub fn restore(paths: &Paths, file: &str, keep: u32) -> Result<crate::instances::Instance> {
     let zip_path = validated_backup_path(paths, file)?;
     if parse_backup_name(file).is_none() {
         return Err(LauncherError::InvalidInput(format!(
@@ -220,20 +235,11 @@ pub fn restore(paths: &Paths, file: &str) -> Result<crate::instances::Instance> 
         return Err(LauncherError::InstanceRunning(archived.id.clone()));
     }
     cleanup_stale_restore_dirs(paths);
-
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let work = paths.root().join("tmp").join(format!(
-        "restore-{}-{}",
-        stamp,
-        std::process::id()
-    ));
-    std::fs::create_dir_all(crate::util::fs::long_path(&work))?;
+    let work = create_restore_work_dir(paths)?;
 
     // Замена выполнена (или откат состоялся) — рабочую папку можно сносить;
-    // несработавший откат оставляет `old` и запрещает уборку.
+    // несработавший откат или несохранённое прежнее состояние оставляют
+    // `old` внутри и запрещают уборку.
     let mut safe_to_clean = true;
     let outcome = (|| -> Result<crate::instances::Instance> {
         let f = std::fs::File::open(crate::util::fs::long_path(&zip_path))?;
@@ -245,14 +251,22 @@ pub fn restore(paths: &Paths, file: &str) -> Result<crate::instances::Instance> 
             ));
         }
         if target.exists() {
-            // Страховка: текущее состояние — обычным бэкапом (ротация applies).
+            // Страховка: текущее состояние — обычным бэкапом (с ротацией keep).
+            // Если instance.json цели не читается, страховки НЕ будет — прежний
+            // каталог после свопа сохраняем в work/old (не удаляем).
+            let mut preserve_old = false;
             match super::load(paths, &archived.id) {
                 Ok(current) => {
                     super::content::backup(paths, &current)?;
+                    rotate(paths, &current.name, keep);
                 }
-                Err(e) => tracing::warn!(
-                    "restore: instance.json цели не читается ({e}) — замена без авто-бэкапа"
-                ),
+                Err(e) => {
+                    tracing::warn!(
+                        "restore: instance.json цели не читается ({e}) — замена без авто-бэкапа, \
+                         прежний каталог будет сохранён в tmp"
+                    );
+                    preserve_old = true;
+                }
             }
             let old = work.join("old");
             crate::util::fs::rename_with_retry(&target, &old)?;
@@ -265,12 +279,25 @@ pub fn restore(paths: &Paths, file: &str) -> Result<crate::instances::Instance> 
                         "restore: откат не удался ({re}); прежний каталог: {}",
                         old.display()
                     );
+                    return Err(LauncherError::Internal(format!(
+                        "восстановление не удалось ({e}); откат тоже не прошёл ({re}) — \
+                         прежние файлы инстанса сохранены в {}",
+                        old.display()
+                    )));
                 }
                 return Err(e);
             }
-            // Прежний каталог уже спасён авто-бэкапом — мусор убираем. Сбой
-            // (занятый антивирусом файл) не отменяет восстановление.
-            if let Err(e) = std::fs::remove_dir_all(crate::util::fs::long_path(&old)) {
+            if preserve_old {
+                safe_to_clean = false;
+                tracing::warn!(
+                    "restore: прежний каталог без страховочной копии сохранён в {}",
+                    old.display()
+                );
+            } else if let Err(e) = std::fs::remove_dir_all(crate::util::fs::long_path(&old)) {
+                // Прежний каталог уже спасён авто-бэкапом; сбой (антивирус)
+                // не отменяет восстановление, но папку в tmp уборка тронет
+                // только по старшинству — мусор не копится вечно (файлы
+                // освобождаются, к следующему restore срок выйдет).
                 tracing::warn!("restore: не убран прежний каталог {}: {e}", old.display());
             }
         } else {
@@ -284,6 +311,35 @@ pub fn restore(paths: &Paths, file: &str) -> Result<crate::instances::Instance> 
         let _ = std::fs::remove_dir_all(crate::util::fs::long_path(&work));
     }
     outcome
+}
+
+/// Уникальная рабочая папка восстановления: create_dir (эксклюзивно) с
+/// суффиксами -1…-99. Двойной клик «Восстановить» в одну секунду больше не
+/// сваливает два потока в один каталог (create_dir_all не эксклюзивен —
+/// заменён на create_dir).
+fn create_restore_work_dir(paths: &Paths) -> Result<std::path::PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let base = paths.root().join("tmp");
+    std::fs::create_dir_all(crate::util::fs::long_path(&base))?;
+    for n in 0..=99u32 {
+        let name = if n == 0 {
+            format!("restore-{stamp}-{}", std::process::id())
+        } else {
+            format!("restore-{stamp}-{}-{n}", std::process::id())
+        };
+        let candidate = base.join(name);
+        match std::fs::create_dir(crate::util::fs::long_path(&candidate)) {
+            Ok(()) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(LauncherError::Internal(
+        "не удалось создать уникальную рабочую папку восстановления".into(),
+    ))
 }
 
 /// Ротация бэкапов инстанса: оставить `keep` новейших (по штампу из имени),
@@ -532,7 +588,7 @@ mod tests {
         std::fs::write(long(&mc.join("mods/a.jar")), b"NEW").unwrap();
         std::fs::write(long(&mc.join("mods/b.jar")), b"B").unwrap();
 
-        let restored = restore(&paths, &file).unwrap();
+        let restored = restore(&paths, &file, 0).unwrap();
         assert_eq!(restored.id, inst.id);
         assert_eq!(restored.name, inst.name, "состояние бэкапа вернулось");
 
@@ -580,7 +636,7 @@ mod tests {
         std::fs::remove_dir_all(long(&crate::instances::instance_dir(&paths, &inst.id))).unwrap();
         assert!(crate::instances::list(&paths).is_empty());
 
-        let restored = restore(&paths, &file).unwrap();
+        let restored = restore(&paths, &file, 0).unwrap();
         assert_eq!(restored.id, inst.id);
         assert_eq!(restored.name, "Тест");
         assert_eq!(
@@ -613,7 +669,7 @@ mod tests {
             std::process::id().to_string(),
         )
         .unwrap();
-        let err = restore(&paths, &file).unwrap_err();
+        let err = restore(&paths, &file, 0).unwrap_err();
         assert_eq!(err.code(), "instance_running", "{err}");
         assert_eq!(
             std::fs::read(
@@ -640,21 +696,21 @@ mod tests {
         use std::io::Write as _;
         w.write_all(b"x").unwrap();
         w.finish().unwrap();
-        let err = restore(&paths, "X-100.zip").unwrap_err();
+        let err = restore(&paths, "X-100.zip", 0).unwrap_err();
         assert_eq!(err.code(), "invalid_input", "{err}");
 
         // Не zip вовсе, но имя по формату — ошибка распаковки/парса.
         std::fs::write(long(&paths.backups_dir().join("Y-100.zip")), b"garbage").unwrap();
-        assert!(restore(&paths, "Y-100.zip").is_err());
+        assert!(restore(&paths, "Y-100.zip", 0).is_err());
 
         // Traversal и не-простые имена — тот же барьер, что у delete.
         for bad in ["../evil.zip", "a/b.zip", "a\\b.zip", "", "nozip"] {
-            let err = restore(&paths, bad).unwrap_err();
+            let err = restore(&paths, bad, 0).unwrap_err();
             assert_eq!(err.code(), "invalid_input", "имя {bad:?}: {err}");
         }
         // Не формат «{инстанс}-{штамп}.zip» — отклоняется, хоть файл и валиден.
         std::fs::write(long(&paths.backups_dir().join("plain.zip")), b"z").unwrap();
-        let err = restore(&paths, "plain.zip").unwrap_err();
+        let err = restore(&paths, "plain.zip", 0).unwrap_err();
         assert_eq!(err.code(), "invalid_input", "{err}");
     }
 
@@ -671,5 +727,87 @@ mod tests {
             .into_owned();
         assert_eq!(archived_instance_id(&paths, &file).unwrap(), inst.id);
         assert!(archived_instance_id(&paths, "plain.zip").is_err());
+    }
+
+    /// D73-ревизия: суффикс коллизии строго одна цифра. «Мод-1-1000.zip» —
+    /// инстанс «Мод-1» со штампом 1000 (раньше: («Мод», штамп=2) — ротация
+    /// «Мод» удаляла чужие бэкапы живого «Мод-1»); «Inst-1728000000-1.zip» —
+    /// по-прежнему коллизия имени «Inst».
+    #[test]
+    fn collision_suffix_is_single_digit_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        put(&paths, "Мод-1-1000.zip", b"A");
+        put(&paths, "Мод-2-1000.zip", b"B");
+        put(&paths, "Мод-1000.zip", b"C");
+        put(&paths, "Мод-1001.zip", b"D");
+        put(&paths, "Мод-1002.zip", b"E");
+        put(&paths, "Inst-1728000000-1.zip", b"F");
+
+        let all = list(&paths);
+        let own = |f: &str| all.iter().find(|e| e.file == f).unwrap();
+        assert_eq!(own("Мод-1-1000.zip").instance, "Мод-1", "настоящий владелец");
+        assert_eq!(own("Мод-1-1000.zip").created_at, 1000, "штамп — последний сегмент");
+        assert_eq!(own("Мод-2-1000.zip").instance, "Мод-2");
+        assert_eq!(own("Inst-1728000000-1.zip").instance, "Inst", "коллизия работает");
+        assert_eq!(own("Inst-1728000000-1.zip").created_at, 1_728_000_000);
+
+        // Ротация «Мод» удаляет только свои старейшие; «Мод-1/2» не тронуты.
+        rotate(&paths, "Мод", 2);
+        assert!(exists(&paths, "Мод-1001.zip") && exists(&paths, "Мод-1002.zip"));
+        assert!(!exists(&paths, "Мод-1000.zip"), "старейший свой удалён");
+        assert!(exists(&paths, "Мод-1-1000.zip"), "чужой «Мод-1» не тронут");
+        assert!(exists(&paths, "Мод-2-1000.zip"), "чужой «Мод-2» не тронут");
+    }
+
+    /// D73-ревизия: instance.json цели не читается — страховки не будет,
+    /// поэтому прежний каталог СОХРАНЯЕТСЯ в tmp (work с old/ не убирается).
+    #[test]
+    fn restore_preserves_old_dir_when_target_unreadable() {
+        let (_d, paths, inst) = setup_with_instance();
+        let saved = crate::instances::content::backup(&paths, &inst).unwrap();
+        let file = std::path::Path::new(&saved.path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        let inst_json = crate::instances::instance_dir(&paths, &inst.id).join("instance.json");
+        std::fs::write(long(&inst_json), b"{ broken").unwrap();
+
+        let restored = restore(&paths, &file, 0).unwrap();
+        assert_eq!(restored.id, inst.id, "восстановление прошло");
+
+        let tmp = paths.root().join("tmp");
+        let mut found_old = false;
+        for e in std::fs::read_dir(long(&tmp)).unwrap().flatten() {
+            let old = e.path().join("old");
+            if long(&old).exists() {
+                found_old = true;
+                assert_eq!(
+                    std::fs::read(long(
+                        &old.join("minecraft").join("mods").join("a.jar")
+                    ))
+                    .unwrap(),
+                    b"OLD",
+                    "прежний каталог уцелел целиком"
+                );
+            }
+        }
+        assert!(found_old, "прежний каталог сохранён в tmp при отсутствии страховки");
+    }
+
+    /// D73-ревизия: рабочая папка восстановления эксклюзивна — второй вызов
+    /// в ту же секунду получает ДРУГУЮ папку, а не делит первую.
+    #[test]
+    fn restore_work_dir_is_exclusive() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+        let a = create_restore_work_dir(&paths).unwrap();
+        let b = create_restore_work_dir(&paths).unwrap();
+        assert_ne!(a, b, "второй вызов не сваливается в первую папку");
+        assert!(long(&a).is_dir() && long(&b).is_dir());
     }
 }

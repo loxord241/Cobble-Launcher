@@ -614,6 +614,7 @@
   "settings.backups.empty": "Бэкапов пока нет",
   "settings.backups.delete": "Удалить бэкап?",
   "settings.backups.restore": "Восстановить",
+  "settings.backups.restoreAsk": "Восстановить этот бэкап?",
   "settings.backups.restoreDetail": "Инстанс «{name}» будет заменён содержимым бэкапа целиком. Текущее состояние автоматически сохранится в новый бэкап. Если инстанса нет — он будет создан заново.",
   "settings.backups.restoreDone": "Восстановлено: {name}",
   "settings.backups.open": "Открыть папку",

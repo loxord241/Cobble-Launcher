@@ -614,6 +614,7 @@
   "settings.backups.empty": "Brak kopii zapasowych",
   "settings.backups.delete": "Usunąć tę kopię?",
   "settings.backups.restore": "Przywróć",
+  "settings.backups.restoreAsk": "Przywrócić tę kopię zapasową?",
   "settings.backups.restoreDetail": "Instancja „{name}” zostanie w pełni zastąpiona zawartością kopii zapasowej. Bieżący stan zostanie automatycznie zapisany w nowej kopii. Jeśli instancja nie istnieje, zostanie utworzona ponownie.",
   "settings.backups.restoreDone": "Przywrócono: {name}",
   "settings.backups.open": "Otwórz folder",

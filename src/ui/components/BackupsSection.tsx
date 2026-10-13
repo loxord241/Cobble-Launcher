@@ -49,6 +49,7 @@ export default function BackupsSection() {
   const changeKeep = async (value: number) => {
     const prev = keep;
     setKeep(value);
+    setNotice(null);
     try {
       const current = await api.settingsGet();
       await api.settingsSet({ ...current, backupKeep: value });
@@ -70,6 +71,7 @@ export default function BackupsSection() {
     });
     if (!ok) return;
     setBusyFile(entry.file);
+    setNotice(null);
     try {
       await api.backupDelete(entry.file);
       setError(null);
@@ -86,7 +88,7 @@ export default function BackupsSection() {
    * заново). Текущее состояние ядро сохраняет авто-бэкапом — операция
    * обратима через этот же список. */
   const restoreBackup = async (entry: BackupEntry) => {
-    const ok = await askConfirm(t("settings.backups.restore"), {
+    const ok = await askConfirm(t("settings.backups.restoreAsk"), {
       danger: true,
       confirmLabel: t("settings.backups.restore"),
       detail: `${t("settings.backups.restoreDetail", { name: entry.instance })}\n${entry.file} · ${new Date(entry.createdAt * 1000).toLocaleString(currentLanguage())} · ${formatSize(entry.sizeBytes)}`,
@@ -193,7 +195,10 @@ export default function BackupsSection() {
                   <button
                     type="button"
                     onClick={() => void restoreBackup(b)}
-                    disabled={busyFile === b.file}
+                    // D73-ревизия: single-flight — пока идёт любая операция,
+                    // блокируются кнопки ВСЕХ строк (ядро не допускает
+                    // параллельных restore одного инстанса; UI не заводит).
+                    disabled={busyFile !== null}
                     aria-busy={busyFile === b.file}
                     aria-label={`${t("settings.backups.restore")}: ${b.file}`}
                     className="btn-ghost btn-sm shrink-0"
@@ -204,7 +209,7 @@ export default function BackupsSection() {
                   <button
                     type="button"
                     onClick={() => void removeBackup(b)}
-                    disabled={busyFile === b.file}
+                    disabled={busyFile !== null}
                     aria-busy={busyFile === b.file}
                     aria-label={`${t("settings.backups.delete")}: ${b.file}`}
                     className="btn-ghost btn-sm shrink-0 text-error"
