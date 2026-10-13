@@ -1,0 +1,56 @@
+{
+  "0.2.13": {
+    "date": "2026-10-13",
+    "ru": [
+      "Восстановление бэкапов одним кликом: Настройки → Бэкапы → «Восстановить». Работает даже для удалённых инстансов; перед заменой лаунчер сам делает страховочный бэкап.",
+      "Окно «Что нового» больше не пропускается после обновления со старой версии — вы читаете его именно поэтому.",
+      "Ревизия кода: ротация бэкапов не трогает чужие инстансы, параллельные восстановления блокируются, сбой посреди восстановления сохраняет прежние файлы."
+    ],
+    "en": [
+      "Restore backups with one click: Settings → Backups → Restore. Works even for deleted instances, and a safety backup is made automatically before anything is replaced.",
+      "The What's New window no longer gets skipped after updating from older versions — that's why you are reading it now.",
+      "Code review wave: backup rotation no longer touches other instances, concurrent restores are blocked, and an interrupted restore keeps the previous files."
+    ],
+    "uk": [
+      "Відновлення бекапів одним кліком: Налаштування → Бекапи → «Відновити». Працює навіть для видалених інстансів; перед заміною лаунчер сам створює страховочний бекап.",
+      "Вікно «Що нового» більше не пропускається після оновлення зі старої версії — саме тому ви його читаєте.",
+      "Хвиля ревізії коду: ротація бекапів не чіпає чужі інстанси, паралельні відновлення блокуються, збій під час відновлення зберігає попередні файли."
+    ],
+    "pl": [
+      "Przywracanie kopii zapasowych jednym kliknięciem: Ustawienia → Kopie → „Przywróć”. Działa nawet dla usuniętych instancji; przed zastąpieniem launcher sam tworzy kopię bezpieczeństwa.",
+      "Okno „Co nowego” nie jest już pomijane po aktualizacji ze starszej wersji — właśnie dlatego je czytasz.",
+      "Fala przeglądu kodu: rotacja kopii nie dotyka innych instancji, równoległe przywracania są blokowane, a przerwane przywracanie zachowuje poprzednie pliki."
+    ]
+  },
+  "0.2.12": {
+    "date": "2026-10-12",
+    "ru": [
+      "Папки для инстансов в библиотеке — группируйте игровые сборки.",
+      "Обновление модпака больше не удаляет моды, которые вы ставили сами из каталога.",
+      "Ярлык на рабочем столе запускает игру даже при закрытом лаунчере; офлайн-запуск ванильных сборок починен.",
+      "Серверы: чекбокс «игроки из локальной сети» (по умолчанию сервер виден только вам), все загрузки проверяются хэшами, повторный «Стоп» не обрывает сохранение мира.",
+      "Стабильность: более 60 исправлений по итогам полного аудита — гонки, память, валидация путей, приватность выгрузки логов."
+    ],
+    "en": [
+      "Folders for instances in the library — group your game builds.",
+      "Updating a modpack no longer deletes mods you installed yourself from the catalog.",
+      "The desktop shortcut launches the game even when the launcher is closed; offline launch of vanilla instances is fixed.",
+      "Servers: a \"LAN players\" checkbox (by default the server is visible only to you), every download is hash-verified, a second Stop can no longer interrupt world saving.",
+      "Stability: 60+ fixes from a full audit — races, memory, path validation, and log-sharing privacy."
+    ],
+    "uk": [
+      "Теки для інстансів у бібліотеці — групуйте свої ігрові збірки.",
+      "Оновлення модпаку більше не видаляє моди, які ви встановлювали самі з каталогу.",
+      "Ярлик на робочому столі запускає гру навіть коли лаунчер закритий; офлайн-запуск ванільних збірок виправлено.",
+      "Сервери: галочка «гравці з локальної мережі» (за замовчуванням сервер видимий лише вам), усі завантаження перевіряються хешами, повторний «Стоп» не перериває збереження світу.",
+      "Стабільність: понад 60 виправлень за підсумками повного аудиту — гонки, пам’ять, валідація шляхів, приватність вивантаження логів."
+    ],
+    "pl": [
+      "Foldery dla instancji w bibliotece — grupuj swoje paczki gry.",
+      "Aktualizacja modpacka nie usuwa już modów dodanych samodzielnie z katalogu.",
+      "Skrót na pulpicie uruchamia grę nawet przy zamkniętym launcherze; naprawiono offline’owe uruchamianie czystych instalacji.",
+      "Serwery: pole „gracze z sieci lokalnej” (domyślnie serwer widoczny tylko dla ciebie), każde pobieranie weryfikowane hashem, powtórny „Stop” nie przerywa zapisu świata.",
+      "Stabilność: ponad 60 poprawek po pełnym audycie — wyścigi, pamięć, walidacja ścieżek, prywatność udostępniania logów."
+    ]
+  }
+}
