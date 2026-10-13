@@ -1,4 +1,27 @@
 {
+  "0.2.13": {
+    "date": "2026-10-13",
+    "ru": [
+      "Восстановление бэкапов одним кликом: Настройки → Бэкапы → «Восстановить». Работает даже для удалённых инстансов; перед заменой лаунчер сам делает страховочный бэкап.",
+      "Окно «Что нового» больше не пропускается после обновления со старой версии — вы читаете его именно поэтому.",
+      "Ревизия кода: ротация бэкапов не трогает чужие инстансы, параллельные восстановления блокируются, сбой посреди восстановления сохраняет прежние файлы."
+    ],
+    "en": [
+      "Restore backups with one click: Settings → Backups → Restore. Works even for deleted instances, and a safety backup is made automatically before anything is replaced.",
+      "The What's New window no longer gets skipped after updating from older versions — that's why you are reading it now.",
+      "Code review wave: backup rotation no longer touches other instances, concurrent restores are blocked, and an interrupted restore keeps the previous files."
+    ],
+    "uk": [
+      "Відновлення бекапів одним кліком: Налаштування → Бекапи → «Відновити». Працює навіть для видалених інстансів; перед заміною лаунчер сам створює страховочний бекап.",
+      "Вікно «Що нового» більше не пропускається після оновлення зі старої версії — саме тому ви його читаєте.",
+      "Хвиля ревізії коду: ротація бекапів не чіпає чужі інстанси, паралельні відновлення блокуються, збій під час відновлення зберігає попередні файли."
+    ],
+    "pl": [
+      "Przywracanie kopii zapasowych jednym kliknięciem: Ustawienia → Kopie → „Przywróć”. Działa nawet dla usuniętych instancji; przed zastąpieniem launcher sam tworzy kopię bezpieczeństwa.",
+      "Okno „Co nowego” nie jest już pomijane po aktualizacji ze starszej wersji — właśnie dlatego je czytasz.",
+      "Fala przeglądu kodu: rotacja kopii nie dotyka innych instancji, równoległe przywracania są blokowane, a przerwane przywracanie zachowuje poprzednie pliki."
+    ]
+  },
   "0.2.12": {
     "date": "2026-10-12",
     "ru": [
